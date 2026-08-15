@@ -77,6 +77,26 @@ namespace TVHeadEnd.DataHelper
             return result;
         }
 
+        /// <summary>
+        /// Gets the current TVHeadend channel name for an HTSP channel identifier.
+        /// </summary>
+        /// <param name="channelId">The HTSP channel identifier.</param>
+        /// <returns>The channel name, or <see langword="null"/> if it is not currently known.</returns>
+        public string? GetChannelName(string channelId)
+        {
+            if (!int.TryParse(channelId, out var id))
+            {
+                return null;
+            }
+
+            lock (_data)
+            {
+                return _data.TryGetValue(id, out var message)
+                    ? message.GetString("channelName")
+                    : null;
+            }
+        }
+
         public Task<IEnumerable<ChannelInfo>> BuildChannelInfos(CancellationToken cancellationToken)
         {
             return Task.Run<IEnumerable<ChannelInfo>>(() =>

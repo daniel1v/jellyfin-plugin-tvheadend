@@ -296,6 +296,11 @@ namespace TVHeadEnd
             return new Dictionary<string, string>(_headers);
         }
 
+        public string? GetChannelName(string channelId)
+        {
+            return _channelDataHelper.GetChannelName(channelId);
+        }
+
         // private static Stream ImageToPNGStream(Image image)
         // {
         //    Stream stream = new System.IO.MemoryStream();

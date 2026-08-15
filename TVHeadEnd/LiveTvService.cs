@@ -1,10 +1,15 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
@@ -15,12 +20,13 @@ using TVHeadEnd.DataHelper;
 using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 using TVHeadEnd.HTSP.Responses;
+using TVHeadEnd.Streaming;
 using TVHeadEnd.TimeoutHelper;
 using static TVHeadEnd.TicketType;
 
 namespace TVHeadEnd
 {
-    public class LiveTvService : ILiveTvService
+    public class LiveTvService : ILiveTvService, ISupportsDirectStreamProvider
     {
         /// <summary>
         /// DVR_AUTOREC_BTYPE_ALL - record any broadcast.
@@ -38,16 +44,32 @@ namespace TVHeadEnd
 
         private readonly HTSConnectionHandler _htsConnectionHandler;
         private readonly AccessTicketHandler _channelTicketHandler;
+        private readonly LiveTvItemIdResolver _liveTvItemIdResolver;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IConfigurationManager _configurationManager;
+        private readonly IServerApplicationHost _applicationHost;
+        private readonly ConcurrentDictionary<string, TvHeadendHttpLiveStream> _activeChannelStreams = new(StringComparer.OrdinalIgnoreCase);
 
         private readonly ILogger<LiveTvService> _logger;
 
-        public LiveTvService(ILoggerFactory loggerFactory, IMediaEncoder mediaEncoder, HTSConnectionHandler connectionHandler)
+        public LiveTvService(
+            ILoggerFactory loggerFactory,
+            IMediaEncoder mediaEncoder,
+            HTSConnectionHandler connectionHandler,
+            ILibraryManager libraryManager,
+            IHttpClientFactory httpClientFactory,
+            IConfigurationManager configurationManager,
+            IServerApplicationHost applicationHost)
         {
             // System.Diagnostics.StackTrace t = new System.Diagnostics.StackTrace();
             _logger = loggerFactory.CreateLogger<LiveTvService>();
             _logger.LogDebug("LiveTvService()");
 
             _htsConnectionHandler = connectionHandler;
+            _liveTvItemIdResolver = new LiveTvItemIdResolver(libraryManager);
+            _httpClientFactory = httpClientFactory;
+            _configurationManager = configurationManager;
+            _applicationHost = applicationHost;
             _htsConnectionHandler.SetLiveTvService(this);
             {
                 var lifeSpan = TimeSpan.FromSeconds(15);       // Revalidate tickets every 15 seconds
@@ -412,90 +434,140 @@ namespace TVHeadEnd
             return list;
         }
 
-        public async Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
+        public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
         {
-            var ticket = await _channelTicketHandler.GetTicket(channelId, cancellationToken).ConfigureAwait(false);
+            return CreateOpenedChannelMediaSource(channelId, cancellationToken);
+        }
 
+        public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(
+            string channelId,
+            string streamId,
+            List<ILiveStream> currentLiveStreams,
+            CancellationToken cancellationToken)
+        {
+            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
+            var reusableStream = TvHeadendHttpLiveStream.AcquireReusable(
+                currentLiveStreams,
+                streamId,
+                mediaSourceId);
+            if (reusableStream is not null)
+            {
+                if (reusableStream is TvHeadendHttpLiveStream reusableTvheadendStream)
+                {
+                    _activeChannelStreams[mediaSourceId] = reusableTvheadendStream;
+                }
+
+                _logger.LogInformation(
+                    "Live TV stream reuse: managed stream {UniqueId} now has {ConsumerCount} consumers",
+                    reusableStream.UniqueId,
+                    reusableStream.ConsumerCount);
+                return reusableStream;
+            }
+
+            var mediaSource = await CreateOpenedChannelMediaSource(channelId, cancellationToken, false).ConfigureAwait(false);
+            var liveStream = new TvHeadendHttpLiveStream(
+                mediaSource,
+                _httpClientFactory,
+                _configurationManager,
+                _applicationHost,
+                _logger)
+            {
+                OriginalStreamId = streamId,
+            };
+
+            try
+            {
+                await liveStream.Open(cancellationToken).ConfigureAwait(false);
+                await ProbeStream(liveStream.MediaSource, "managed LiveTV buffer", cancellationToken).ConfigureAwait(false);
+                ApplyLiveStreamOverrides(liveStream.MediaSource);
+                liveStream.MediaSource.SupportsDirectPlay = true;
+                _activeChannelStreams[mediaSourceId] = liveStream;
+                return liveStream;
+            }
+            catch
+            {
+                await liveStream.Close().ConfigureAwait(false);
+                liveStream.Dispose();
+                throw;
+            }
+        }
+
+        private async Task<MediaSourceInfo> CreateOpenedChannelMediaSource(
+            string channelId,
+            CancellationToken cancellationToken,
+            bool probeStream = true)
+        {
+            var streamStartStopwatch = Stopwatch.StartNew();
+            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
+            var ticket = await _channelTicketHandler.GetTicket(channelId, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation(
+                "Live TV stream start: access ticket ready for channel {ChannelId} after {ElapsedMilliseconds} ms",
+                channelId,
+                streamStartStopwatch.ElapsedMilliseconds);
+            _logger.LogInformation(
+                "Live TV stream start: HTSP channel mapping {ChannelId} -> {ChannelName}",
+                channelId,
+                _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>");
+
+            MediaSourceInfo livetvasset;
             if (_htsConnectionHandler.GetEnableSubsMaudios())
             {
                 _logger.LogInformation("LiveTvService.GetChannelStream: support for live TV subtitles and multiple audio tracks is enabled");
 
-                MediaSourceInfo livetvasset = new MediaSourceInfo();
-
-                livetvasset.Id = channelId;
-
                 // Use HTTP basic auth in HTTP header instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                livetvasset.Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Path;
-                livetvasset.Protocol = MediaProtocol.Http;
+                livetvasset = LiveTvMediaSourceFactory.CreateOpened(
+                    mediaSourceId,
+                    _htsConnectionHandler.GetHttpBaseUrl() + ticket.Path);
                 livetvasset.RequiredHttpHeaders = _htsConnectionHandler.GetHeaders();
-                livetvasset.AnalyzeDurationMs = 2000;
-                livetvasset.SupportsDirectStream = false;
-                livetvasset.RequiresClosing = true;
-                livetvasset.SupportsProbing = false;
-                livetvasset.Container = "mpegts";
-                livetvasset.RequiresOpening = true;
-                livetvasset.IsInfiniteStream = true;
-
-                // Probe the asset stream to determine available sub-streams
-                string livetvasset_probeUrl = string.Empty + livetvasset.Path;
-                string livetvasset_source = "LiveTV";
-                await ProbeStream(livetvasset, livetvasset_probeUrl, livetvasset_source, cancellationToken).ConfigureAwait(false);
-
-                // If enabled, force video deinterlacing for channels
-                if (_htsConnectionHandler.GetForceDeinterlace())
-                {
-                    _logger.LogInformation("LiveTvService.GetChannelStream: force video deinterlacing for all channels and recordings is enabled");
-
-                    foreach (MediaStream i in livetvasset.MediaStreams)
-                    {
-                        if (i.Type == MediaStreamType.Video && i.IsInterlaced == false)
-                        {
-                            i.IsInterlaced = true;
-                        }
-
-                        i.RealFrameRate = 50.0F;
-                    }
-                }
-
-                return livetvasset;
             }
             else
             {
-                return new MediaSourceInfo
+                livetvasset = LiveTvMediaSourceFactory.CreateOpened(
+                    mediaSourceId,
+                    _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url);
+            }
+
+            if (probeStream)
+            {
+                await ProbeStream(livetvasset, "LiveTV", cancellationToken).ConfigureAwait(false);
+                ApplyLiveStreamOverrides(livetvasset);
+            }
+
+            _logger.LogInformation(
+                "Live TV stream start: media source ready for channel {ChannelId} after {ElapsedMilliseconds} ms ({ProbeState}, {MediaStreamCount} streams)",
+                channelId,
+                streamStartStopwatch.ElapsedMilliseconds,
+                probeStream ? "probed" : "awaiting managed-buffer probe",
+                livetvasset.MediaStreams?.Count ?? 0);
+
+            return livetvasset;
+        }
+
+        private void ApplyLiveStreamOverrides(MediaSourceInfo mediaSource)
+        {
+            LiveTvMediaSourceFactory.PreferCompatibleAudioTrack(mediaSource);
+
+            if (!_htsConnectionHandler.GetForceDeinterlace())
+            {
+                return;
+            }
+
+            _logger.LogInformation("LiveTvService.GetChannelStream: force video deinterlacing for all channels and recordings is enabled");
+            foreach (MediaStream stream in mediaSource.MediaStreams)
+            {
+                if (stream.Type == MediaStreamType.Video && stream.IsInterlaced == false)
                 {
-                    Id = channelId,
-                    Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url,
-                    Protocol = MediaProtocol.Http,
-                    AnalyzeDurationMs = 2000,
-                    SupportsDirectStream = false,
-                    SupportsProbing = false,
-                    Container = "mpegts",
-                    MediaStreams = new List<MediaStream>
-                    {
-                        new MediaStream
-                        {
-                            Type = MediaStreamType.Video,
-                            // Set the index to -1 because we don't know the exact index of the video stream within the container
-                            Index = -1,
-                            // Set to true if unknown to enable deinterlacing
-                            IsInterlaced = true,
-                            RealFrameRate = 50.0F
-                        },
-                        new MediaStream
-                        {
-                            Type = MediaStreamType.Audio,
-                            // Set the index to -1 because we don't know the exact index of the audio stream within the container
-                            Index = -1
-                        }
-                    }
-                };
+                    stream.IsInterlaced = true;
+                }
+
+                stream.RealFrameRate = 50.0F;
             }
         }
 
-        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, string probeUrl, string source, CancellationToken cancellationToken)
+        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, string source, CancellationToken cancellationToken)
         {
+            var probeStopwatch = Stopwatch.StartNew();
             _logger.LogInformation("Probe stream for {Source}", source);
-            _logger.LogInformation("Probe URL: {ProbeUrl}", probeUrl);
 
             MediaInfoRequest req = new MediaInfoRequest
             {
@@ -515,17 +587,28 @@ namespace TVHeadEnd
 
             if (info != null)
             {
+                var mediaStreams = info.MediaStreams ?? [];
+
+                _logger.LogInformation(
+                    "Live TV stream probe: {Source} completed after {ElapsedMilliseconds} ms ({MediaStreamCount} streams, {Container})",
+                    source,
+                    probeStopwatch.ElapsedMilliseconds,
+                    mediaStreams.Count,
+                    info.Container);
+
                 _logger.LogDebug("Probe returned:");
 
                 mediaSourceInfo.Bitrate = info.Bitrate;
                 _logger.LogDebug("        BitRate:                    {BitRate}", info.Bitrate);
 
-                mediaSourceInfo.Container = info.Container;
-                _logger.LogDebug("        Container:                  {Container}", info.Container);
+                // Keep the container the factory advertised. The probe reports the
+                // normalised "ts" spelling, which no longer matches the client profiles
+                // that only list "mpegts".
+                _logger.LogDebug("        Container:                  {Container} (probe reported {ProbedContainer})", mediaSourceInfo.Container, info.Container);
 
-                mediaSourceInfo.MediaStreams = info.MediaStreams;
+                mediaSourceInfo.MediaStreams = mediaStreams;
                 _logger.LogDebug("        MediaStreams:               ");
-                LogMediaStreamList(info.MediaStreams, "                       ");
+                LogMediaStreamList(mediaStreams, "                       ");
 
                 mediaSourceInfo.RunTimeTicks = info.RunTimeTicks;
                 _logger.LogDebug("        RunTimeTicks:               {RunTimeTicks}", info.RunTimeTicks);
@@ -542,13 +625,7 @@ namespace TVHeadEnd
                 mediaSourceInfo.VideoType = info.VideoType;
                 _logger.LogDebug("        VideoType:                  {VideoType}", info.VideoType);
 
-                mediaSourceInfo.RequiresClosing = true;
-                _logger.LogDebug("        RequiresClosing:            {RequiresClosing}", info.RequiresClosing);
-
-                mediaSourceInfo.RequiresOpening = true;
-                _logger.LogDebug("        RequiresOpening:            {RequiresOpening}", info.RequiresOpening);
-
-                mediaSourceInfo.SupportsDirectPlay = true;
+                mediaSourceInfo.SupportsDirectPlay = false;
                 _logger.LogDebug("        SupportsDirectPlay:         {SupportsDirectPlay}", info.SupportsDirectPlay);
 
                 mediaSourceInfo.SupportsDirectStream = true;
@@ -556,6 +633,11 @@ namespace TVHeadEnd
 
                 mediaSourceInfo.SupportsTranscoding = true;
                 _logger.LogDebug("        SupportsTranscoding:        {SupportsTranscoding}", info.SupportsTranscoding);
+
+                // The plugin has retained the complete probe result, including real stream
+                // indices. Prevent Jellyfin's cached live TV probe from reducing it to the
+                // first video and first audio stream with unknown indices.
+                mediaSourceInfo.SupportsProbing = false;
 
                 mediaSourceInfo.DefaultSubtitleStreamIndex = null;
                 _logger.LogDebug("        DefaultSubtitleStreamIndex: n/a");
@@ -566,7 +648,7 @@ namespace TVHeadEnd
                     _logger.LogDebug("        Original runtime:           n/a");
                 }
 
-                var audioStream = mediaSourceInfo.MediaStreams.FirstOrDefault(i => i.Type == MediaStreamType.Audio);
+                var audioStream = mediaStreams.FirstOrDefault(i => i.Type == MediaStreamType.Audio);
                 if (audioStream == null || audioStream.Index == -1)
                 {
                     mediaSourceInfo.DefaultAudioStreamIndex = null;
@@ -580,7 +662,10 @@ namespace TVHeadEnd
             }
             else
             {
-                _logger.LogError("Cannot probe {Source} stream", source);
+                _logger.LogError(
+                    "Live TV stream probe: {Source} returned no media information after {ElapsedMilliseconds} ms",
+                    source,
+                    probeStopwatch.ElapsedMilliseconds);
             }
         }
 
@@ -631,10 +716,30 @@ namespace TVHeadEnd
             _logger.LogDebug("{Prefix}========================", prefix);
         }
 
-        public async Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
+        public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
         {
-            var source = await GetChannelStream(channelId, string.Empty, cancellationToken).ConfigureAwait(false);
-            return [source];
+            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
+            if (_activeChannelStreams.TryGetValue(mediaSourceId, out var activeStream))
+            {
+                if (activeStream.EnableStreamSharing)
+                {
+                    _logger.LogInformation(
+                        "Live TV playback negotiation: returning active direct-play source {MediaSourceId} for channel {ChannelId}",
+                        mediaSourceId,
+                        channelId);
+                    return Task.FromResult<List<MediaSourceInfo>>([activeStream.MediaSource]);
+                }
+
+                _activeChannelStreams.TryRemove(mediaSourceId, out _);
+            }
+
+            _logger.LogInformation(
+                "Live TV playback negotiation: pending source {MediaSourceId} ready for channel {ChannelId} ({ChannelName}); opening is required",
+                mediaSourceId,
+                channelId,
+                _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>");
+
+            return Task.FromResult<List<MediaSourceInfo>>([LiveTvMediaSourceFactory.CreatePending(mediaSourceId)]);
         }
 
         public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
