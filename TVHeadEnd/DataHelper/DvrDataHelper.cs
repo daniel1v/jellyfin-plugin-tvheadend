@@ -1,31 +1,40 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.LiveTv;
-using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Domain;
 using TVHeadEnd.HTSP;
 
 namespace TVHeadEnd.DataHelper
 {
+    /// <summary>
+    /// Holds the DVR entries TVHeadend has announced.
+    /// </summary>
+    /// <remarks>
+    /// A timer and a recording are the same entry on the server, at different points in its life,
+    /// so they are read once into a <see cref="DvrEntry"/> and projected afterwards. Reading the
+    /// same HTSP message twice into two unrelated shapes -- which is what this did -- meant every
+    /// field was parsed in two places, and the two disagreed: a running recording counted as a
+    /// recording in one and as nothing at all in the other.
+    /// </remarks>
     public class DvrDataHelper
     {
         private readonly ILogger<DvrDataHelper> _logger;
-        private readonly Dictionary<string, HTSMessage> _data;
-
-        private readonly DateTime _initialDateTimeUTC = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        private readonly Dictionary<string, DvrEntry> _data;
 
         public DvrDataHelper(ILogger<DvrDataHelper> logger)
         {
             _logger = logger;
-            _data = new Dictionary<string, HTSMessage>();
+            _data = new Dictionary<string, DvrEntry>();
         }
 
         public void DvrEntryAdd(HTSMessage message)
         {
-            string? id = message.GetString("id");
-            if (id == null)
+            var entry = DvrEntry.FromMessage(message);
+            if (entry is null)
             {
                 _logger.LogDebug("[TVHclient] DvrDataHelper: entry without an id - skipping");
                 return;
@@ -33,20 +42,25 @@ namespace TVHeadEnd.DataHelper
 
             lock (_data)
             {
-                if (_data.ContainsKey(id))
-                {
-                    _logger.LogDebug("[TVHclient] DvrDataHelper.dvrEntryAdd id already in database - skipping");
-                    return;
-                }
-
-                _data.Add(id, message);
+                _data[entry.Id] = entry;
             }
         }
 
+        /// <summary>
+        /// Applies an update to an entry already known.
+        /// </summary>
+        /// <remarks>
+        /// TVHeadend sends only the fields that changed, so the update is merged onto the message
+        /// as it stood rather than replacing it -- a state change on its own would otherwise wipe
+        /// the title, times and everything else.
+        /// </remarks>
+        /// <param name="message">The update message.</param>
         public void DvrEntryUpdate(HTSMessage message)
         {
-            string? id = message.GetString("id");
-            if (id == null)
+            ArgumentNullException.ThrowIfNull(message);
+
+            var updated = DvrEntry.FromMessage(message);
+            if (updated is null)
             {
                 _logger.LogDebug("[TVHclient] DvrDataHelper: entry without an id - skipping");
                 return;
@@ -54,28 +68,22 @@ namespace TVHeadEnd.DataHelper
 
             lock (_data)
             {
-                if (!_data.TryGetValue(id, out HTSMessage? oldMessage) || oldMessage == null)
+                if (!_data.TryGetValue(updated.Id, out var existing))
                 {
                     _logger.LogDebug("[TVHclient] DvrDataHelper.dvrEntryUpdate id not in database - skipping");
                     return;
                 }
 
-                foreach (KeyValuePair<string, object> entry in message)
-                {
-                    if (oldMessage.ContainsField(entry.Key))
-                    {
-                        oldMessage.RemoveField(entry.Key);
-                    }
-
-                    oldMessage.PutField(entry.Key, entry.Value);
-                }
+                _data[updated.Id] = Merge(existing, updated, message);
             }
         }
 
         public void DvrEntryDelete(HTSMessage message)
         {
-            string? id = message.GetString("id");
-            if (id == null)
+            ArgumentNullException.ThrowIfNull(message);
+
+            var entry = DvrEntry.FromMessage(message);
+            if (entry is null)
             {
                 _logger.LogDebug("[TVHclient] DvrDataHelper: entry without an id - skipping");
                 return;
@@ -83,410 +91,86 @@ namespace TVHeadEnd.DataHelper
 
             lock (_data)
             {
-                _data.Remove(id);
+                _data.Remove(entry.Id);
+            }
+        }
+
+        /// <summary>
+        /// Gets every entry currently known, in no particular order.
+        /// </summary>
+        /// <returns>The entries.</returns>
+        public IReadOnlyList<DvrEntry> GetEntries()
+        {
+            lock (_data)
+            {
+                return _data.Values.ToList();
             }
         }
 
         public Task<IEnumerable<MyRecordingInfo>> BuildDvrInfos(CancellationToken cancellationToken)
         {
-            return Task.Run<IEnumerable<MyRecordingInfo>>(() =>
-            {
-                lock (_data)
-                {
-                    List<MyRecordingInfo> result = new List<MyRecordingInfo>();
-                    foreach (KeyValuePair<string, HTSMessage> entry in _data)
-                    {
-                        if (cancellationToken.IsCancellationRequested)
-                        {
-                            _logger.LogDebug("[TVHclient] DvrDataHelper.buildDvrInfos: call cancelled - returning partial list");
-                            return result;
-                        }
-
-                        HTSMessage m = entry.Value;
-                        MyRecordingInfo ri = new MyRecordingInfo();
-
-                        try
-                        {
-                            if (m.ContainsField("error"))
-                            {
-                                // When TVHeadend recordings are removed, their info can
-                                // still be kept around with a status of "completed".
-                                // The only way to identify them is from the error string
-                                // which is set to "File missing". Use that to not show
-                                // non-existing deleted recordings.
-                                if (m.GetString("error")?.Contains("missing", StringComparison.Ordinal) == true)
-                                {
-                                    continue;
-                                }
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("id"))
-                            {
-                                ri.Id = string.Empty + m.GetInt("id");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("path"))
-                            {
-                                ri.Path = string.Empty + m.GetString("path");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("url"))
-                            {
-                                ri.Url = string.Empty + m.GetString("url");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("channel"))
-                            {
-                                ri.ChannelId = string.Empty + m.GetInt("channel");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("start"))
-                            {
-                                long unixUtc = m.GetLong("start");
-                                ri.StartDate = _initialDateTimeUTC.AddSeconds(unixUtc).ToUniversalTime();
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("stop"))
-                            {
-                                long unixUtc = m.GetLong("stop");
-                                ri.EndDate = _initialDateTimeUTC.AddSeconds(unixUtc).ToUniversalTime();
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("title"))
-                            {
-                                ri.Name = m.GetString("title");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            // Up to HTSP v31 "description" is a collapsed fallback of
-                            // description/summary/subtitle; from v32 on the three fields are
-                            // independent, so fall back to keep an overview in both layouts.
-                            ri.Overview = m.GetString("description", null)
-                                ?? m.GetString("summary", null)
-                                ?? m.GetString("subtitle", null);
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("subtitle"))
-                            {
-                                ri.EpisodeTitle = m.GetString("subtitle");
-                                ri.IsSeries = true;
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        ri.HasImage = false;
-                        // public string ImagePath { get; set; }
-                        // public string ImageUrl { get; set; }
-
-                        try
-                        {
-                            if (m.ContainsField("state"))
-                            {
-                                string? state = m.GetString("state");
-                                switch (state)
-                                {
-                                    case "completed":
-                                        ri.Status = RecordingStatus.Completed;
-                                        break;
-                                    case "scheduled":
-                                        ri.Status = RecordingStatus.New;
-                                        continue;
-                                    // break;
-                                    case "missed":
-                                        ri.Status = RecordingStatus.Error;
-                                        break;
-                                    case "recording":
-                                        ri.Status = RecordingStatus.InProgress;
-                                        break;
-
-                                    default:
-                                        _logger.LogCritical("[TVHclient] DvrDataHelper.buildDvrInfos: state '{State}' not handled", state);
-                                        continue;
-                                        // break;
-                                }
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        // Path must not be set to force emby use of the LiveTvService methods!!!!
-                        // if (m.ContainsField("path"))
-                        // {
-                        //    ri.Path = m.GetString("path");
-                        // }
-
-                        try
-                        {
-                            if (m.ContainsField("autorecId"))
-                            {
-                                ri.SeriesTimerId = m.GetString("autorecId");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("eventId"))
-                            {
-                                ri.ProgramId = string.Empty + m.GetInt("eventId");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        /*
-                                public ProgramAudio? Audio { get; set; }
-                                public ChannelType ChannelType { get; set; }
-                                public float? CommunityRating { get; set; }
-                                public List<string> Genres { get; set; }
-                                public bool? IsHD { get; set; }
-                                public bool IsKids { get; set; }
-                                public bool IsLive { get; set; }
-                                public bool IsMovie { get; set; }
-                                public bool IsNews { get; set; }
-                                public bool IsPremiere { get; set; }
-                                public bool IsRepeat { get; set; }
-                                public bool IsSeries { get; set; }
-                                public bool IsSports { get; set; }
-                                public string OfficialRating { get; set; }
-                                public DateTime? OriginalAirDate { get; set; }
-                                public string Url { get; set; }
-                         */
-
-                        result.Add(ri);
-                    }
-
-                    return result;
-                }
-            });
+            return Task.Run<IEnumerable<MyRecordingInfo>>(
+                () => Project(JellyfinDvrMapper.IsRecording, JellyfinDvrMapper.ToRecording, cancellationToken),
+                cancellationToken);
         }
 
         public Task<IEnumerable<TimerInfo>> BuildPendingTimersInfos(CancellationToken cancellationToken)
         {
-            return Task.Run<IEnumerable<TimerInfo>>(() =>
+            return Task.Run<IEnumerable<TimerInfo>>(
+                () => Project(JellyfinDvrMapper.IsTimer, JellyfinDvrMapper.ToTimer, cancellationToken),
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Carries the fields an update actually mentioned over the entry as it stood.
+        /// </summary>
+        private static DvrEntry Merge(DvrEntry existing, DvrEntry updated, HTSMessage message)
+        {
+            return existing with
             {
-                lock (_data)
+                State = message.ContainsField("state") ? updated.State : existing.State,
+                ChannelId = message.ContainsField("channel") ? updated.ChannelId : existing.ChannelId,
+                EventId = message.ContainsField("eventId") ? updated.EventId : existing.EventId,
+                AutoRecId = message.ContainsField("autorecId") ? updated.AutoRecId : existing.AutoRecId,
+                Title = message.ContainsField("title") ? updated.Title : existing.Title,
+                Subtitle = message.ContainsField("subtitle") ? updated.Subtitle : existing.Subtitle,
+                Description = message.ContainsField("description")
+                    || message.ContainsField("summary")
+                    || message.ContainsField("subtitle")
+                        ? updated.Description
+                        : existing.Description,
+                StartUtc = message.ContainsField("start") ? updated.StartUtc : existing.StartUtc,
+                StopUtc = message.ContainsField("stop") ? updated.StopUtc : existing.StopUtc,
+                PrePadding = message.ContainsField("startExtra") ? updated.PrePadding : existing.PrePadding,
+                PostPadding = message.ContainsField("stopExtra") ? updated.PostPadding : existing.PostPadding,
+                Priority = message.ContainsField("priority") ? updated.Priority : existing.Priority,
+                FilePath = message.ContainsField("path") ? updated.FilePath : existing.FilePath,
+                Url = message.ContainsField("url") ? updated.Url : existing.Url,
+                Error = message.ContainsField("error") ? updated.Error : existing.Error,
+            };
+        }
+
+        private List<T> Project<T>(
+            Func<DvrEntry, bool> belongs,
+            Func<DvrEntry, T> describe,
+            CancellationToken cancellationToken)
+        {
+            var result = new List<T>();
+            foreach (var entry in GetEntries())
+            {
+                if (cancellationToken.IsCancellationRequested)
                 {
-                    List<TimerInfo> result = new List<TimerInfo>();
-                    foreach (KeyValuePair<string, HTSMessage> entry in _data)
-                    {
-                        if (cancellationToken.IsCancellationRequested)
-                        {
-                            _logger.LogDebug("[TVHclient] DvrDataHelper.buildDvrInfos: call cancelled - returning partial list");
-                            return result;
-                        }
-
-                        HTSMessage m = entry.Value;
-                        TimerInfo ti = new TimerInfo();
-
-                        try
-                        {
-                            if (m.ContainsField("id"))
-                            {
-                                ti.Id = string.Empty + m.GetInt("id");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("channel"))
-                            {
-                                ti.ChannelId = string.Empty + m.GetInt("channel");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("start"))
-                            {
-                                long unixUtc = m.GetLong("start");
-                                ti.StartDate = _initialDateTimeUTC.AddSeconds(unixUtc).ToUniversalTime();
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("stop"))
-                            {
-                                long unixUtc = m.GetLong("stop");
-                                ti.EndDate = _initialDateTimeUTC.AddSeconds(unixUtc).ToUniversalTime();
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("title"))
-                            {
-                                ti.Name = m.GetString("title");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            ti.Overview = m.GetString("description", null)
-                                ?? m.GetString("summary", null)
-                                ?? m.GetString("subtitle", null);
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("state"))
-                            {
-                                string? state = m.GetString("state");
-                                switch (state)
-                                {
-                                    case "scheduled":
-                                        ti.Status = RecordingStatus.New;
-                                        break;
-                                    default:
-                                        // only scheduled timers need to be delivered
-                                        continue;
-                                }
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("startExtra"))
-                            {
-                                ti.PrePaddingSeconds = (int)m.GetLong("startExtra") * 60;
-                                ti.IsPrePaddingRequired = true;
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("stopExtra"))
-                            {
-                                ti.PostPaddingSeconds = (int)m.GetLong("stopExtra") * 60;
-                                ti.IsPostPaddingRequired = true;
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("priority"))
-                            {
-                                ti.Priority = m.GetInt("priority");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("autorecId"))
-                            {
-                                ti.SeriesTimerId = m.GetString("autorecId");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        try
-                        {
-                            if (m.ContainsField("eventId"))
-                            {
-                                ti.ProgramId = string.Empty + m.GetInt("eventId");
-                            }
-                        }
-                        catch (InvalidCastException)
-                        {
-                        }
-
-                        result.Add(ti);
-                    }
-
+                    _logger.LogDebug("[TVHclient] DvrDataHelper: call cancelled - returning partial list");
                     return result;
                 }
-            });
+
+                if (belongs(entry))
+                {
+                    result.Add(describe(entry));
+                }
+            }
+
+            return result;
         }
     }
 }
