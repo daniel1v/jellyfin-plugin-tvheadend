@@ -89,6 +89,7 @@ namespace TVHeadEnd.Streaming
         private readonly long _bufferCapacityBytes;
 
         private Task? _feedTask;
+        private bool? _isTransportStream;
         private LiveTransportStreamConditioner? _conditioner;
         private LiveRingBuffer? _buffer;
         private Process? _reencodeProcess;
@@ -153,7 +154,18 @@ namespace TVHeadEnd.Streaming
         /// Gets a value indicating whether the broadcast carries IDR frames, which a client
         /// needs before it can begin decoding a stream it did not receive from the start.
         /// </summary>
-        public bool HasSeenIdrFrame => _conditioner?.HasSeenIdrFrame ?? true;
+        /// <remarks>
+        /// Only an MPEG-TS stream is inspected for this. Any other container is reported as
+        /// carrying IDR frames, because the question -- and the re-encode that answers it -- is
+        /// about H.264 in a transport stream and says nothing about, say, a Matroska profile.
+        /// </remarks>
+        public bool HasSeenIdrFrame => _isTransportStream != true || (_conditioner?.HasSeenIdrFrame ?? true);
+
+        /// <summary>
+        /// Gets a value indicating whether the channel arrived as an MPEG-TS stream, or
+        /// <see langword="null"/> while no data has been seen yet.
+        /// </summary>
+        public bool? IsTransportStream => _isTransportStream;
 
         /// <summary>
         /// Gets a value indicating whether the buffer is fed by an FFmpeg child process that
@@ -563,10 +575,42 @@ namespace TVHeadEnd.Streaming
                             break;
                         }
 
-                        var conditionedBytes = conditioner.Condition(buffer.AsSpan(0, bytesRead), conditionedBuffer);
-                        if (conditionedBytes == 0)
+                        if (_isTransportStream is null)
                         {
-                            continue;
+                            // Neither the container of the live stream nor that of a recording is
+                            // this plugin's to choose: both follow profiles configured on the
+                            // TVHeadend server, and a server set to one of the WebTV profiles
+                            // serves Matroska. Everything below -- dropping the EPG table,
+                            // withholding until a random access point, looking for IDR frames --
+                            // reads 188-byte transport stream packets and would find nothing but
+                            // coincidence in any other format, so it only runs once the format
+                            // is established.
+                            _isTransportStream = SourceContainer.IsTransportStream(buffer.AsSpan(0, bytesRead));
+                            if (_isTransportStream == false)
+                            {
+                                _logger.LogInformation(
+                                    "TVHeadend live stream {UniqueId}: the channel is not an MPEG-TS stream, so it is passed through unconditioned",
+                                    UniqueId);
+                                observing = false;
+                                requiresReencode = false;
+                                feedMode.TrySetResult(false);
+                            }
+                        }
+
+                        ReadOnlyMemory<byte> payload;
+                        if (_isTransportStream == true)
+                        {
+                            var conditionedBytes = conditioner.Condition(buffer.AsSpan(0, bytesRead), conditionedBuffer);
+                            if (conditionedBytes == 0)
+                            {
+                                continue;
+                            }
+
+                            payload = conditionedBuffer.AsMemory(0, conditionedBytes);
+                        }
+                        else
+                        {
+                            payload = buffer.AsMemory(0, bytesRead);
                         }
 
                         if (firstByteTimestamp == 0)
@@ -608,17 +652,18 @@ namespace TVHeadEnd.Streaming
                         if (reencoding)
                         {
                             // The encoder's output reaches the buffer through its own pump.
-                            await encoderInput!.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken)
-                                .ConfigureAwait(false);
+                            await encoderInput!.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
-                            await ring.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken)
-                                .ConfigureAwait(false);
-                            bufferedBytes += conditionedBytes;
+                            await ring.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+                            bufferedBytes += payload.Length;
                         }
 
-                        UpdateCachedLayoutMatch(conditioner);
+                        if (_isTransportStream == true)
+                        {
+                            UpdateCachedLayoutMatch(conditioner);
+                        }
 
                         if (!reencoding && !ready.Task.IsCompleted && IsBufferReady(bufferedBytes, firstByteTimestamp))
                         {

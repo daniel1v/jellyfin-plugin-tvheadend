@@ -12,18 +12,12 @@ namespace TVHeadEnd.Streaming
     internal static class LiveTvMediaSourceFactory
     {
         /// <summary>
-        /// The container reported to clients.
+        /// What a channel is assumed to be before any of it has been received. Nearly every
+        /// TVHeadend server streams MPEG-TS, so this is the useful guess -- but it is only a
+        /// guess, and <see cref="SourceContainer.Describe"/> replaces it with what the analysis
+        /// of the buffer actually found.
         /// </summary>
-        /// <remarks>
-        /// FFprobe calls the container <c>mpegts</c> and Jellyfin's
-        /// <c>ProbeResultNormalizer</c> rewrites that to <c>ts</c>, but client device
-        /// profiles are split over both spellings: Jellyfin for Android, for instance, only
-        /// ever lists <c>mpegts</c>. <c>ContainerHelper.ContainsContainer</c> compares the
-        /// two sides for exact equality without knowing they are the same container, and it
-        /// splits the reported value on commas, so naming both is what lets either kind of
-        /// profile match and direct play at all.
-        /// </remarks>
-        public const string Container = "mpegts,ts";
+        public const string Container = SourceContainer.TransportStream;
 
         private const int AnalyzeDurationMs = 2000;
 

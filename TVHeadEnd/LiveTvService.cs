@@ -670,9 +670,12 @@ namespace TVHeadEnd
                 mediaSourceInfo.Bitrate = info.Bitrate;
                 _logger.LogDebug("        BitRate:                    {BitRate}", info.Bitrate);
 
-                // Keep the container the factory advertised, unless the stream itself has
-                // already declared one. The probe reports the normalised "ts" spelling, which
-                // no longer matches the client profiles that only list "mpegts".
+                // What the buffer actually holds decides the container. TVHeadend serves whatever
+                // its streaming profile produces -- Matroska for the WebTV profiles -- so the
+                // value the factory guessed before the stream arrived cannot be trusted. Only
+                // the transport stream is renamed, and only because FFprobe and the client
+                // profiles disagree on how to spell it.
+                mediaSourceInfo.Container = Streaming.SourceContainer.Describe(info.Container, mediaSourceInfo.Container);
                 _logger.LogDebug("        Container:                  {Container} (probe reported {ProbedContainer})", mediaSourceInfo.Container, info.Container);
 
                 mediaSourceInfo.MediaStreams = mediaStreams;
