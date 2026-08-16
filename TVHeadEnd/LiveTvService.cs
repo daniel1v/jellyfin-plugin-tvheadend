@@ -480,7 +480,23 @@ namespace TVHeadEnd
                 await liveStream.Open(cancellationToken).ConfigureAwait(false);
                 await ProbeStream(liveStream.MediaSource, "managed LiveTV buffer", cancellationToken).ConfigureAwait(false);
                 ApplyLiveStreamOverrides(liveStream.MediaSource);
+
                 liveStream.MediaSource.SupportsDirectPlay = true;
+
+                // Worth knowing when a client reports that playback never starts. A broadcast
+                // that signals random access with recovery points instead of IDR frames -- the
+                // ARD network does, ZDF does not -- offers no synchronisation sample to players
+                // that only accept IDRs. ExoPlayer is one of those unless the host application
+                // sets DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES, and without
+                // it the player stays in its buffering state indefinitely. Nothing the server
+                // can do short of re-encoding changes that, so this only records the fact.
+                if (!liveStream.HasSeenIdrFrame)
+                {
+                    _logger.LogInformation(
+                        "Live TV stream start: channel {ChannelId} carries no IDR frames. Players that only accept IDR synchronisation samples cannot start such a stream",
+                        channelId);
+                }
+
                 _activeChannelStreams[mediaSourceId] = liveStream;
                 return liveStream;
             }
@@ -601,9 +617,9 @@ namespace TVHeadEnd
                 mediaSourceInfo.Bitrate = info.Bitrate;
                 _logger.LogDebug("        BitRate:                    {BitRate}", info.Bitrate);
 
-                // Keep the container the factory advertised. The probe reports the
-                // normalised "ts" spelling, which no longer matches the client profiles
-                // that only list "mpegts".
+                // Keep the container the factory advertised, unless the stream itself has
+                // already declared one. The probe reports the normalised "ts" spelling, which
+                // no longer matches the client profiles that only list "mpegts".
                 _logger.LogDebug("        Container:                  {Container} (probe reported {ProbedContainer})", mediaSourceInfo.Container, info.Container);
 
                 mediaSourceInfo.MediaStreams = mediaStreams;
@@ -721,7 +737,9 @@ namespace TVHeadEnd
             var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
             if (_activeChannelStreams.TryGetValue(mediaSourceId, out var activeStream))
             {
-                if (activeStream.EnableStreamSharing)
+                // A stream whose buffer has gone is worse than no stream at all: the client
+                // would keep requesting a source that answers 404 instead of opening a fresh one.
+                if (activeStream.EnableStreamSharing && activeStream.HasBuffer)
                 {
                     _logger.LogInformation(
                         "Live TV playback negotiation: returning active direct-play source {MediaSourceId} for channel {ChannelId}",

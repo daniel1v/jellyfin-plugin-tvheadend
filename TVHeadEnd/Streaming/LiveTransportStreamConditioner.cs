@@ -49,6 +49,10 @@ namespace TVHeadEnd.Streaming
         // keyframe should have been seen, and short enough not to delay a channel change.
         private const int RandomAccessSearchLimit = 4 * 1024 * 1024;
 
+        // Enough video for several GOPs of any broadcast, so that "no IDR seen" means the
+        // broadcaster does not send them rather than that we looked too briefly.
+        private const int IdrScanLimit = 8 * 1024 * 1024;
+
         private readonly int _droppedPid;
         private readonly byte[] _partialPacket = new byte[PacketLength];
         private readonly byte[] _programAssociationTable = new byte[PacketLength];
@@ -81,6 +85,23 @@ namespace TVHeadEnd.Streaming
         /// stream is being passed through.
         /// </summary>
         public bool HasStarted => _started;
+
+        /// <summary>
+        /// Gets a value indicating whether an IDR frame has been seen in the video stream.
+        /// </summary>
+        /// <remarks>
+        /// Broadcasters differ here, and it decides whether a client can start at all. ZDF
+        /// sends an IDR roughly every 0.6 seconds; the ARD network sends none whatsoever and
+        /// signals its random access points as I-frames with a recovery point instead. A
+        /// player that may only begin at a sync sample never finds one in the latter, which
+        /// is not something re-muxing can repair.
+        /// </remarks>
+        public bool HasSeenIdrFrame { get; private set; }
+
+        /// <summary>
+        /// Gets the number of bytes inspected while looking for an IDR frame.
+        /// </summary>
+        public int IdrScanBytes { get; private set; }
 
         /// <summary>
         /// Gets the smallest destination size that can hold the conditioned form of a
@@ -202,6 +223,27 @@ namespace TVHeadEnd.Streaming
 
         private static bool IsVideoStreamType(byte streamType) => streamType is 0x01 or 0x02 or 0x10 or 0x1B or 0x24;
 
+        /// <summary>
+        /// Reports whether the packet payload starts an H.264 IDR NAL unit.
+        /// </summary>
+        private static bool ContainsIdrNalUnit(ReadOnlySpan<byte> packet)
+        {
+            for (var offset = 4; offset + 3 < packet.Length; offset++)
+            {
+                if (packet[offset] != 0x00 || packet[offset + 1] != 0x00 || packet[offset + 2] != 0x01)
+                {
+                    continue;
+                }
+
+                if ((packet[offset + 3] & 0x1F) == 5)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private int Emit(ReadOnlySpan<byte> packet, Span<byte> destination)
         {
             var pid = ReadPid(packet);
@@ -221,6 +263,15 @@ namespace TVHeadEnd.Streaming
                 packet.CopyTo(_programMapTable);
                 _hasProgramMapTable = true;
                 ReadVideoPid(packet);
+            }
+
+            if (pid == _videoPid && !HasSeenIdrFrame && IdrScanBytes < IdrScanLimit)
+            {
+                IdrScanBytes += PacketLength;
+                if (ContainsIdrNalUnit(packet))
+                {
+                    HasSeenIdrFrame = true;
+                }
             }
 
             if (_started)

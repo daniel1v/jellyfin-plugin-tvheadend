@@ -35,6 +35,10 @@ namespace TVHeadEnd.Streaming
         private Task? _pumpTask;
         private DateTime _dateOpenedUtc;
         private bool _disposed;
+        private int _debugPacingBytesPerSecond;
+        private bool _debugBypassConditioner;
+        private string? _debugContainer;
+        private LiveTransportStreamConditioner? _conditioner;
 
         public TvHeadendHttpLiveStream(
             MediaSourceInfo mediaSource,
@@ -57,13 +61,29 @@ namespace TVHeadEnd.Streaming
             _logger = logger;
 
             UniqueId = Guid.NewGuid().ToString("N");
-            _temporaryFilePath = Path.Combine(configurationManager.GetTranscodePath(), $"tvheadend-{UniqueId}.ts");
+
+            // Not the transcode directory. Jellyfin empties that whenever any transcoding job
+            // or live stream ends, which would delete the buffer of every other stream that is
+            // still running. The client then receives a source that answers 404 for the rest of
+            // its session.
+            _temporaryFilePath = Path.Combine(GetBufferDirectory(configurationManager), $"tvheadend-{UniqueId}.ts");
             MediaSource = mediaSource;
             ConsumerCount = 1;
             EnableStreamSharing = true;
             OriginalStreamId = string.Empty;
             TunerHostId = string.Empty;
         }
+
+        /// <summary>
+        /// Gets a value indicating whether the shared buffer this stream hands out still exists.
+        /// </summary>
+        public bool HasBuffer => File.Exists(_temporaryFilePath);
+
+        /// <summary>
+        /// Gets a value indicating whether the broadcast carries IDR frames, which a client
+        /// needs before it can begin decoding a stream it did not receive from the start.
+        /// </summary>
+        public bool HasSeenIdrFrame => _conditioner?.HasSeenIdrFrame ?? true;
 
         public int ConsumerCount { get; set; }
 
@@ -84,36 +104,84 @@ namespace TVHeadEnd.Streaming
             Directory.CreateDirectory(Path.GetDirectoryName(_temporaryFilePath)
                 ?? throw new InvalidOperationException("The live TV buffer path has no parent directory."));
 
-            var client = _httpClientFactory.CreateClient();
-            var request = new HttpRequestMessage(HttpMethod.Get, _upstreamUrl);
-            foreach (var header in _upstreamHeaders)
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
+            Stream upstream;
+            var owned = new List<IDisposable>();
 
-            HttpResponseMessage response;
-            try
+            // DIAGNOSE (temporaer): eine lokale Datei statt TVHeadend durch den echten
+            // Direct-Play-Pfad schicken, damit sich zwei Encodes kontrolliert vergleichen
+            // lassen, die sich nur in einer Eigenschaft unterscheiden.
+            var debugSource = TryGetDebugSourcePath();
+            if (debugSource is not null)
             {
-                using var linkedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
-                    openCancellationToken,
-                    _lifetimeCancellationTokenSource.Token);
-                response = await client.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    linkedCancellationTokenSource.Token).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
+                _logger.LogWarning("TVHeadend DIAGNOSE: streaming local file {DebugSource} instead of the tuner", debugSource);
+                var debugStream = new FileStream(
+                    debugSource,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    IODefaults.FileStreamBufferSize,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                owned.Add(debugStream);
+                upstream = debugStream;
+
+                // Eine .mp4-Testdatei unveraendert durchreichen: der Conditioner arbeitet auf
+                // TS-Paketen und wuerde sie zerstoeren. Container passend melden.
+                if (debugSource.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+                {
+                    _debugBypassConditioner = true;
+                    _debugContainer = "mp4,fmp4";
+
+                    // Etwas ueber Echtzeit (Clip: ~1,4 MB/s), damit die Datei wie ein
+                    // echter Live-Stream kontinuierlich waechst. Der Server erzwingt fuer
+                    // Live-TV IsInfiniteStream=true (LiveTvMediaSourceProvider.Normalize)
+                    // und haelt die Antwort offen; ohne stetigen Nachschub laeuft der
+                    // Client in sein Lesetimeout.
+                    _debugPacingBytesPerSecond = 2 * 1024 * 1024;
+                }
+                else
+                {
+                    // Eine lokale Datei waere sofort eingelesen. Auf Live-Tempo drosseln,
+                    // damit der Pump sich wie am Tuner verhaelt und der Vergleich
+                    // aussagekraeftig ist.
+                    _debugPacingBytesPerSecond = 1024 * 1024;
+                }
             }
-            catch
+            else
             {
+                var client = _httpClientFactory.CreateClient();
+                var request = new HttpRequestMessage(HttpMethod.Get, _upstreamUrl);
+                foreach (var header in _upstreamHeaders)
+                {
+                    request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+
+                HttpResponseMessage response;
+                try
+                {
+                    using var linkedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
+                        openCancellationToken,
+                        _lifetimeCancellationTokenSource.Token);
+                    response = await client.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        linkedCancellationTokenSource.Token).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                }
+                catch
+                {
+                    request.Dispose();
+                    client.Dispose();
+                    throw;
+                }
+
                 request.Dispose();
-                client.Dispose();
-                throw;
+                owned.Add(client);
+                owned.Add(response);
+                upstream = await response.Content.ReadAsStreamAsync(_lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
             }
-
-            request.Dispose();
 
             var streamStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pumpTask = PumpToTemporaryFile(client, response, streamStarted, _lifetimeCancellationTokenSource.Token);
+            _pumpTask = PumpToTemporaryFile(upstream, owned, streamStarted, _lifetimeCancellationTokenSource.Token);
 
             try
             {
@@ -137,6 +205,11 @@ namespace TVHeadEnd.Streaming
             MediaSource.EncoderProtocol = MediaProtocol.Http;
             MediaSource.RequiredHttpHeaders = new Dictionary<string, string>();
             MediaSource.SupportsDirectPlay = true;
+
+            if (_debugContainer is not null)
+            {
+                MediaSource.Container = _debugContainer;
+            }
 
             _logger.LogInformation(
                 "TVHeadend managed live stream {UniqueId} opened with a shared MPEG-TS buffer",
@@ -181,7 +254,7 @@ namespace TVHeadEnd.Streaming
                 IODefaults.FileStreamBufferSize,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            if ((DateTime.UtcNow - _dateOpenedUtc).TotalSeconds > 10 && stream.Length > LiveEdgeCatchUpLength)
+            if (!_debugBypassConditioner && (DateTime.UtcNow - _dateOpenedUtc).TotalSeconds > 10 && stream.Length > LiveEdgeCatchUpLength)
             {
                 // Resume on a packet boundary. Handing FFmpeg a partial packet costs it the
                 // resynchronisation and, with it, the PAT and PMT it needs to describe the
@@ -204,6 +277,23 @@ namespace TVHeadEnd.Streaming
             EnableStreamSharing = false;
             _lifetimeCancellationTokenSource.Cancel();
             _lifetimeCancellationTokenSource.Dispose();
+        }
+
+        /// <summary>
+        /// Gets the directory the shared live buffers are written to, beside Jellyfin's
+        /// transcode directory rather than inside it.
+        /// </summary>
+        /// <param name="configurationManager">The Jellyfin configuration manager.</param>
+        /// <returns>The buffer directory.</returns>
+        internal static string GetBufferDirectory(IConfigurationManager configurationManager)
+        {
+            ArgumentNullException.ThrowIfNull(configurationManager);
+
+            var transcodePath = configurationManager.GetTranscodePath();
+            var parent = Path.GetDirectoryName(transcodePath);
+            return parent is null
+                ? transcodePath
+                : Path.Combine(parent, "tvheadend-livebuffers");
         }
 
         internal static ILiveStream? AcquireReusable(
@@ -230,8 +320,8 @@ namespace TVHeadEnd.Streaming
         }
 
         private async Task PumpToTemporaryFile(
-            HttpClient client,
-            HttpResponseMessage response,
+            Stream upstream,
+            List<IDisposable> owned,
             TaskCompletionSource streamStarted,
             CancellationToken cancellationToken)
         {
@@ -241,10 +331,7 @@ namespace TVHeadEnd.Streaming
             long firstByteTimestamp = 0;
             try
             {
-                using (client)
-                using (response)
                 {
-                    var upstream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                     await using (upstream.ConfigureAwait(false))
                     {
                         var output = new FileStream(
@@ -261,6 +348,7 @@ namespace TVHeadEnd.Streaming
                                 LiveTransportStreamConditioner.GetMaximumConditionedLength(buffer.Length));
                             var conditioner = new LiveTransportStreamConditioner(
                                 LiveTransportStreamConditioner.EventInformationTablePid);
+                            _conditioner = conditioner;
                             while (true)
                             {
                                 int bytesRead = await upstream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
@@ -270,17 +358,39 @@ namespace TVHeadEnd.Streaming
                                     break;
                                 }
 
-                                var conditionedBytes = conditioner.Condition(buffer.AsSpan(0, bytesRead), conditionedBuffer);
+                                int conditionedBytes;
+                                ReadOnlyMemory<byte> payload;
+                                if (_debugBypassConditioner)
+                                {
+                                    conditionedBytes = bytesRead;
+                                    payload = buffer.AsMemory(0, bytesRead);
+                                }
+                                else
+                                {
+                                    conditionedBytes = conditioner.Condition(buffer.AsSpan(0, bytesRead), conditionedBuffer);
+                                    payload = conditionedBuffer.AsMemory(0, conditionedBytes);
+                                }
+
                                 if (conditionedBytes == 0)
                                 {
                                     continue;
                                 }
 
-                                await output.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken).ConfigureAwait(false);
+                                await output.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                                 bufferedBytes += conditionedBytes;
+
                                 if (firstByteTimestamp == 0)
                                 {
                                     firstByteTimestamp = Stopwatch.GetTimestamp();
+                                }
+                                else if (_debugPacingBytesPerSecond > 0)
+                                {
+                                    var due = TimeSpan.FromSeconds((double)bufferedBytes / _debugPacingBytesPerSecond);
+                                    var behind = due - Stopwatch.GetElapsedTime(firstByteTimestamp);
+                                    if (behind > TimeSpan.Zero)
+                                    {
+                                        await Task.Delay(behind, cancellationToken).ConfigureAwait(false);
+                                    }
                                 }
 
                                 if (!streamStarted.Task.IsCompleted
@@ -295,8 +405,19 @@ namespace TVHeadEnd.Streaming
 
                             if (!streamStarted.Task.IsCompleted)
                             {
-                                streamStarted.TrySetException(new EndOfStreamException(
-                                    "TVHeadend closed the live stream before sending MPEG-TS data."));
+                                if (_debugBypassConditioner)
+                                {
+                                    // Der statische Testfall: die Datei ist jetzt vollstaendig
+                                    // geschrieben, kein "Live"-Stream, der noch waechst.
+                                    await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                                    _dateOpenedUtc = DateTime.UtcNow;
+                                    streamStarted.TrySetResult();
+                                }
+                                else
+                                {
+                                    streamStarted.TrySetException(new EndOfStreamException(
+                                        "TVHeadend closed the live stream before sending MPEG-TS data."));
+                                }
                             }
                         }
                     }
@@ -315,7 +436,14 @@ namespace TVHeadEnd.Streaming
             }
             finally
             {
-                EnableStreamSharing = false;
+                // Bei einer statischen Debug-Quelle ist der Pump sofort fertig; das Sharing
+                // muss aktiv bleiben, sonst liefert GetChannelStreamMediaSources die
+                // Pending-Quelle aus und der Server proxied seine eigene Startseite als Video.
+                if (!_debugBypassConditioner)
+                {
+                    EnableStreamSharing = false;
+                }
+
                 if (buffer is not null)
                 {
                     ArrayPool<byte>.Shared.Return(buffer);
@@ -325,6 +453,59 @@ namespace TVHeadEnd.Streaming
                 {
                     ArrayPool<byte>.Shared.Return(conditionedBuffer);
                 }
+
+                foreach (var resource in owned)
+                {
+                    resource.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// DIAGNOSE (temporaer): liest den Pfad einer lokalen Testdatei aus einer Markerdatei
+        /// neben dem Transcode-Verzeichnis. Fehlt sie, laeuft alles wie gewohnt ueber TVHeadend.
+        /// </summary>
+        private string? TryGetDebugSourcePath()
+        {
+            try
+            {
+                // Eine Ebene ueber dem Transcode-Verzeichnis: Jellyfin raeumt das
+                // Transcode-Verzeichnis beim Schliessen eines Streams leer und wuerde die
+                // Markerdatei mitnehmen.
+                var cacheDirectory = Path.GetDirectoryName(Path.GetDirectoryName(_temporaryFilePath));
+                if (cacheDirectory is null)
+                {
+                    return null;
+                }
+
+                var marker = Path.Combine(cacheDirectory, "tvheadend-debug-source.txt");
+                if (!File.Exists(marker))
+                {
+                    return null;
+                }
+
+                var candidate = File.ReadAllText(marker).Trim();
+
+                // Zeigt der Marker auf ein Verzeichnis, wird pro Kanal eine eigene Variante
+                // ausgeliefert: <MediaSource.Id>.ts, sonst default.ts. So lassen sich mehrere
+                // Varianten in einem Durchgang vergleichen, ohne zwischendurch umzuschalten.
+                if (Directory.Exists(candidate))
+                {
+                    var perChannel = Path.Combine(candidate, MediaSource.Id + ".ts");
+                    if (File.Exists(perChannel))
+                    {
+                        return perChannel;
+                    }
+
+                    var fallback = Path.Combine(candidate, "default.ts");
+                    return File.Exists(fallback) ? fallback : null;
+                }
+
+                return File.Exists(candidate) ? candidate : null;
+            }
+            catch (IOException)
+            {
+                return null;
             }
         }
 
