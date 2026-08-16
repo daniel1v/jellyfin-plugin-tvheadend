@@ -88,7 +88,7 @@ namespace TVHeadEnd
         /// this, so raising it once rebuilds them -- which is what clears the placeholder media
         /// source that earlier versions of this plugin saved onto every recording.
         /// </summary>
-        public string DataVersion => "6";
+        public string DataVersion => "7";
 
         public string HomePageUrl
         {

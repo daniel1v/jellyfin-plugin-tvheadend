@@ -73,6 +73,12 @@ namespace TVHeadEnd.Api
                 return NotFound();
             }
 
+            _logger.LogInformation(
+                "TVHeadend recording {RecordingId}: {Method} {Range}",
+                recordingId,
+                Request.Method,
+                string.IsNullOrEmpty(Request.Headers.Range.ToString()) ? "whole" : Request.Headers.Range.ToString());
+
             using var client = _httpClientFactory.CreateClient();
             using var request = new HttpRequestMessage(
                 HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get,
