@@ -89,24 +89,29 @@ $entry = [ordered]@{
 }
 
 $manifestPath = Join-Path $repo 'manifest.json'
+
+# Earlier versions are carried over; republishing one replaces its entry rather than listing it
+# twice. The plugin object is rebuilt from build.yaml every time, so the two cannot drift apart.
+$previous = @()
 if (Test-Path $manifestPath) {
-    $manifest = @(Get-Content $manifestPath -Raw | ConvertFrom-Json)
-    $plugin = $manifest[0]
-    # Republishing a version replaces its entry rather than listing it twice.
-    $versions = @($plugin.versions | Where-Object { $_.version -ne $version })
-    $plugin.versions = @([PSCustomObject]$entry) + $versions
-} else {
-    $manifest = @([ordered]@{
-        guid        = Get-Scalar 'guid'
-        name        = Get-Scalar 'name'
-        description = Get-Scalar 'description'
-        overview    = Get-Scalar 'overview'
-        owner       = Get-Scalar 'owner'
-        category    = Get-Scalar 'category'
-        imageUrl    = Get-Scalar 'imageUrl'
-        versions    = @([PSCustomObject]$entry)
-    })
+    $existing = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    foreach ($plugin in @($existing)) {
+        foreach ($v in @($plugin.versions)) {
+            if ($v -and $v.version -ne $version) { $previous += $v }
+        }
+    }
 }
+
+$manifest = @([ordered]@{
+    guid        = Get-Scalar 'guid'
+    name        = Get-Scalar 'name'
+    description = Get-Scalar 'description'
+    overview    = Get-Scalar 'overview'
+    owner       = Get-Scalar 'owner'
+    category    = Get-Scalar 'category'
+    imageUrl    = Get-Scalar 'imageUrl'
+    versions    = @([PSCustomObject]$entry) + $previous
+})
 
 Write-Json $manifestPath $manifest -AsArray
 
