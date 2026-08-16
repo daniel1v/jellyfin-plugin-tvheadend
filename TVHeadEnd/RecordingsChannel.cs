@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -33,6 +34,8 @@ namespace TVHeadEnd
         /// tenth of a second over a local network.
         /// </summary>
         private const int AnalysisSampleLength = 8 * 1024 * 1024;
+
+        private const int ChunkSize = 65536;
 
         private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
@@ -88,7 +91,7 @@ namespace TVHeadEnd
         /// this, so raising it once rebuilds them -- which is what clears the placeholder media
         /// source that earlier versions of this plugin saved onto every recording.
         /// </summary>
-        public string DataVersion => "4";
+        public string DataVersion => "6";
 
         public string HomePageUrl
         {
@@ -461,6 +464,16 @@ namespace TVHeadEnd
         /// Copies the opening of the recording to a local file, which is seekable and therefore
         /// analysable in a fraction of the time the recording itself would take.
         /// </summary>
+        /// <remarks>
+        /// A transport stream is conditioned on the way, exactly as a live channel is. TVHeadend
+        /// begins writing wherever the broadcast happened to be, so a recording starts in the
+        /// middle of a group of pictures, before any parameter set. FFprobe then decodes no frame
+        /// at all -- "non-existing SPS 0 referenced", "no frame!" -- and reports no dimensions and
+        /// the transport stream clock of 90000 in place of a frame rate. Those travel into the
+        /// HLS manifest as RESOLUTION=0x0 and FRAME-RATE=90000, and a client configures its
+        /// decoder from them. Withholding until the first random access point is what the live
+        /// path does for the same reason.
+        /// </remarks>
         private async Task FetchAnalysisSample(string url, string destination, CancellationToken cancellationToken)
         {
             using var client = _httpClientFactory.CreateClient();
@@ -481,8 +494,60 @@ namespace TVHeadEnd
                 var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 await using (body.ConfigureAwait(false))
                 {
-                    await body.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
+                    await ConditionSample(body, target, cancellationToken).ConfigureAwait(false);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Writes the sample out beginning at a point a decoder can start from, when it is a
+        /// transport stream. Any other container is copied through untouched.
+        /// </summary>
+        private static async Task ConditionSample(Stream source, Stream destination, CancellationToken cancellationToken)
+        {
+            var buffer = ArrayPool<byte>.Shared.Rent(ChunkSize);
+            var conditioned = ArrayPool<byte>.Shared.Rent(
+                LiveTransportStreamConditioner.GetMaximumConditionedLength(ChunkSize));
+            LiveTransportStreamConditioner? conditioner = null;
+            bool? isTransportStream = null;
+
+            try
+            {
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer.AsMemory(0, ChunkSize), cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        return;
+                    }
+
+                    if (isTransportStream is null)
+                    {
+                        isTransportStream = SourceContainer.IsTransportStream(buffer.AsSpan(0, read));
+                        if (isTransportStream == true)
+                        {
+                            conditioner = new LiveTransportStreamConditioner(
+                                LiveTransportStreamConditioner.EventInformationTablePid);
+                        }
+                    }
+
+                    if (conditioner is null)
+                    {
+                        await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    var kept = conditioner.Condition(buffer.AsSpan(0, read), conditioned);
+                    if (kept > 0)
+                    {
+                        await destination.WriteAsync(conditioned.AsMemory(0, kept), cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(conditioned);
             }
         }
 

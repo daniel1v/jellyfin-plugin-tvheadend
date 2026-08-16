@@ -92,6 +92,17 @@ namespace TVHeadEnd.Streaming
         public bool HasStarted => _started;
 
         /// <summary>
+        /// Gets how far into the source the first packet passed through was found, once
+        /// <see cref="HasStarted"/> is set.
+        /// </summary>
+        /// <remarks>
+        /// A recording begins wherever the broadcast happened to be, so a decoder cannot start
+        /// at its first byte. This says where it can start instead. Accurate to a packet, which
+        /// is all a transport stream needs: it resynchronises on the next sync byte.
+        /// </remarks>
+        public int StartOffset => _started ? Math.Max(0, _bytesInspected - PacketLength) : 0;
+
+        /// <summary>
         /// Gets a value indicating whether an IDR frame has been seen in the video stream.
         /// </summary>
         /// <remarks>
