@@ -1,20 +1,22 @@
 name: "TVHeadend"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
-version: 13
+version: "13.1.0.0"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
-owner: "jellyfin"
+owner: "daniel1v"
 overview: "Manage TVHeadend from Jellyfin"
-description: "Manage TVHeadend from Jellyfin"
+description: "Manage TVHeadend from Jellyfin. This fork reworks live TV delivery so channels direct play on the official Jellyfin Android app."
 category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
 changelog: |-
-  - Jellyfin 10.11 support (#100) @crobibero
-  - Restore subtitles and multiple audio that got destroyed in commit db8cd9af238813a7b141ba826168fdaa22f1509e on Feb 18, 2018 (#68) @roman-vanicek
-  - Further Release 10.9.x improvements (#92) @lomion0815
-  - Readme: update build requirements (#93) @citronalco
-  - Fixed link to TVHeadend image (#83) @lomion0815
-  - Set correct dates for recordings (#84) @lomion0815
-  - Changed HTSP field "summary" to correct name "subtitle". (#85) @lomion0815
+  Live TV now reaches the official Jellyfin Android app by direct play.
+
+  - Channels are served from a shared, conditioned MPEG-TS buffer instead of the raw TVHeadend URL. The EPG PID is dropped, playback is withheld until the first random access point, and the program tables are placed ahead of it.
+  - Broadcasts that carry no H.264 IDR frames -- the ARD network among them -- had audio but a black picture, because device decoders will not start on a recovery-point-only stream. Their video is now re-encoded; every other channel passes through untouched. The verdict is measured, remembered across restarts, and revised when a broadcaster starts sending IDR frames again.
+  - The encoder is fed through a pipe from the stream already being received, so an affected channel no longer occupies a second tuner.
+  - Channel probes are cached and validated against a PMT fingerprint, which took the wait out of the common case: unaffected channels start in about a second.
+  - The audio track preferred for compatibility is marked rather than reordered. Reordering shifted the stream indices Jellyfin maps by position, which handed the client the wrong codec.
+  - The live buffer moved out of the transcode directory, which Jellyfin empties whenever any stream closes.
+  - The ILiveTvService fallback that opened a second subscription and bypassed all of the above now refuses instead.
