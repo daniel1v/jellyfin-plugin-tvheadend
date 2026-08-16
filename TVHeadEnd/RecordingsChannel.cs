@@ -47,7 +47,7 @@ namespace TVHeadEnd
         /// has to be raised whenever the shape changes. It last changed when listings stopped
         /// carrying invented streams and began reporting a placeholder.
         /// </remarks>
-        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 30, 0, DateTimeKind.Utc);
+        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 45, 0, DateTimeKind.Utc);
 
         private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
@@ -440,11 +440,13 @@ namespace TVHeadEnd
                     // A broadcast that signals random access with recovery points instead of IDR
                     // frames -- the ARD network does -- offers a device decoder nothing to start
                     // on. It consumes the samples without emitting a picture and the player waits
-                    // forever. Transcoding produces IDR frames, and Jellyfin transcodes whatever
-                    // it may not play directly, so withholding that permission is the whole fix.
-                    // The same property drives the live re-encode, and the same setting governs
-                    // both; it is a property of the broadcast, not of how it is delivered.
+                    // forever. Only re-encoding the video produces IDR frames, which is what the
+                    // live path does for the same broadcasts, so both of the cheaper routes have
+                    // to be withheld: refusing direct play alone leaves Jellyfin free to remux,
+                    // and a remux copies the video verbatim -- measured as "-codec:v:0 copy",
+                    // which carries the missing frames straight through to the client.
                     source.SupportsDirectPlay = false;
+                    source.SupportsDirectStream = false;
                     _logger.LogInformation(
                         "TVHeadend recording {RecordingId} carries no IDR frame; it is not offered for direct play",
                         id);
