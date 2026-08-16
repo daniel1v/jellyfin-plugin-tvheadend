@@ -1,32 +1,47 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Channels;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Streaming;
 using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd
 {
-    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes
+    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IRequiresMediaInfoCallback
     {
+        private const int ScanChunkSize = 65536;
+
         private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
         private readonly HTSConnectionHandler _htsConnectionHandler;
+        private readonly IMediaEncoder _mediaEncoder;
+        private readonly IHttpClientFactory _httpClientFactory;
 
-        public RecordingsChannel(ILoggerFactory loggerFactory, HTSConnectionHandler htsConnectionHandler)
+        public RecordingsChannel(
+            ILoggerFactory loggerFactory,
+            HTSConnectionHandler htsConnectionHandler,
+            IMediaEncoder mediaEncoder,
+            IHttpClientFactory httpClientFactory)
         {
             _htsConnectionHandler = htsConnectionHandler;
+            _mediaEncoder = mediaEncoder;
+            _httpClientFactory = httpClientFactory;
             _logger = loggerFactory.CreateLogger<LiveTvService>();
             _logger.LogDebug("[TVHclient] RecordingsChannel()");
         }
@@ -53,13 +68,15 @@ namespace TVHeadEnd
             Justification = "The array-typed property is mandated by MediaBrowser.Controller.Channels.IHasFolderAttributes.")]
         public string[] Attributes => ["Recordings"];
 
-        public string DataVersion
-        {
-            get
-            {
-                return "1";
-            }
-        }
+        /// <summary>
+        /// Gets the version of this channel's contents. Jellyfin keeps a channel's item list on
+        /// disk for three hours and only asks the plugin again when this string differs, so a
+        /// constant -- which this used to be -- meant a recording made on the TVHeadend server
+        /// could take hours to appear, and a change to how items are described never reached an
+        /// existing library at all. Following the recordings themselves makes both immediate.
+        /// </summary>
+        public string DataVersion =>
+            "2-" + _htsConnectionHandler.GetRecordingsChangeStamp().ToString(CultureInfo.InvariantCulture);
 
         public string HomePageUrl
         {
@@ -255,8 +272,6 @@ namespace TVHeadEnd
 
         private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item)
         {
-            var path = BuildRecordingPath(item.Id ?? string.Empty);
-
             _logger.LogDebug("[TVHclient] ConvertToChannelItem - Creating ChannelItemInfo");
 
             var channelItem = new ChannelItemInfo
@@ -271,35 +286,12 @@ namespace TVHeadEnd
                 Id = item.Id,
                 MediaType = item.ChannelType == MediaBrowser.Model.LiveTv.ChannelType.TV ? ChannelMediaType.Video : ChannelMediaType.Audio,
                 IsLiveStream = false,
-                MediaSources = new List<MediaSourceInfo>
-                {
-                    new MediaSourceInfo
-                    {
-                        Path = path,
-                        Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
-                        Id = item.Id,
-                        Container = "mpegts",
-                        AnalyzeDurationMs = 2000,
-                        MediaStreams = new List<MediaStream>
-                        {
-                            new MediaStream
-                            {
-                                Type = MediaStreamType.Video,
-                                // Set the index to -1 because we don't know the exact index of the video stream within the container
-                                Index = -1,
-                                // Set to true if unknown to enable deinterlacing
-                                IsInterlaced = true,
-                                RealFrameRate = 50.0F
-                            },
-                            new MediaStream
-                            {
-                                Type = MediaStreamType.Audio,
-                                // Set the index to -1 because we don't know the exact index of the audio stream within the container
-                                Index = -1
-                            }
-                        }
-                    }
-                },
+                // Deliberately empty. Jellyfin appends the dynamic sources from
+                // GetChannelItemMediaInfo to whatever the item carries without comparing them,
+                // so carrying one here as well would offer every recording twice. Stating the
+                // empty list rather than leaving it unset is what clears the source a previous
+                // version of this plugin stored on the item.
+                MediaSources = [],
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
@@ -315,6 +307,202 @@ namespace TVHeadEnd
             };
 
             return channelItem;
+        }
+
+        /// <summary>
+        /// Describes a recording as it really is. Jellyfin asks for this when playback is
+        /// negotiated, not while the list is browsed, so the analysis costs nothing until a
+        /// recording is actually played.
+        /// </summary>
+        /// <remarks>
+        /// Without it the placeholder streams a previous version reported -- index -1, no codec
+        /// -- were all the StreamBuilder had to go on, and it cannot match a codec it has not
+        /// been told about. Every recording was therefore transcoded, however well the device
+        /// could have played it untouched. Jellyfin keeps the answer for five minutes, which
+        /// covers opening a recording and pressing play, so nothing is cached here.
+        /// </remarks>
+        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The media sources for the recording.</returns>
+        public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(string id, CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(id);
+
+            var source = BuildRecordingMediaSource(id);
+            if (string.IsNullOrEmpty(source.Path))
+            {
+                return [source];
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var info = await _mediaEncoder.GetMediaInfo(
+                    new MediaInfoRequest
+                    {
+                        MediaType = MediaBrowser.Model.Dlna.DlnaProfileType.Video,
+                        MediaSource = source,
+                        ExtractChapters = false,
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+                if (info is null)
+                {
+                    _logger.LogWarning(
+                        "TVHeadend recording {RecordingId}: the analysis returned nothing after {ElapsedMilliseconds} ms; it will be transcoded",
+                        id,
+                        stopwatch.ElapsedMilliseconds);
+                    return [source];
+                }
+
+                source.MediaStreams = info.MediaStreams ?? [];
+                source.RunTimeTicks = info.RunTimeTicks;
+                source.Bitrate = info.Bitrate;
+                source.Size = info.Size;
+                if (!string.IsNullOrEmpty(info.Container))
+                {
+                    // TVHeadend records to Matroska as readily as to MPEG-TS, so what the
+                    // analysis found is what counts. Only the transport stream gets both of its
+                    // spellings, because FFprobe calls it "ts" while device profiles ask for
+                    // "mpegts" and Jellyfin compares the two as plain strings.
+                    source.Container = info.Container.Equals("mpegts", StringComparison.OrdinalIgnoreCase)
+                        || info.Container.Equals("ts", StringComparison.OrdinalIgnoreCase)
+                        ? Streaming.LiveTvMediaSourceFactory.Container
+                        : info.Container;
+                }
+
+                // A recording of a broadcast that signals random access with recovery points
+                // instead of IDR frames -- the ARD network does -- offers no synchronisation
+                // sample, and common device decoders never emit a picture from it. Transcoding
+                // produces one, so such a recording must not be offered for direct play. This
+                // went unnoticed while every recording was transcoded for want of metadata.
+                if (source.MediaStreams.Any(stream => stream.Type == MediaStreamType.Video)
+                    && !await CarriesIdrFrames(source, cancellationToken).ConfigureAwait(false))
+                {
+                    source.SupportsDirectPlay = false;
+                    source.SupportsDirectStream = false;
+                    _logger.LogInformation(
+                        "TVHeadend recording {RecordingId} carries no IDR frame; it is transcoded so device decoders can start it",
+                        id);
+                }
+
+                _logger.LogInformation(
+                    "TVHeadend recording {RecordingId} analysed in {ElapsedMilliseconds} ms: {StreamCount} streams ({Codecs}), direct play {DirectPlay}",
+                    id,
+                    stopwatch.ElapsedMilliseconds,
+                    source.MediaStreams.Count,
+                    string.Join(", ", source.MediaStreams.Select(stream => stream.Codec)),
+                    source.SupportsDirectPlay);
+
+                return [source];
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // A recording that cannot be analysed is still playable by transcoding, which is
+                // what an unanalysed source falls back to.
+                _logger.LogError(
+                    exception,
+                    "TVHeadend recording {RecordingId} could not be analysed after {ElapsedMilliseconds} ms",
+                    id,
+                    stopwatch.ElapsedMilliseconds);
+                return [source];
+            }
+        }
+
+        /// <summary>
+        /// Reads the opening of the recording to establish whether its video carries an IDR
+        /// frame, the only picture common device decoders will start on.
+        /// </summary>
+        /// <remarks>
+        /// Cheap enough to sit in front of playback: a broadcast that sends IDR frames at all
+        /// sends one within the first fraction of a second, so the scan almost always ends after
+        /// a few hundred kilobytes. Only a recording that genuinely has none is read to the
+        /// scanner's limit.
+        /// </remarks>
+        private async Task<bool> CarriesIdrFrames(MediaSourceInfo source, CancellationToken cancellationToken)
+        {
+            var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+            var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkSize);
+            var conditioned = ArrayPool<byte>.Shared.Rent(
+                LiveTransportStreamConditioner.GetMaximumConditionedLength(ScanChunkSize));
+
+            try
+            {
+                using var client = _httpClientFactory.CreateClient();
+                using var request = new HttpRequestMessage(HttpMethod.Get, source.Path);
+                foreach (var header in _htsConnectionHandler.GetHeaders())
+                {
+                    request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+
+                using var response = await client.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+
+                var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                await using (stream.ConfigureAwait(false))
+                {
+                    while (conditioner.IdrScanBytes < LiveTransportStreamConditioner.IdrScanLimit)
+                    {
+                        var read = await stream.ReadAsync(buffer.AsMemory(0, ScanChunkSize), cancellationToken).ConfigureAwait(false);
+                        if (read == 0)
+                        {
+                            break;
+                        }
+
+                        conditioner.Condition(buffer.AsSpan(0, read), conditioned);
+                        if (conditioner.HasSeenIdrFrame)
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                return conditioner.HasSeenIdrFrame;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // Unable to tell. Claiming an IDR frame is the lesser risk: the recording plays
+                // as it did before, and a device that cannot start it still falls back.
+                _logger.LogWarning(exception, "TVHeadend recording: the IDR scan could not read the recording");
+                return true;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(conditioned);
+            }
+        }
+
+        private MediaSourceInfo BuildRecordingMediaSource(string id)
+        {
+            var path = BuildRecordingPath(id);
+
+            return new MediaSourceInfo
+            {
+                Path = path,
+                Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
+                Id = id,
+                Container = "mpegts",
+                AnalyzeDurationMs = 2000,
+                SupportsDirectPlay = true,
+                SupportsDirectStream = true,
+                SupportsTranscoding = true,
+                IsInfiniteStream = false,
+                RequiresOpening = false,
+                RequiresClosing = false,
+                MediaStreams = [],
+            };
         }
 
         private string BuildRecordingPath(string id)
