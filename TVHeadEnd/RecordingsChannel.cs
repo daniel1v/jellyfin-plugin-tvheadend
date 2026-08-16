@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -23,7 +24,7 @@ using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd
 {
-    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IRequiresMediaInfoCallback
+    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes
     {
         /// <summary>
         /// How much of a recording is fetched to analyse it. The program tables and a sample of
@@ -37,6 +38,10 @@ namespace TVHeadEnd
         private readonly HTSConnectionHandler _htsConnectionHandler;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly SourceDescriber _sourceDescriber;
+
+        // A finished recording never changes, so what an analysis found holds for as long as the
+        // server runs. Without this every listing of a folder would analyse its contents again.
+        private readonly ConcurrentDictionary<string, MediaSourceInfo> _describedRecordings = new(StringComparer.OrdinalIgnoreCase);
 
         public RecordingsChannel(
             ILoggerFactory loggerFactory,
@@ -263,19 +268,88 @@ namespace TVHeadEnd
             _logger.LogDebug("[TVHclient] GetChannelItems - Updating TVHeadend Recording Items");
 
             var allRecordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
+            var selected = allRecordings.Where(filter).ToList();
 
-            var result = new ChannelItemResult
+            // Described here rather than on demand. Jellyfin looks a media source up by its
+            // identifier among the sources stored with the item, and only what a listing reported
+            // is stored -- a source handed over later through IRequiresMediaInfoCallback is never
+            // found, and the request fails before playback starts.
+            var sources = await DescribeRecordings(selected, cancellationToken).ConfigureAwait(false);
+
+            return new ChannelItemResult
             {
-                Items = allRecordings.Where(filter).Select(info => ConvertToChannelItem(info)).ToList()
+                Items = selected.Select(info => ConvertToChannelItem(info, sources[info.Id ?? string.Empty])).ToList()
             };
-
-            return result;
         }
 
-        private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item)
+        /// <summary>
+        /// Describes every recording in the listing, reusing what is already known. A finished
+        /// recording never changes, so an analysis of one holds for as long as the server runs.
+        /// </summary>
+        private async Task<Dictionary<string, MediaSourceInfo>> DescribeRecordings(
+            IReadOnlyList<MyRecordingInfo> recordings,
+            CancellationToken cancellationToken)
         {
-            var path = BuildRecordingPath(item.Id ?? string.Empty);
+            var described = new Dictionary<string, MediaSourceInfo>(StringComparer.OrdinalIgnoreCase);
+            var pending = new List<MyRecordingInfo>();
 
+            foreach (var recording in recordings)
+            {
+                var id = recording.Id ?? string.Empty;
+                if (_describedRecordings.TryGetValue(id, out var cached))
+                {
+                    described[id] = cached;
+                }
+                else if (!described.ContainsKey(id))
+                {
+                    described[id] = BuildRecordingMediaSource(id);
+                    pending.Add(recording);
+                }
+            }
+
+            if (pending.Count == 0)
+            {
+                return described;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+
+            // A handful at a time: each one is a range request plus an analysis of a few
+            // megabytes, and a full listing would otherwise be as slow as it is long.
+            using var concurrency = new SemaphoreSlim(4);
+            await Task.WhenAll(pending.Select(async recording =>
+            {
+                var id = recording.Id ?? string.Empty;
+                await concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var source = described[id];
+                    if (await DescribeRecording(id, source, cancellationToken).ConfigureAwait(false))
+                    {
+                        source.RunTimeTicks = Runtime(recording);
+                        _describedRecordings[id] = source;
+                    }
+                }
+                finally
+                {
+                    concurrency.Release();
+                }
+            })).ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "TVHeadend recordings: analysed {Count} of {Total} in {ElapsedMilliseconds} ms",
+                pending.Count,
+                recordings.Count,
+                stopwatch.ElapsedMilliseconds);
+
+            return described;
+        }
+
+        private static long? Runtime(MyRecordingInfo recording)
+            => recording.EndDate > recording.StartDate ? (recording.EndDate - recording.StartDate).Ticks : null;
+
+        private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item, MediaSourceInfo source)
+        {
             _logger.LogDebug("[TVHclient] ConvertToChannelItem - Creating ChannelItemInfo");
 
             var channelItem = new ChannelItemInfo
@@ -290,11 +364,7 @@ namespace TVHeadEnd
                 Id = item.Id,
                 MediaType = item.ChannelType == MediaBrowser.Model.LiveTv.ChannelType.TV ? ChannelMediaType.Video : ChannelMediaType.Audio,
                 IsLiveStream = false,
-                // Deliberately empty. Jellyfin appends what GetChannelItemMediaInfo returns to
-                // whatever the item already carries, without comparing the two, and offers the
-                // stored one first -- so a placeholder listed here would be the source a client
-                // picks, and it is precisely the placeholder that breaks playback.
-                MediaSources = [],
+                MediaSources = [source],
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
@@ -313,54 +383,30 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Describes what a recording really contains, when Jellyfin negotiates playback for it.
+        /// Fills in what a recording contains, from a sample of its opening.
         /// </summary>
         /// <remarks>
-        /// <para>
-        /// The listing cannot say: it would have to analyse every recording at once. What it
-        /// reports instead is a placeholder with stream index -1, and Jellyfin maps streams by
-        /// their position in that list -- so it built "-map 0:0 -map 0:1", which on a broadcast
-        /// recording lands on the EPG data stream and a subtitle track. The encoder then received
-        /// no video and no audio and gave up, which is why recordings did not play at all.
-        /// </para>
-        /// <para>
-        /// The analysis reads a sample rather than the recording. TVHeadend answers range
-        /// requests but does not advertise Accept-Ranges, so FFmpeg treats the recording as an
-        /// unseekable stream and reads all of it -- measured at 68.6 seconds for a 8 GB
-        /// recording, against 0.1 seconds for the sample.
-        /// </para>
+        /// Reading a sample rather than the recording is what makes describing every listed
+        /// recording affordable. TVHeadend answers range requests but does not advertise
+        /// Accept-Ranges, so FFmpeg treats a recording as an unseekable stream and reads it from
+        /// end to end -- measured at 68.6 seconds for an 8 GB recording against 0.14 for the
+        /// sample.
         /// </remarks>
-        /// <param name="id">The TVHeadend recording identifier.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The media sources for the recording.</returns>
-        public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(string id, CancellationToken cancellationToken)
+        /// <returns><see langword="true"/> when the sample described the recording.</returns>
+        private async Task<bool> DescribeRecording(string id, MediaSourceInfo source, CancellationToken cancellationToken)
         {
-            ArgumentException.ThrowIfNullOrEmpty(id);
-
-            var source = BuildRecordingMediaSource(id);
             if (string.IsNullOrEmpty(source.Path))
             {
-                return [source];
+                return false;
             }
 
             var sample = Path.Combine(Path.GetTempPath(), $"tvheadend-analysis-{Guid.NewGuid():N}.ts");
             try
             {
                 await FetchAnalysisSample(source.Path, sample, cancellationToken).ConfigureAwait(false);
-
-                var described = await _sourceDescriber
+                return await _sourceDescriber
                     .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
                     .ConfigureAwait(false);
-
-                if (described)
-                {
-                    // The description deliberately leaves the runtime empty, because a sample
-                    // only says how long the sample is. TVHeadend knows how long it scheduled
-                    // the recording for.
-                    source.RunTimeTicks = await GetRecordingRuntime(id, cancellationToken).ConfigureAwait(false);
-                }
-
-                return [source];
             }
             catch (OperationCanceledException)
             {
@@ -368,8 +414,10 @@ namespace TVHeadEnd
             }
             catch (Exception exception)
             {
+                // The placeholder the source was built with stands, so the recording behaves as
+                // it did before rather than failing outright.
                 _logger.LogError(exception, "TVHeadend recording {RecordingId} could not be analysed", id);
-                return [source];
+                return false;
             }
             finally
             {
@@ -423,21 +471,6 @@ namespace TVHeadEnd
             }
         }
 
-        /// <summary>
-        /// Gets how long the recording runs, from the times TVHeadend scheduled it for.
-        /// </summary>
-        private async Task<long?> GetRecordingRuntime(string id, CancellationToken cancellationToken)
-        {
-            var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
-            var recording = recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
-            if (recording is null || recording.EndDate <= recording.StartDate)
-            {
-                return null;
-            }
-
-            return (recording.EndDate - recording.StartDate).Ticks;
-        }
-
         private MediaSourceInfo BuildRecordingMediaSource(string id)
         {
             var path = BuildRecordingPath(id);
@@ -450,12 +483,12 @@ namespace TVHeadEnd
                 Path = path,
                 Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
 
-                // Deliberately not the TVHeadend identifier. Jellyfin parses the media source id
-                // as its own item GUID when a client asks for the stream directly, and a
-                // TVHeadend number is not one -- it answers "Unrecognized Guid format" and the
-                // playback fails. Leaving it unset lets Jellyfin fill in the id it expects.
-                // Nobody noticed while recordings were always transcoded, because that path
-                // never parses it.
+                // The identifier a client sends back as MediaSourceId. Jellyfin looks it up among
+                // the sources stored with the item and only falls back to parsing it as a GUID
+                // when that lookup fails -- which is what happened while the description was
+                // handed over dynamically instead of being stored, and what surfaced as
+                // "Unrecognized Guid format" rather than as the missing source it really was.
+                Id = id,
                 Container = "mpegts",
                 AnalyzeDurationMs = 2000,
             });
