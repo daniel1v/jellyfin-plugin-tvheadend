@@ -128,6 +128,21 @@ public class DvrEntryTests
         Assert.Null(DvrEntry.FromMessage(new HTSMessage()));
     }
 
+
+    [Fact]
+    public void ARecordingCarriesAModificationDateSoJellyfinCanRefreshIt()
+    {
+        // Jellyfin re-saves a channel item, and with it the description of what the item
+        // contains, only when the item is new or something it compares has changed. The
+        // modification date is the only one of those a plugin controls, so leaving it unset
+        // freezes the description of every existing recording forever.
+        var entry = DvrEntry.FromMessage(Message(id: 3, state: "completed", title: "Tatort"))!;
+
+        var recording = JellyfinDvrMapper.ToRecording(entry);
+
+        Assert.NotEqual(default, recording.DateLastUpdated);
+        Assert.Equal(entry.StopUtc, recording.DateLastUpdated);
+    }
     private static HTSMessage Message(
         int id,
         string state,

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -6,6 +7,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,6 +35,13 @@ namespace TVHeadEnd
         /// tenth of a second over a local network.
         /// </summary>
         private const int AnalysisSampleLength = 8 * 1024 * 1024;
+
+        /// <summary>
+        /// When the description this plugin produces last changed shape. Raise it whenever the
+        /// media source or its streams are built differently, so that recordings Jellyfin already
+        /// stored are described again rather than keeping what an older version wrote.
+        /// </summary>
+        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 22, 30, 0, DateTimeKind.Utc);
 
         private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
@@ -384,10 +393,19 @@ namespace TVHeadEnd
                 // ProductionYear = item.ProductionYear,
                 // Studios = item.Studios,
                 Type = ChannelItemType.Media,
-                DateModified = item.DateLastUpdated,
+                // Jellyfin re-saves a channel item, and with it the description of what the item
+                // contains, only when the item is new or when this date is later than the one it
+                // stored -- ChannelManager compares no part of MediaSources. So the date has to
+                // cover both reasons the description can change: the recording itself changing,
+                // and this plugin describing it differently than the version that wrote the
+                // stored copy. Without the second, an existing recording keeps whatever
+                // description it was first given, forever.
+                DateModified = item.DateLastUpdated > DescriptionRevisionUtc
+                    ? item.DateLastUpdated
+                    : DescriptionRevisionUtc,
                 Overview = item.Overview,
                 // People = item.People
-                Etag = item.Status.ToString()
+                Etag = item.Status.ToString(),
             };
 
             return channelItem;
@@ -462,14 +480,11 @@ namespace TVHeadEnd
         /// analysable in a fraction of the time the recording itself would take.
         /// </summary>
         /// <remarks>
-        /// A transport stream is conditioned on the way, exactly as a live channel is. TVHeadend
-        /// begins writing wherever the broadcast happened to be, so a recording starts in the
-        /// middle of a group of pictures, before any parameter set. FFprobe then decodes no frame
-        /// at all -- "non-existing SPS 0 referenced", "no frame!" -- and reports no dimensions and
-        /// the transport stream clock of 90000 in place of a frame rate. Those travel into the
-        /// HLS manifest as RESOLUTION=0x0 and FRAME-RATE=90000, and a client configures its
-        /// decoder from them. Withholding until the first random access point is what the live
-        /// path does for the same reason.
+        /// The range request states how much is wanted, but a server is free to ignore it: a
+        /// TVHeadend without range support, or a proxy in between, answers 200 with the whole
+        /// recording. Copying that to the end would pull gigabytes across for an analysis that
+        /// needs megabytes, so the limit is enforced while reading rather than assumed from the
+        /// response. A short answer is equally fine -- whatever arrived is what gets analysed.
         /// </remarks>
         private async Task FetchAnalysisSample(string url, string destination, CancellationToken cancellationToken)
         {
@@ -483,6 +498,14 @@ namespace TVHeadEnd
 
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
+
+            // A server that cannot satisfy the range says so rather than failing outright; the
+            // analysis then has nothing to work from and the caller keeps its placeholder.
+            if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                throw new InvalidOperationException($"TVHeadend rejected the range request for the analysis sample of {url}.");
+            }
+
             response.EnsureSuccessStatusCode();
 
             var target = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -491,10 +514,47 @@ namespace TVHeadEnd
                 var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 await using (body.ConfigureAwait(false))
                 {
-                    // Copied as it is. What is described has to be what is served, and the
-                    // endpoint hands the recording over unchanged.
-                    await body.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
+                    await CopyAtMost(body, target, AnalysisSampleLength, cancellationToken).ConfigureAwait(false);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Copies at most <paramref name="limit"/> bytes, whatever the source offers.
+        /// </summary>
+        /// <param name="source">The stream to read.</param>
+        /// <param name="destination">The stream to write.</param>
+        /// <param name="limit">The most that may be copied.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The number of bytes copied.</returns>
+        internal static async Task<long> CopyAtMost(Stream source, Stream destination, long limit, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            ArgumentNullException.ThrowIfNull(destination);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(81920);
+            try
+            {
+                long copied = 0;
+                while (copied < limit)
+                {
+                    var wanted = (int)Math.Min(buffer.Length, limit - copied);
+                    var read = await source.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    copied += read;
+                }
+
+                return copied;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
@@ -525,6 +585,27 @@ namespace TVHeadEnd
             }
         }
 
+        /// <summary>
+        /// The identifier a client sends back as MediaSourceId, derived from the recording so it
+        /// is the same on every call and after a restart.
+        /// </summary>
+        /// <remarks>
+        /// It has to be readable as a GUID. Two places downstream parse it as one --
+        /// <c>DynamicHlsHelper.GetMasterPlaylistInternal</c> unconditionally, and
+        /// <c>StreamingHelpers.GetStreamingState</c> when its lookup by identifier finds nothing
+        /// -- and a TVHeadend recording number is not a GUID, so the request fails with
+        /// "Unrecognized Guid format" before playback starts. Deriving it keeps it stable, which
+        /// the stored media source and every later request depend on.
+        /// </remarks>
+        /// <param name="recordingId">The TVHeadend recording identifier.</param>
+        /// <returns>The media source identifier.</returns>
+        internal static string RecordingMediaSourceId(string recordingId)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(recordingId);
+
+            return ("TVHeadEnd_Recording_" + recordingId).GetMD5().ToString("N", CultureInfo.InvariantCulture);
+        }
+
         private MediaSourceInfo BuildRecordingMediaSource(string id)
         {
             var path = BuildRecordingPath(id);
@@ -537,12 +618,7 @@ namespace TVHeadEnd
                 Path = path,
                 Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
 
-                // The identifier a client sends back as MediaSourceId. Jellyfin looks it up among
-                // the sources stored with the item and only falls back to parsing it as a GUID
-                // when that lookup fails -- which is what happened while the description was
-                // handed over dynamically instead of being stored, and what surfaced as
-                // "Unrecognized Guid format" rather than as the missing source it really was.
-                Id = id,
+                Id = RecordingMediaSourceId(id),
                 Container = "mpegts",
                 AnalyzeDurationMs = 2000,
             });

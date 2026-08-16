@@ -101,6 +101,14 @@ namespace TVHeadEnd.Domain
                 Status = ToRecordingStatus(entry.State),
                 HasImage = false,
 
+                // When this recording last became something different. Jellyfin re-saves a
+                // channel item -- and with it the description of what it contains -- only when
+                // the item is new or something it compares has changed, and the modification
+                // date is the only one of those a plugin controls. Left unset, as it was, it
+                // stays at DateTime.MinValue, is never greater than what Jellyfin stored, and
+                // the description of an existing recording can never be corrected.
+                DateLastUpdated = entry.StopUtc > entry.StartUtc ? entry.StopUtc : entry.StartUtc,
+
                 // Left empty on purpose: a path here makes Jellyfin bypass this plugin and try to
                 // open a file that lives on the TVHeadend server, not on its own.
                 Path = string.Empty,
