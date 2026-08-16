@@ -47,47 +47,6 @@ namespace TVHeadEnd.Streaming
             return Create(mediaSourceId, path, false, true, true);
         }
 
-        /// <summary>
-        /// Marks the audio track that the widest range of clients can decode, so that a
-        /// broadcast carrying MPEG audio alongside a Dolby track does not end up on a
-        /// device without an MP2 decoder.
-        /// </summary>
-        /// <remarks>
-        /// The order of <see cref="MediaSourceInfo.MediaStreams"/> is deliberately left
-        /// alone. Jellyfin's <c>EncodingHelper.GetMapArgs</c> addresses the stream it wants
-        /// FFmpeg to copy by its position in this list, so the list has to stay in the order
-        /// FFprobe reported. Reordering it makes <c>-map</c> point at a different track than
-        /// the one described in the manifest, which surfaces on the client as a decoder
-        /// failure for a codec the manifest never advertised.
-        /// </remarks>
-        /// <param name="mediaSource">The probed live TV media source.</param>
-        internal static void PreferCompatibleAudioTrack(MediaSourceInfo mediaSource)
-        {
-            ArgumentNullException.ThrowIfNull(mediaSource);
-
-            var audioStreams = mediaSource.MediaStreams
-                .Where(stream => stream.Type == MediaStreamType.Audio)
-                .ToList();
-            if (audioStreams.Count == 0)
-            {
-                return;
-            }
-
-            string[] preferredCodecs = ["aac", "ac3", "eac3", "mp3"];
-            var preferredAudio = preferredCodecs
-                .Select(codec => audioStreams.FirstOrDefault(stream => string.Equals(stream.Codec, codec, StringComparison.OrdinalIgnoreCase)))
-                .FirstOrDefault(stream => stream is not null)
-                ?? audioStreams.FirstOrDefault(stream => stream.IsDefault)
-                ?? audioStreams[0];
-
-            foreach (var stream in audioStreams)
-            {
-                stream.IsDefault = ReferenceEquals(stream, preferredAudio);
-            }
-
-            mediaSource.DefaultAudioStreamIndex = preferredAudio.Index;
-        }
-
         private static MediaSourceInfo Create(
             string mediaSourceId,
             string? path,

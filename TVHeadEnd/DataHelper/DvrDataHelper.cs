@@ -16,23 +16,11 @@ namespace TVHeadEnd.DataHelper
 
         private readonly DateTime _initialDateTimeUTC = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
-        private long _lastChangeTicks;
-
         public DvrDataHelper(ILogger<DvrDataHelper> logger)
         {
             _logger = logger;
             _data = new Dictionary<string, HTSMessage>();
         }
-
-        /// <summary>
-        /// Gets a stamp that moves whenever the set of recordings changes: one appears, one goes,
-        /// or one finishes. Jellyfin caches the contents of a channel for three hours and only
-        /// asks again when the channel's data version differs, so without this a recording made
-        /// on the TVHeadend server would surface hours after it was made. Progress reports during
-        /// an ongoing recording deliberately leave it alone; they would invalidate the cache
-        /// every few seconds for a listing that has not changed.
-        /// </summary>
-        public long LastChangeTicks => Interlocked.Read(ref _lastChangeTicks);
 
         public void DvrEntryAdd(HTSMessage message)
         {
@@ -53,8 +41,6 @@ namespace TVHeadEnd.DataHelper
 
                 _data.Add(id, message);
             }
-
-            MarkChanged();
         }
 
         public void DvrEntryUpdate(HTSMessage message)
@@ -66,7 +52,6 @@ namespace TVHeadEnd.DataHelper
                 return;
             }
 
-            bool stateChanged;
             lock (_data)
             {
                 if (!_data.TryGetValue(id, out HTSMessage? oldMessage) || oldMessage == null)
@@ -74,8 +59,6 @@ namespace TVHeadEnd.DataHelper
                     _logger.LogDebug("[TVHclient] DvrDataHelper.dvrEntryUpdate id not in database - skipping");
                     return;
                 }
-
-                var previousState = oldMessage.GetString("state");
 
                 foreach (KeyValuePair<string, object> entry in message)
                 {
@@ -86,13 +69,6 @@ namespace TVHeadEnd.DataHelper
 
                     oldMessage.PutField(entry.Key, entry.Value);
                 }
-
-                stateChanged = !string.Equals(previousState, oldMessage.GetString("state"), StringComparison.Ordinal);
-            }
-
-            if (stateChanged)
-            {
-                MarkChanged();
             }
         }
 
@@ -105,19 +81,11 @@ namespace TVHeadEnd.DataHelper
                 return;
             }
 
-            bool removed;
             lock (_data)
             {
-                removed = _data.Remove(id);
-            }
-
-            if (removed)
-            {
-                MarkChanged();
+                _data.Remove(id);
             }
         }
-
-        private void MarkChanged() => Interlocked.Exchange(ref _lastChangeTicks, DateTime.UtcNow.Ticks);
 
         public Task<IEnumerable<MyRecordingInfo>> BuildDvrInfos(CancellationToken cancellationToken)
         {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -50,6 +50,7 @@ namespace TVHeadEnd
         private readonly IConfigurationManager _configurationManager;
         private readonly IServerApplicationHost _applicationHost;
         private readonly ConcurrentDictionary<string, TvHeadendHttpLiveStream> _activeChannelStreams = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SourceDescriber _sourceDescriber;
 
         // Channels measured to carry no IDR frames skip the detection phase and start their
         // re-encode immediately. Persisted, so the first tune after a restart is fast too;
@@ -93,8 +94,8 @@ namespace TVHeadEnd
                 _channelTicketHandler = new AccessTicketHandler(loggerFactory, _htsConnectionHandler, requestTimeout, retries, lifeSpan, Channel);
             }
 
-            // Added for stream probing
             _mediaEncoder = mediaEncoder;
+            _sourceDescriber = new SourceDescriber(mediaEncoder, _logger);
 
             TvHeadendHttpLiveStream.RemoveOrphanedBuffers(_configurationManager, _logger);
         }
@@ -610,7 +611,7 @@ namespace TVHeadEnd
 
         private void ApplyLiveStreamOverrides(MediaSourceInfo mediaSource)
         {
-            LiveTvMediaSourceFactory.PreferCompatibleAudioTrack(mediaSource);
+            SourceDescriber.PreferCompatibleAudioTrack(mediaSource);
 
             if (!_htsConnectionHandler.GetForceDeinterlace())
             {
@@ -630,161 +631,28 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Describes what the managed buffer actually contains. It reads the local buffer file,
-        /// never the upstream channel, so it costs no TVHeadend subscription and reports the
-        /// re-encoded video where a channel goes through the encoder.
+        /// Describes what the shared buffer actually contains, through the same component that
+        /// describes a recording. It reads the local buffer, never the upstream channel, so it
+        /// costs no TVHeadend subscription and reports the re-encoded video where a channel goes
+        /// through the encoder.
         /// </summary>
         private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, CancellationToken cancellationToken)
         {
-            var probeStopwatch = Stopwatch.StartNew();
-            _logger.LogInformation("Live TV stream probe: reading the managed buffer");
+            var described = await _sourceDescriber
+                .DescribeFromSample(mediaSourceInfo, mediaSourceInfo.Path, "the live buffer", cancellationToken)
+                .ConfigureAwait(false);
 
-            MediaInfoRequest req = new MediaInfoRequest
+            if (!described)
             {
-                MediaType = MediaBrowser.Model.Dlna.DlnaProfileType.Video,
-                MediaSource = mediaSourceInfo,
-                ExtractChapters = false,
-            };
-
-            var originalRuntime = mediaSourceInfo.RunTimeTicks;
-            Stopwatch stopWatch = new Stopwatch();
-            stopWatch.Start();
-            MediaInfo info = await _mediaEncoder.GetMediaInfo(req, cancellationToken).ConfigureAwait(false);
-            stopWatch.Stop();
-            TimeSpan ts = stopWatch.Elapsed;
-            string elapsedTime = $"{ts.Hours:00}:{ts.Minutes:00}:{ts.Seconds:00}.{ts.Milliseconds / 10:00}";
-            _logger.LogDebug("Probe RunTime {ElapsedTime}", elapsedTime);
-
-            if (info != null)
-            {
-                var mediaStreams = info.MediaStreams ?? [];
-
-                _logger.LogInformation(
-                    "Live TV stream probe: completed after {ElapsedMilliseconds} ms ({MediaStreamCount} streams, {Container})",
-                    probeStopwatch.ElapsedMilliseconds,
-                    mediaStreams.Count,
-                    info.Container);
-
-                _logger.LogDebug("Probe returned:");
-
-                mediaSourceInfo.Bitrate = info.Bitrate;
-                _logger.LogDebug("        BitRate:                    {BitRate}", info.Bitrate);
-
-                // What the buffer actually holds decides the container. TVHeadend serves whatever
-                // its streaming profile produces -- Matroska for the WebTV profiles -- so the
-                // value the factory guessed before the stream arrived cannot be trusted. Only
-                // the transport stream is renamed, and only because FFprobe and the client
-                // profiles disagree on how to spell it.
-                mediaSourceInfo.Container = Streaming.SourceContainer.Describe(info.Container, mediaSourceInfo.Container);
-                _logger.LogDebug("        Container:                  {Container} (probe reported {ProbedContainer})", mediaSourceInfo.Container, info.Container);
-
-                mediaSourceInfo.MediaStreams = mediaStreams;
-                _logger.LogDebug("        MediaStreams:               ");
-                LogMediaStreamList(mediaStreams, "                       ");
-
-                mediaSourceInfo.RunTimeTicks = info.RunTimeTicks;
-                _logger.LogDebug("        RunTimeTicks:               {RunTimeTicks}", info.RunTimeTicks);
-
-                mediaSourceInfo.Size = info.Size;
-                _logger.LogDebug("        Size:                       {Size}", info.Size);
-
-                mediaSourceInfo.Timestamp = info.Timestamp;
-                _logger.LogDebug("        Timestamp:                  {Timestamp}", info.Timestamp);
-
-                mediaSourceInfo.Video3DFormat = info.Video3DFormat;
-                _logger.LogDebug("        Video3DFormat:              {Video3DFormat}", info.Video3DFormat);
-
-                mediaSourceInfo.VideoType = info.VideoType;
-                _logger.LogDebug("        VideoType:                  {VideoType}", info.VideoType);
-
-                mediaSourceInfo.SupportsDirectPlay = false;
-                _logger.LogDebug("        SupportsDirectPlay:         {SupportsDirectPlay}", info.SupportsDirectPlay);
-
-                mediaSourceInfo.SupportsDirectStream = true;
-                _logger.LogDebug("        SupportsDirectStream:       {SupportsDirectStream}", info.SupportsDirectStream);
-
-                mediaSourceInfo.SupportsTranscoding = true;
-                _logger.LogDebug("        SupportsTranscoding:        {SupportsTranscoding}", info.SupportsTranscoding);
-
-                // The plugin has retained the complete probe result, including real stream
-                // indices. Prevent Jellyfin's cached live TV probe from reducing it to the
-                // first video and first audio stream with unknown indices.
-                mediaSourceInfo.SupportsProbing = false;
-
-                mediaSourceInfo.DefaultSubtitleStreamIndex = null;
-                _logger.LogDebug("        DefaultSubtitleStreamIndex: n/a");
-
-                if (!originalRuntime.HasValue)
-                {
-                    mediaSourceInfo.RunTimeTicks = null;
-                    _logger.LogDebug("        Original runtime:           n/a");
-                }
-
-                var audioStream = mediaStreams.FirstOrDefault(i => i.Type == MediaStreamType.Audio);
-                if (audioStream == null || audioStream.Index == -1)
-                {
-                    mediaSourceInfo.DefaultAudioStreamIndex = null;
-                    _logger.LogDebug("        DefaultAudioStreamIndex:    n/a");
-                }
-                else
-                {
-                    mediaSourceInfo.DefaultAudioStreamIndex = audioStream.Index;
-                    _logger.LogDebug("        DefaultAudioStreamIndex:    '{DefaultAudioStreamIndex}'", info.DefaultAudioStreamIndex);
-                }
+                return;
             }
-            else
-            {
-                _logger.LogError(
-                    "Live TV stream probe: no media information after {ElapsedMilliseconds} ms",
-                    probeStopwatch.ElapsedMilliseconds);
-            }
-        }
 
-        private void LogMediaStreamList(IReadOnlyList<MediaStream> theList, string prefix)
-        {
-            foreach (MediaStream i in theList)
-            {
-                LogMediaStream(i, prefix);
-            }
-        }
-
-        private void LogMediaStream(MediaStream ms, string prefix)
-        {
-            _logger.LogDebug("{Prefix}AspectRatio             {AspectRatio}", prefix, ms.AspectRatio);
-            _logger.LogDebug("{Prefix}AverageFrameRate        {AverageFrameRate}", prefix, ms.AverageFrameRate);
-            _logger.LogDebug("{Prefix}BitDepth                {BitDepth}", prefix, ms.BitDepth);
-            _logger.LogDebug("{Prefix}BitRate                 {BitRate}", prefix, ms.BitRate);
-            _logger.LogDebug("{Prefix}ChannelLayout           {ChannelLayout}", prefix, ms.ChannelLayout); // Object
-            _logger.LogDebug("{Prefix}Channels                {Channels}", prefix, ms.Channels);
-            _logger.LogDebug("{Prefix}Codec                   {Codec}", prefix, ms.Codec); // Object
-            _logger.LogDebug("{Prefix}CodecTag                {CodecTag}", prefix, ms.CodecTag); // Object
-            _logger.LogDebug("{Prefix}Comment                 {Comment}", prefix, ms.Comment);
-            _logger.LogDebug("{Prefix}DeliveryMethod          {DeliveryMethod}", prefix, ms.DeliveryMethod); // Object
-            _logger.LogDebug("{Prefix}DeliveryUrl             {DeliveryUrl}", prefix, ms.DeliveryUrl);
-            // _logger.LogDebug("{Prefix}ExternalId              {ExternalId}", prefix, ms.ExternalId);
-            _logger.LogDebug("{Prefix}Height                  {Height}", prefix, ms.Height);
-            _logger.LogDebug("{Prefix}Index                   {Index}", prefix, ms.Index);
-            _logger.LogDebug("{Prefix}IsAnamorphic            {IsAnamorphic}", prefix, ms.IsAnamorphic);
-            _logger.LogDebug("{Prefix}IsDefault               {IsDefault}", prefix, ms.IsDefault);
-            _logger.LogDebug("{Prefix}IsExternal              {IsExternal}", prefix, ms.IsExternal);
-            _logger.LogDebug("{Prefix}IsExternalUrl           {IsExternalUrl}", prefix, ms.IsExternalUrl);
-            _logger.LogDebug("{Prefix}IsForced                {IsForced}", prefix, ms.IsForced);
-            _logger.LogDebug("{Prefix}IsInterlaced            {IsInterlaced}", prefix, ms.IsInterlaced);
-            _logger.LogDebug("{Prefix}IsTextSubtitleStream    {IsTextSubtitleStream}", prefix, ms.IsTextSubtitleStream);
-            _logger.LogDebug("{Prefix}Language                {Language}", prefix, ms.Language);
-            _logger.LogDebug("{Prefix}Level                   {Level}", prefix, ms.Level);
-            _logger.LogDebug("{Prefix}PacketLength            {PacketLength}", prefix, ms.PacketLength);
-            _logger.LogDebug("{Prefix}Path                    {Path}", prefix, ms.Path);
-            _logger.LogDebug("{Prefix}PixelFormat             {PixelFormat}", prefix, ms.PixelFormat);
-            _logger.LogDebug("{Prefix}Profile                 {Profile}", prefix, ms.Profile);
-            _logger.LogDebug("{Prefix}RealFrameRate           {RealFrameRate}", prefix, ms.RealFrameRate);
-            _logger.LogDebug("{Prefix}RefFrames               {RefFrames}", prefix, ms.RefFrames);
-            _logger.LogDebug("{Prefix}SampleRate              {SampleRate}", prefix, ms.SampleRate);
-            _logger.LogDebug("{Prefix}Score                   {Score}", prefix, ms.Score);
-            _logger.LogDebug("{Prefix}SupportsExternalStream  {SupportsExternalStream}", prefix, ms.SupportsExternalStream);
-            _logger.LogDebug("{Prefix}Type                    {Type}", prefix, ms.Type); // Object
-            _logger.LogDebug("{Prefix}Width                   {Width}", prefix, ms.Width);
-            _logger.LogDebug("{Prefix}========================", prefix);
+            // A channel has no runtime, whatever the buffer happens to hold.
+            mediaSourceInfo.RunTimeTicks = null;
+            mediaSourceInfo.Size = null;
+            mediaSourceInfo.DefaultSubtitleStreamIndex = null;
+            mediaSourceInfo.SupportsDirectStream = true;
+            mediaSourceInfo.SupportsTranscoding = true;
         }
 
         public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)

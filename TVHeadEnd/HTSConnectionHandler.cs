@@ -434,16 +434,6 @@ namespace TVHeadEnd
             return _liveBufferSizeMegabytes;
         }
 
-        /// <summary>
-        /// Gets a stamp that moves whenever the set of recordings changes, so the recordings
-        /// channel can tell Jellyfin its contents are worth fetching again.
-        /// </summary>
-        /// <returns>The stamp.</returns>
-        public long GetRecordingsChangeStamp()
-        {
-            return _dvrDataHelper.LastChangeTicks;
-        }
-
         public Task<IEnumerable<MyRecordingInfo>> BuildDvrInfos(CancellationToken cancellationToken)
         {
             return _dvrDataHelper.BuildDvrInfos(cancellationToken);
