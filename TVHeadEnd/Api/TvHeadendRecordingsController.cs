@@ -1,5 +1,4 @@
-﻿using System;
-using System.Buffers;
+using System;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -8,7 +7,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using TVHeadEnd.Streaming;
 
 namespace TVHeadEnd.Api
 {
@@ -36,14 +34,6 @@ namespace TVHeadEnd.Api
     [Route("TVHeadend")]
     public class TvHeadendRecordingsController : ControllerBase
     {
-        /// <summary>
-        /// How far into a recording to look for a point a decoder can start from. A broadcast
-        /// offers one every couple of seconds, so this is generous.
-        /// </summary>
-        private const int StartScanLength = 8 * 1024 * 1024;
-
-        private const int ScanChunkLength = 65536;
-
         private readonly HTSConnectionHandler _connectionHandler;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<TvHeadendRecordingsController> _logger;
@@ -84,17 +74,6 @@ namespace TVHeadEnd.Api
             }
 
             using var client = _httpClientFactory.CreateClient();
-
-            // Where a decoder can start, established afresh every time. A recording can be cut
-            // after it was made, so a remembered offset would eventually point into the middle
-            // of a picture; finding it again costs a short read.
-            var start = await FindStartOffset(client, upstream, cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation(
-                "TVHeadend recording {RecordingId}: serving from offset {StartOffset} (requested {Range})",
-                recordingId,
-                start,
-                string.IsNullOrEmpty(Request.Headers.Range.ToString()) ? "all" : Request.Headers.Range.ToString());
-
             using var request = new HttpRequestMessage(
                 HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get,
                 upstream);
@@ -104,14 +83,12 @@ namespace TVHeadEnd.Api
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
-            // The recording is presented as though it began at that point, so every offset the
-            // client works with is shifted by it -- including the one it asks for.
-            var requested = ParseRange(Request.Headers.Range.ToString());
-            request.Headers.TryAddWithoutValidation(
-                "Range",
-                requested.To.HasValue
-                    ? $"bytes={start + requested.From}-{start + requested.To.Value}"
-                    : $"bytes={start + requested.From}-");
+            // Whatever the client asked for is asked of TVHeadend, on a connection of its own.
+            var range = Request.Headers.Range.ToString();
+            if (!string.IsNullOrEmpty(range))
+            {
+                request.Headers.TryAddWithoutValidation("Range", range);
+            }
 
             HttpResponseMessage response;
             try
@@ -137,31 +114,20 @@ namespace TVHeadEnd.Api
                     : StatusCodes.Status502BadGateway);
             }
 
+            Response.StatusCode = (int)response.StatusCode;
+
             // Stated here because TVHeadend does not state it, although it honours ranges. Without
             // it a client has no reason to believe it may seek.
             Response.Headers.AcceptRanges = "bytes";
-
-            var upstreamRange = response.Content.Headers.ContentRange;
-            var total = upstreamRange?.Length ?? response.Content.Headers.ContentLength;
-            var shiftedTotal = total.HasValue ? Math.Max(0, total.Value - start) : (long?)null;
 
             if (response.Content.Headers.ContentLength is { } length)
             {
                 Response.ContentLength = length;
             }
 
-            if (string.IsNullOrEmpty(Request.Headers.Range.ToString()))
+            if (response.Content.Headers.ContentRange is { } contentRange)
             {
-                // Asked for the whole thing, and gets the whole of what is playable.
-                Response.StatusCode = StatusCodes.Status200OK;
-            }
-            else
-            {
-                Response.StatusCode = StatusCodes.Status206PartialContent;
-                if (upstreamRange?.From is { } from && upstreamRange.To is { } to && shiftedTotal.HasValue)
-                {
-                    Response.Headers.ContentRange = $"bytes {from - start}-{to - start}/{shiftedTotal.Value}";
-                }
+                Response.Headers.ContentRange = contentRange.ToString();
             }
 
             if (HttpMethods.IsHead(Request.Method))
@@ -175,92 +141,6 @@ namespace TVHeadEnd.Api
             {
                 EnableRangeProcessing = false,
             };
-        }
-
-        /// <summary>
-        /// Reads the opening of the recording to find the first point a decoder can start from.
-        /// </summary>
-        /// <remarks>
-        /// TVHeadend begins writing wherever the broadcast happened to be, so a recording starts
-        /// in the middle of a group of pictures, before any parameter set. FFmpeg reports
-        /// "non-existing SPS 0 referenced" and "no frame!", finds neither dimensions nor a frame
-        /// rate, and Jellyfin then advertises RESOLUTION=0x0 and FRAME-RATE=90000 in the HLS
-        /// manifest -- which is what a client configures its decoder from.
-        /// </remarks>
-        private async Task<long> FindStartOffset(HttpClient client, string upstream, CancellationToken cancellationToken)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, upstream);
-            foreach (var header in _connectionHandler.GetHeaders())
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-
-            request.Headers.TryAddWithoutValidation("Range", $"bytes=0-{StartScanLength - 1}");
-
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                return 0;
-            }
-
-            var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkLength);
-            var conditioned = ArrayPool<byte>.Shared.Rent(
-                LiveTransportStreamConditioner.GetMaximumConditionedLength(ScanChunkLength));
-            try
-            {
-                var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                await using (body.ConfigureAwait(false))
-                {
-                    var read = await body.ReadAsync(buffer.AsMemory(0, ScanChunkLength), cancellationToken).ConfigureAwait(false);
-                    if (read == 0 || !SourceContainer.IsTransportStream(buffer.AsSpan(0, read)))
-                    {
-                        // Not a transport stream; nothing here knows how to find a starting point
-                        // in it, and it is served exactly as it arrives.
-                        return 0;
-                    }
-
-                    var conditioner = new LiveTransportStreamConditioner(
-                        LiveTransportStreamConditioner.EventInformationTablePid);
-
-                    while (read > 0)
-                    {
-                        conditioner.Condition(buffer.AsSpan(0, read), conditioned);
-                        if (conditioner.HasStarted)
-                        {
-                            return conditioner.StartOffset;
-                        }
-
-                        read = await body.ReadAsync(buffer.AsMemory(0, ScanChunkLength), cancellationToken).ConfigureAwait(false);
-                    }
-                }
-
-                // No random access point within the scan. Serving from the beginning is no worse
-                // than refusing, and the analysis will show what the recording is.
-                return 0;
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-                ArrayPool<byte>.Shared.Return(conditioned);
-            }
-        }
-
-        private static (long From, long? To) ParseRange(string? range)
-        {
-            if (string.IsNullOrEmpty(range) || !range.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
-            {
-                return (0, null);
-            }
-
-            var span = range["bytes=".Length..].Split(',')[0];
-            var parts = span.Split('-');
-            if (parts.Length != 2 || !long.TryParse(parts[0], out var from))
-            {
-                return (0, null);
-            }
-
-            return long.TryParse(parts[1], out var to) ? (from, to) : (from, null);
         }
 
         /// <summary>

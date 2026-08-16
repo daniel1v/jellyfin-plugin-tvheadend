@@ -148,13 +148,19 @@ namespace TVHeadEnd.Streaming
 
             PreferCompatibleAudioTrack(target);
 
+            var video = streams.FirstOrDefault(stream => stream.Type == MediaStreamType.Video);
             _logger.LogInformation(
-                "TVHeadend source description: {What} took {ElapsedMilliseconds} ms -- {Container}, {StreamCount} streams ({Streams})",
+                "TVHeadend source description: {What} took {ElapsedMilliseconds} ms -- {Container}, {StreamCount} streams ({Streams}); video {Width}x{Height} {Profile}@{Level} {FrameRate}fps",
                 what,
                 stopwatch.ElapsedMilliseconds,
                 target.Container,
                 streams.Count,
-                Summarise(streams));
+                Summarise(streams),
+                video?.Width,
+                video?.Height,
+                video?.Profile,
+                video?.Level,
+                video?.RealFrameRate);
 
             return true;
         }
