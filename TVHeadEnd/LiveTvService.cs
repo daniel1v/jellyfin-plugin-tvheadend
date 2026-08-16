@@ -451,9 +451,23 @@ namespace TVHeadEnd
             return list;
         }
 
+        /// <summary>
+        /// The <see cref="ILiveTvService"/> fallback for services that cannot manage their own
+        /// live streams. Jellyfin only takes this branch for services that do not implement
+        /// <see cref="ISupportsDirectStreamProvider"/>, so this one never reaches it. Answering
+        /// it would mean handing out the bare TVHeadend URL: a second subscription for a channel
+        /// that is already being received, and a stream that has passed neither the conditioner
+        /// nor the re-encode that broadcasts without IDR frames need.
+        /// </summary>
+        /// <param name="channelId">The channel to open.</param>
+        /// <param name="streamId">The stream identifier chosen by the client.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>Never returns; always throws.</returns>
         public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
         {
-            return CreateOpenedChannelMediaSource(channelId, cancellationToken);
+            throw new NotSupportedException(
+                "TVHeadend channels are served through the managed live stream. " +
+                "Open them with GetChannelStreamWithDirectStreamProvider.");
         }
 
         public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(
@@ -481,7 +495,7 @@ namespace TVHeadEnd
                 return reusableStream;
             }
 
-            var mediaSource = await CreateOpenedChannelMediaSource(channelId, cancellationToken, false).ConfigureAwait(false);
+            var mediaSource = await CreateOpenedChannelMediaSource(channelId, cancellationToken).ConfigureAwait(false);
             var liveStream = new TvHeadendHttpLiveStream(
                 mediaSource,
                 _httpClientFactory,
@@ -510,7 +524,7 @@ namespace TVHeadEnd
                 }
                 else
                 {
-                    await ProbeStream(liveStream.MediaSource, "managed LiveTV buffer", cancellationToken).ConfigureAwait(false);
+                    await ProbeStream(liveStream.MediaSource, cancellationToken).ConfigureAwait(false);
                     if (liveStream.ProgramLayout is not null && !liveStream.IsReencoding)
                     {
                         _channelProbeCache[channelId] = CachedChannelProbe.From(liveStream.ProgramLayout, liveStream.MediaSource);
@@ -544,10 +558,16 @@ namespace TVHeadEnd
             }
         }
 
+        /// <summary>
+        /// Builds the media source for a channel from a fresh access ticket. The source is not
+        /// probed here: it describes the upstream TVHeadend URL, which the managed live stream
+        /// consumes but no client ever sees. Probing it would open a second subscription to a
+        /// channel that is about to be received anyway, and would describe the broadcast rather
+        /// than what ends up in the buffer.
+        /// </summary>
         private async Task<MediaSourceInfo> CreateOpenedChannelMediaSource(
             string channelId,
-            CancellationToken cancellationToken,
-            bool probeStream = true)
+            CancellationToken cancellationToken)
         {
             var streamStartStopwatch = Stopwatch.StartNew();
             var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
@@ -564,7 +584,7 @@ namespace TVHeadEnd
             MediaSourceInfo livetvasset;
             if (_htsConnectionHandler.GetEnableSubsMaudios())
             {
-                _logger.LogInformation("LiveTvService.GetChannelStream: support for live TV subtitles and multiple audio tracks is enabled");
+                _logger.LogInformation("Live TV stream start: support for live TV subtitles and multiple audio tracks is enabled");
 
                 // Use HTTP basic auth in HTTP header instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
                 livetvasset = LiveTvMediaSourceFactory.CreateOpened(
@@ -579,18 +599,10 @@ namespace TVHeadEnd
                     _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url);
             }
 
-            if (probeStream)
-            {
-                await ProbeStream(livetvasset, "LiveTV", cancellationToken).ConfigureAwait(false);
-                ApplyLiveStreamOverrides(livetvasset);
-            }
-
             _logger.LogInformation(
-                "Live TV stream start: media source ready for channel {ChannelId} after {ElapsedMilliseconds} ms ({ProbeState}, {MediaStreamCount} streams)",
+                "Live TV stream start: upstream source ready for channel {ChannelId} after {ElapsedMilliseconds} ms; awaiting the managed-buffer probe",
                 channelId,
-                streamStartStopwatch.ElapsedMilliseconds,
-                probeStream ? "probed" : "awaiting managed-buffer probe",
-                livetvasset.MediaStreams?.Count ?? 0);
+                streamStartStopwatch.ElapsedMilliseconds);
 
             return livetvasset;
         }
@@ -604,7 +616,7 @@ namespace TVHeadEnd
                 return;
             }
 
-            _logger.LogInformation("LiveTvService.GetChannelStream: force video deinterlacing for all channels and recordings is enabled");
+            _logger.LogInformation("Live TV stream start: force video deinterlacing for all channels and recordings is enabled");
             foreach (MediaStream stream in mediaSource.MediaStreams)
             {
                 if (stream.Type == MediaStreamType.Video && stream.IsInterlaced == false)
@@ -616,10 +628,15 @@ namespace TVHeadEnd
             }
         }
 
-        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, string source, CancellationToken cancellationToken)
+        /// <summary>
+        /// Describes what the managed buffer actually contains. It reads the local buffer file,
+        /// never the upstream channel, so it costs no TVHeadend subscription and reports the
+        /// re-encoded video where a channel goes through the encoder.
+        /// </summary>
+        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, CancellationToken cancellationToken)
         {
             var probeStopwatch = Stopwatch.StartNew();
-            _logger.LogInformation("Probe stream for {Source}", source);
+            _logger.LogInformation("Live TV stream probe: reading the managed buffer");
 
             MediaInfoRequest req = new MediaInfoRequest
             {
@@ -642,8 +659,7 @@ namespace TVHeadEnd
                 var mediaStreams = info.MediaStreams ?? [];
 
                 _logger.LogInformation(
-                    "Live TV stream probe: {Source} completed after {ElapsedMilliseconds} ms ({MediaStreamCount} streams, {Container})",
-                    source,
+                    "Live TV stream probe: completed after {ElapsedMilliseconds} ms ({MediaStreamCount} streams, {Container})",
                     probeStopwatch.ElapsedMilliseconds,
                     mediaStreams.Count,
                     info.Container);
@@ -715,8 +731,7 @@ namespace TVHeadEnd
             else
             {
                 _logger.LogError(
-                    "Live TV stream probe: {Source} returned no media information after {ElapsedMilliseconds} ms",
-                    source,
+                    "Live TV stream probe: no media information after {ElapsedMilliseconds} ms",
                     probeStopwatch.ElapsedMilliseconds);
             }
         }
