@@ -47,7 +47,7 @@ namespace TVHeadEnd
         /// has to be raised whenever the shape changes. It last changed when listings stopped
         /// carrying invented streams and began reporting a placeholder.
         /// </remarks>
-        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 0, 0, DateTimeKind.Utc);
+        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 30, 0, DateTimeKind.Utc);
 
         private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
@@ -430,9 +430,27 @@ namespace TVHeadEnd
                 // would only route the request back out through Jellyfin.
                 var upstream = _htsConnectionHandler.GetAuthenticatedUrl("dvrfile/" + id);
                 await FetchAnalysisSample(upstream, sample, cancellationToken).ConfigureAwait(false);
-                return await _sourceDescriber
+
+                var described = await _sourceDescriber
                     .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
                     .ConfigureAwait(false);
+
+                if (described && _htsConnectionHandler.GetReencodeWhenNoIdr() && !SourceDescriber.CarriesIdrFrames(sample))
+                {
+                    // A broadcast that signals random access with recovery points instead of IDR
+                    // frames -- the ARD network does -- offers a device decoder nothing to start
+                    // on. It consumes the samples without emitting a picture and the player waits
+                    // forever. Transcoding produces IDR frames, and Jellyfin transcodes whatever
+                    // it may not play directly, so withholding that permission is the whole fix.
+                    // The same property drives the live re-encode, and the same setting governs
+                    // both; it is a property of the broadcast, not of how it is delivered.
+                    source.SupportsDirectPlay = false;
+                    _logger.LogInformation(
+                        "TVHeadend recording {RecordingId} carries no IDR frame; it is not offered for direct play",
+                        id);
+                }
+
+                return described;
             }
             catch (OperationCanceledException)
             {

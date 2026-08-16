@@ -1,6 +1,8 @@
-using System;
+﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,6 +33,8 @@ namespace TVHeadEnd.Streaming
     /// </remarks>
     internal sealed class SourceDescriber
     {
+        private const int ScanChunkLength = 65536;
+
         private readonly IMediaEncoder _mediaEncoder;
         private readonly ILogger _logger;
 
@@ -163,6 +167,76 @@ namespace TVHeadEnd.Streaming
                 video?.RealFrameRate);
 
             return true;
+        }
+
+        /// <summary>
+        /// Reports whether the sample's video carries IDR frames.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The same question the live path asks, answered by the same scanner, because it is a
+        /// property of the broadcast and not of how it is delivered. Broadcasters differ: ZDF
+        /// sends an IDR roughly every 0.6 seconds, the ARD network sends none at all and signals
+        /// random access with recovery points instead. A device decoder will not start on the
+        /// latter -- it consumes the samples without ever emitting a frame, and the player waits
+        /// forever.
+        /// </para>
+        /// <para>
+        /// Bounded by the sample, so it ends whatever the sample contains. An earlier attempt
+        /// bounded it on the scanner's own byte counter, which only advances for H.264 video
+        /// packets and therefore never reached its limit on an MPEG-2 recording.
+        /// </para>
+        /// </remarks>
+        /// <param name="samplePath">A local file holding the opening of the stream.</param>
+        /// <returns>
+        /// <see langword="false"/> only when the sample is a transport stream carrying H.264 video
+        /// in which no IDR frame was found. Anything else raises no objection.
+        /// </returns>
+        internal static bool CarriesIdrFrames(string samplePath)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(samplePath);
+
+            var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+            var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkLength);
+            var conditioned = ArrayPool<byte>.Shared.Rent(
+                LiveTransportStreamConditioner.GetMaximumConditionedLength(ScanChunkLength));
+
+            try
+            {
+                using var sample = new FileStream(samplePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                var isTransportStream = false;
+                var first = true;
+
+                int read;
+                while ((read = sample.Read(buffer, 0, ScanChunkLength)) > 0)
+                {
+                    if (first)
+                    {
+                        first = false;
+                        isTransportStream = SourceContainer.IsTransportStream(buffer.AsSpan(0, read));
+                        if (!isTransportStream)
+                        {
+                            return true;
+                        }
+                    }
+
+                    conditioner.Condition(buffer.AsSpan(0, read), conditioned);
+                    if (conditioner.HasSeenIdrFrame)
+                    {
+                        return true;
+                    }
+                }
+
+                // Only a transport stream whose video was actually inspected can be said to carry
+                // none. Without a video PID -- an MPEG-2 recording, say -- the scanner has nothing
+                // to report and the question does not apply.
+                return !isTransportStream || conditioner.IdrScanBytes == 0;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(conditioned);
+            }
         }
 
         private static string Summarise(IReadOnlyList<MediaStream> streams)
