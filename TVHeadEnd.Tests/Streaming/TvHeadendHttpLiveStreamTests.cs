@@ -59,10 +59,7 @@ public class TvHeadendHttpLiveStreamTests
     [Fact]
     public void ReencodeArgumentsRewriteTheVideoAndCopyEveryAudioTrack()
     {
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(
-            "http://tvheadend.invalid/stream/channel/1?ticket=redacted",
-            new Dictionary<string, string>(),
-            @"C:\buffers\tvheadend-1.ts");
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(@"C:\buffers\tvheadend-1.ts");
 
         // The point of the exercise: the source carries no IDR frame, so the video has to be
         // rewritten, while re-encoding the audio would be a pointless loss of quality.
@@ -75,9 +72,22 @@ public class TvHeadendHttpLiveStreamTests
         Assert.Contains("-dn", arguments);
         Assert.Contains("-sn", arguments);
 
-        Assert.Equal("mpegts", ValueAfter(arguments, "-f"));
         Assert.Equal(@"C:\buffers\tvheadend-1.ts", arguments[^1]);
-        Assert.Equal("http://tvheadend.invalid/stream/channel/1?ticket=redacted", ValueAfter(arguments, "-i"));
+    }
+
+    [Fact]
+    public void ReencodeArgumentsReadFromAPipeSoNoSecondSubscriptionIsOpened()
+    {
+        // The channel is already being received when the encoder starts; pointing FFmpeg at
+        // the tuner again would cost another connection and occupy a second tuner.
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(@"C:\buffers\tvheadend-1.ts");
+
+        Assert.Equal("pipe:0", ValueAfter(arguments, "-i"));
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("http", System.StringComparison.OrdinalIgnoreCase));
+
+        // The input format has to be stated, because a pipe cannot be probed by extension.
+        var list = arguments.ToList();
+        Assert.Equal("mpegts", arguments[list.IndexOf("-i") - 1]);
     }
 
     [Fact]
@@ -85,10 +95,7 @@ public class TvHeadendHttpLiveStreamTests
     {
         // Left at its default, FFmpeg spends seconds deciding what a transport stream holds,
         // which lands directly on the channel change of an affected channel.
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(
-            "http://tvheadend.invalid/stream/channel/1",
-            new Dictionary<string, string>(),
-            @"C:\buffers\tvheadend-1.ts");
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(@"C:\buffers\tvheadend-1.ts");
 
         Assert.Equal("1000000", ValueAfter(arguments, "-analyzeduration"));
         Assert.Equal("4000000", ValueAfter(arguments, "-probesize"));
@@ -96,31 +103,6 @@ public class TvHeadendHttpLiveStreamTests
         var list = arguments.ToList();
         Assert.True(list.IndexOf("-analyzeduration") < list.IndexOf("-i"));
         Assert.True(list.IndexOf("-probesize") < list.IndexOf("-i"));
-    }
-
-    [Fact]
-    public void ReencodeArgumentsPassUpstreamHeadersWhenTicketlessAuthenticationIsUsed()
-    {
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(
-            "http://tvheadend.invalid/stream/channel/1",
-            new Dictionary<string, string> { ["Authorization"] = "Basic redacted" },
-            @"C:\buffers\tvheadend-1.ts");
-
-        Assert.Equal("Authorization: Basic redacted\r\n", ValueAfter(arguments, "-headers"));
-
-        // FFmpeg only applies -headers to the input that follows it.
-        Assert.True(arguments.ToList().IndexOf("-headers") < arguments.ToList().IndexOf("-i"));
-    }
-
-    [Fact]
-    public void ReencodeArgumentsOmitTheHeaderOptionWhenThereAreNoHeaders()
-    {
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(
-            "http://tvheadend.invalid/stream/channel/1?ticket=redacted",
-            new Dictionary<string, string>(),
-            @"C:\buffers\tvheadend-1.ts");
-
-        Assert.DoesNotContain("-headers", arguments);
     }
 
     private static string ValueAfter(IReadOnlyList<string> arguments, string option)

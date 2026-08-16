@@ -124,6 +124,34 @@ namespace TVHeadEnd.Streaming
         public string? ProgramLayout { get; private set; }
 
         /// <summary>
+        /// Copies the most recent PAT and PMT into <paramref name="destination"/>.
+        /// </summary>
+        /// <remarks>
+        /// Needed when the conditioned stream is handed to a second reader mid-flight: it has
+        /// missed the tables that went out at the start and cannot map the elementary streams
+        /// without them.
+        /// </remarks>
+        /// <param name="destination">The buffer receiving the tables. Two packets are enough.</param>
+        /// <returns>The number of bytes written.</returns>
+        public int WriteProgramTables(Span<byte> destination)
+        {
+            var written = 0;
+            if (_hasProgramAssociationTable)
+            {
+                _programAssociationTable.CopyTo(destination);
+                written += PacketLength;
+            }
+
+            if (_hasProgramMapTable)
+            {
+                _programMapTable.CopyTo(destination[written..]);
+                written += PacketLength;
+            }
+
+            return written;
+        }
+
+        /// <summary>
         /// Gets the smallest destination size that can hold the conditioned form of a
         /// <paramref name="sourceLength"/> byte chunk.
         /// </summary>

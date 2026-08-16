@@ -64,5 +64,17 @@ namespace TVHeadEnd.Configuration
         /// other channels are passed through untouched.
         /// </summary>
         public bool ReencodeWhenNoIdr { get; set; }
+
+        /// <summary>
+        /// Gets or sets the channels found to carry no IDR frames. Remembering them lets the
+        /// encoder start immediately instead of spending the detection window on every first
+        /// tune after a restart. The list maintains itself: a channel that starts sending IDR
+        /// frames is removed again the next time it is watched.
+        /// </summary>
+        [SuppressMessage(
+            "Performance",
+            "CA1819:Properties should not return arrays",
+            Justification = "Jellyfin serialises the plugin configuration with XmlSerializer, which does not handle read-only collections.")]
+        public string[] ChannelsWithoutIdr { get; set; } = [];
     }
 }

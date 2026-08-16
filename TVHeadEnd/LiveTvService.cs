@@ -51,9 +51,12 @@ namespace TVHeadEnd
         private readonly IServerApplicationHost _applicationHost;
         private readonly ConcurrentDictionary<string, TvHeadendHttpLiveStream> _activeChannelStreams = new(StringComparer.OrdinalIgnoreCase);
 
-        // Channels once measured to carry no IDR frames skip the detection phase on later
-        // tunes and start their re-encode immediately.
+        // Channels measured to carry no IDR frames skip the detection phase and start their
+        // re-encode immediately. Persisted, so the first tune after a restart is fast too;
+        // the scan keeps running alongside the encoder, so a channel that starts sending IDR
+        // frames drops out of the list again by itself.
         private readonly ConcurrentDictionary<string, bool> _channelRequiresReencode = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Lock _verdictPersistenceLock = new();
 
         // Probe results, keyed by channel and validated against the PMT layout they were
         // taken from. Re-probing costs about a tenth of a second, but the buffering it needs
@@ -61,6 +64,8 @@ namespace TVHeadEnd
         private readonly ConcurrentDictionary<string, CachedChannelProbe> _channelProbeCache = new(StringComparer.OrdinalIgnoreCase);
 
         private readonly ILogger<LiveTvService> _logger;
+
+        private bool _verdictsLoaded;
 
         public LiveTvService(
             ILoggerFactory loggerFactory,
@@ -485,8 +490,8 @@ namespace TVHeadEnd
                 _logger,
                 _mediaEncoder.EncoderPath,
                 _htsConnectionHandler.GetReencodeWhenNoIdr(),
-                _channelRequiresReencode.TryGetValue(channelId, out var knownVerdict) ? knownVerdict : null,
-                requiresReencode => _channelRequiresReencode[channelId] = requiresReencode,
+                GetKnownChannelVerdict(channelId),
+                requiresReencode => RememberChannelVerdict(channelId, requiresReencode),
                 _channelProbeCache.TryGetValue(channelId, out var cachedProbe) ? cachedProbe.ProgramLayout : null)
             {
                 OriginalStreamId = streamId,
@@ -971,6 +976,72 @@ namespace TVHeadEnd
         private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
         {
             return Task.Run(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
+        }
+
+        /// <summary>
+        /// Gets what an earlier tune measured about a channel, loading the persisted list on
+        /// first use. Not in the constructor: this service is built before the plugin instance
+        /// that holds the configuration exists.
+        /// </summary>
+        private bool? GetKnownChannelVerdict(string channelId)
+        {
+            lock (_verdictPersistenceLock)
+            {
+                if (!_verdictsLoaded)
+                {
+                    _verdictsLoaded = true;
+                    foreach (var persisted in Plugin.Instance.Configuration.ChannelsWithoutIdr)
+                    {
+                        _channelRequiresReencode.TryAdd(persisted, true);
+                    }
+                }
+            }
+
+            return _channelRequiresReencode.TryGetValue(channelId, out var verdict) ? verdict : null;
+        }
+
+        /// <summary>
+        /// Records whether a channel needs its video re-encoded, and persists the list when it
+        /// changes so the next start does not have to measure again.
+        /// </summary>
+        private void RememberChannelVerdict(string channelId, bool requiresReencode)
+        {
+            if (_channelRequiresReencode.TryGetValue(channelId, out var previous) && previous == requiresReencode)
+            {
+                return;
+            }
+
+            _channelRequiresReencode[channelId] = requiresReencode;
+
+            lock (_verdictPersistenceLock)
+            {
+                var configuration = Plugin.Instance.Configuration;
+                var channels = _channelRequiresReencode
+                    .Where(entry => entry.Value)
+                    .Select(entry => entry.Key)
+                    .Order(StringComparer.Ordinal)
+                    .ToArray();
+                if (channels.SequenceEqual(configuration.ChannelsWithoutIdr, StringComparer.Ordinal))
+                {
+                    return;
+                }
+
+                configuration.ChannelsWithoutIdr = channels;
+                Plugin.Instance.SaveConfiguration();
+            }
+
+            if (requiresReencode)
+            {
+                _logger.LogInformation(
+                    "Live TV stream start: channel {ChannelId} carries no IDR frames and will be re-encoded from now on",
+                    channelId);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Live TV stream start: channel {ChannelId} carries IDR frames again and no longer needs re-encoding",
+                    channelId);
+            }
         }
 
         /// <summary>
