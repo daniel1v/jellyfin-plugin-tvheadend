@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.HTSP;
-using TVHeadEnd.HTSP_Responses;
+using TVHeadEnd.HTSP.Responses;
 using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd;
@@ -20,24 +20,17 @@ public class AccessTicketHandler
     private readonly int _requestRetries;
     private readonly TimeSpan _ticketLifeSpan;
 
-    private volatile int _ticketIdSequence;
-
-    public enum TicketType : byte { Channel, Recording };
-
-    public record Ticket
-    {
-        public string Id { get; init; }
-        public string Path { get; init; }
-        public string TicketParam { get; init; }
-        public string Url => $"{Path}?ticket={TicketParam}";
-        public DateTime Expires { get; init; }
-    }
-
     private readonly ConcurrentDictionary<string, Task<Ticket>> _ticketCache = new();
 
+    private volatile int _ticketIdSequence;
+
     internal AccessTicketHandler(
-        ILoggerFactory loggerFactory, HTSConnectionHandler htsConnectionHandler,
-        TimeSpan requestTimeout, int requestRetries, TimeSpan ticketLifeSpan, TicketType ticketType)
+        ILoggerFactory loggerFactory,
+        HTSConnectionHandler htsConnectionHandler,
+        TimeSpan requestTimeout,
+        int requestRetries,
+        TimeSpan ticketLifeSpan,
+        TicketType ticketType)
     {
         _logger = loggerFactory.CreateLogger<AccessTicketHandler>();
         _htsConnectionHandler = htsConnectionHandler;
@@ -49,73 +42,92 @@ public class AccessTicketHandler
         {
             TicketType.Channel => "channelId",
             TicketType.Recording => "dvrId",
-            _ => throw new ArgumentException("undefined ticketType")
+            _ => throw new ArgumentException("undefined ticketType", nameof(ticketType))
         };
     }
 
     public async Task<Ticket> GetTicket(string itemId, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
-        Ticket ticket = null;
+        Ticket? ticket = null;
 
         while (_ticketCache.TryGetValue(itemId, out var ticketTask))
         {
-            ticket = await ticketTask;
+            ticket = await ticketTask.ConfigureAwait(false);
             if (ticket.Expires > now)
             {
                 return ticket; // non-expired ticket from cache
             }
 
-            _logger.LogDebug("[TVHclient] AccessTicketHandler.GetAccessTicket: Cache expired for {ItemType}={ItemId}. Revalidating ticket (#{TicketId})", _ticketItemType, itemId, ticket.Id);
+            _logger.LogDebug(
+                "[TVHclient] AccessTicketHandler.GetAccessTicket: Cache expired for {ItemType}={ItemId}. Revalidating ticket (#{TicketId})",
+                _ticketItemType,
+                itemId,
+                ticket.Id);
             _ticketCache.TryRemove(new KeyValuePair<string, Task<Ticket>>(itemId, ticketTask));
         }
 
-        return await _ticketCache.GetOrAdd(itemId, _ => GetTicketRecord(itemId, cancellationToken, ticket, now));
+        return await _ticketCache.GetOrAdd(itemId, _ => GetTicketRecord(itemId, ticket, now, cancellationToken)).ConfigureAwait(false);
     }
 
-    private Task<Ticket> GetTicketRecord(string itemId, CancellationToken cancellation, Ticket currentRecord, DateTime now)
+    private Task<Ticket> GetTicketRecord(string itemId, Ticket? currentRecord, DateTime now, CancellationToken cancellation)
     {
-        return RequestTicket(itemId, cancellation).ContinueWith(ticketTask =>
-        {
-            var response = ticketTask.Result;
-            var path = response.getString("path");
-            var ticket = response.getString("ticket");
-
-            var id = (currentRecord != null && path == currentRecord.Path && ticket == currentRecord.TicketParam)
-                ? currentRecord.Id
-                : $"{NextTicketId()}";
-
-            if (id != currentRecord?.Id)
+        return RequestTicket(itemId, cancellation).ContinueWith(
+            ticketTask =>
             {
-                _logger.LogInformation("[TVHclient] AccessTicketHandler.GetAccessTicket: New ticket (#{TicketId}) created for {ItemType}={ItemId}", id, _ticketItemType, itemId);
-            }
+                var response = ticketTask.Result;
+                var path = response.GetString("path");
+                var ticket = response.GetString("ticket");
 
-            return new Ticket()
-            {
-                Id = id,
-                Path = path,
-                TicketParam = ticket,
-                Expires = now + _ticketLifeSpan,
-            };
-        }, cancellation);
+                if (path == null || ticket == null)
+                {
+                    throw new InvalidOperationException("TVH returned a playback ticket without a path or ticket value");
+                }
+
+                var id = (currentRecord != null && path == currentRecord.Path && ticket == currentRecord.TicketParam)
+                    ? currentRecord.Id
+                    : $"{NextTicketId()}";
+
+                if (id != currentRecord?.Id)
+                {
+                    _logger.LogInformation(
+                        "[TVHclient] AccessTicketHandler.GetAccessTicket: New ticket (#{TicketId}) created for {ItemType}={ItemId}",
+                        id,
+                        _ticketItemType,
+                        itemId);
+                }
+
+                return new Ticket()
+                {
+                    Id = id,
+                    Path = path,
+                    TicketParam = ticket,
+                    Expires = now + _ticketLifeSpan,
+                };
+            },
+            cancellation,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default);
     }
 
     private async Task<HTSMessage> RequestTicket(string itemId, CancellationToken cancellation)
     {
         var request = new HTSMessage { Method = "getTicket" };
-        request.putField(_ticketItemType, itemId);
+        request.PutField(_ticketItemType, itemId);
 
         for (int attempt = 1, lastAttempt = 1 + _requestRetries;
              attempt <= lastAttempt && !cancellation.IsCancellationRequested;
              attempt++)
         {
             var runner = new TaskWithTimeoutRunner<HTSMessage>(_requestTimeout * attempt);
-            var result = await runner.RunWithTimeout(Task.Factory.StartNew(() =>
-            {
-                var response = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(request, response);
-                return response.getResponse();
-            }, cancellation));
+            var result = await runner.RunWithTimeout(Task.Run(
+                () =>
+                {
+                    var response = new LoopBackResponseHandler();
+                    _htsConnectionHandler.SendMessage(request, response);
+                    return response.GetResponse();
+                },
+                cancellation)).ConfigureAwait(false);
 
             if (!result.HasTimeout)
             {

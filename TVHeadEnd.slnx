@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="TVHeadEnd/TVHeadEnd.csproj" />
+  <Project Path="TVHeadEnd.Tests/TVHeadEnd.Tests.csproj" />
+</Solution>
