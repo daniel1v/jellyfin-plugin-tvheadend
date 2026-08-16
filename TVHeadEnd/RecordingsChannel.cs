@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -88,7 +88,7 @@ namespace TVHeadEnd
         /// this, so raising it once rebuilds them -- which is what clears the placeholder media
         /// source that earlier versions of this plugin saved onto every recording.
         /// </summary>
-        public string DataVersion => "3";
+        public string DataVersion => "4";
 
         public string HomePageUrl
         {
@@ -370,6 +370,12 @@ namespace TVHeadEnd
                 MediaType = item.ChannelType == MediaBrowser.Model.LiveTv.ChannelType.TV ? ChannelMediaType.Video : ChannelMediaType.Audio,
                 IsLiveStream = false,
                 MediaSources = [source],
+
+                // Stated on the item as well as on the source. Jellyfin keeps the item's value
+                // and discards the source's, and without a duration it treats the recording as a
+                // stream of unknown length -- which is why it transcoded with -copyts, carrying
+                // the broadcast's original timestamps through to the client.
+                RunTimeTicks = source.RunTimeTicks,
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
