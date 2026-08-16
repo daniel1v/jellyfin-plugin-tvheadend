@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace TVHeadEnd;
 
 /// <summary>
-/// Register LDAP services.
+/// Registers the services this plugin contributes to Jellyfin.
 /// </summary>
 public class ServiceRegistrator : IPluginServiceRegistrator
 {

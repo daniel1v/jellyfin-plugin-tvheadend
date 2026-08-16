@@ -29,6 +29,7 @@ namespace TVHeadEnd.Configuration
             ForceDeinterlace = false;
             ReencodeWhenNoIdr = true;
             LiveBufferSizeMegabytes = 512;
+            RecordingAccessSecret = string.Empty;
         }
 
         public string TVH_ServerName { get; set; }
@@ -74,6 +75,14 @@ namespace TVHeadEnd.Configuration
         /// broadcast fit into 512 MB.
         /// </summary>
         public int LiveBufferSizeMegabytes { get; set; }
+
+        /// <summary>
+        /// Gets or sets the secret the addresses of recordings are derived from. The endpoint that
+        /// serves them has to answer without a session, because FFmpeg fetches from it, so what
+        /// protects a recording is that its address cannot be guessed. Generated once, on the
+        /// server, and never shown.
+        /// </summary>
+        public string RecordingAccessSecret { get; set; }
 
         /// <summary>
         /// Gets or sets the channels found to carry no IDR frames. Remembering them lets the

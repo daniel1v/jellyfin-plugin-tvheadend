@@ -10,6 +10,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Extensions;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.MediaEncoding;
@@ -37,7 +38,9 @@ namespace TVHeadEnd
         private readonly ILogger<LiveTvService> _logger;
         private readonly HTSConnectionHandler _htsConnectionHandler;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IServerApplicationHost _applicationHost;
         private readonly SourceDescriber _sourceDescriber;
+        private readonly object _secretLock = new();
 
         // A finished recording never changes, so what an analysis found holds for as long as the
         // server runs. Without this every listing of a folder would analyse its contents again.
@@ -47,10 +50,12 @@ namespace TVHeadEnd
             ILoggerFactory loggerFactory,
             HTSConnectionHandler htsConnectionHandler,
             IMediaEncoder mediaEncoder,
-            IHttpClientFactory httpClientFactory)
+            IHttpClientFactory httpClientFactory,
+            IServerApplicationHost applicationHost)
         {
             _htsConnectionHandler = htsConnectionHandler;
             _httpClientFactory = httpClientFactory;
+            _applicationHost = applicationHost;
             _logger = loggerFactory.CreateLogger<LiveTvService>();
             _sourceDescriber = new SourceDescriber(mediaEncoder, _logger);
             _logger.LogDebug("[TVHclient] RecordingsChannel()");
@@ -83,7 +88,7 @@ namespace TVHeadEnd
         /// this, so raising it once rebuilds them -- which is what clears the placeholder media
         /// source that earlier versions of this plugin saved onto every recording.
         /// </summary>
-        public string DataVersion => "2";
+        public string DataVersion => "3";
 
         public string HomePageUrl
         {
@@ -403,7 +408,11 @@ namespace TVHeadEnd
             var sample = Path.Combine(Path.GetTempPath(), $"tvheadend-analysis-{Guid.NewGuid():N}.ts");
             try
             {
-                await FetchAnalysisSample(source.Path, sample, cancellationToken).ConfigureAwait(false);
+                // Straight from TVHeadend, not through the endpoint this plugin serves clients
+                // from: that one exists to make FFmpeg's seeking work, and going through it here
+                // would only route the request back out through Jellyfin.
+                var upstream = _htsConnectionHandler.GetAuthenticatedUrl("dvrfile/" + id);
+                await FetchAnalysisSample(upstream, sample, cancellationToken).ConfigureAwait(false);
                 return await _sourceDescriber
                     .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
                     .ConfigureAwait(false);
@@ -471,6 +480,33 @@ namespace TVHeadEnd
             }
         }
 
+        /// <summary>
+        /// Gets the secret the addresses of recordings are derived from, creating it the first
+        /// time it is needed. It has to survive restarts, because Jellyfin stores the address it
+        /// produced on the item.
+        /// </summary>
+        private string EnsureAccessSecret()
+        {
+            var configuration = Plugin.Instance.Configuration;
+            if (!string.IsNullOrEmpty(configuration.RecordingAccessSecret))
+            {
+                return configuration.RecordingAccessSecret;
+            }
+
+            lock (_secretLock)
+            {
+                configuration = Plugin.Instance.Configuration;
+                if (string.IsNullOrEmpty(configuration.RecordingAccessSecret))
+                {
+                    configuration.RecordingAccessSecret = Api.RecordingAccessToken.CreateSecret();
+                    Plugin.Instance.SaveConfiguration();
+                    _logger.LogInformation("TVHeadend recordings: created the secret their addresses are derived from");
+                }
+
+                return configuration.RecordingAccessSecret;
+            }
+        }
+
         private MediaSourceInfo BuildRecordingMediaSource(string id)
         {
             var path = BuildRecordingPath(id);
@@ -494,13 +530,25 @@ namespace TVHeadEnd
             });
         }
 
+        /// <summary>
+        /// Builds the address a client is given for a recording: this plugin's own endpoint, not
+        /// TVHeadend's.
+        /// </summary>
+        /// <remarks>
+        /// TVHeadend drops the connection when FFmpeg seeks back to the start after analysing the
+        /// stream, and Jellyfin has no way to tell FFmpeg not to. Serving the recording here
+        /// turns every seek into a fresh request upstream, which TVHeadend answers reliably, and
+        /// puts recordings where live TV already is.
+        /// </remarks>
         private string BuildRecordingPath(string id)
         {
             try
             {
-                // Built through the connection handler so the recording URL uses the web root
-                // TVHeadend reports, exactly like channel icons and stream URLs do.
-                return _htsConnectionHandler.GetAuthenticatedUrl("dvrfile/" + id);
+                var secret = EnsureAccessSecret();
+                return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
+                    + "/TVHeadend/Recordings/"
+                    + Api.RecordingAccessToken.Create(id, secret)
+                    + "/stream.ts";
             }
             catch (Exception ex)
             {
