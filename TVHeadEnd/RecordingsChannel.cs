@@ -27,7 +27,7 @@ using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd
 {
-    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes
+    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IRequiresMediaInfoCallback
     {
         /// <summary>
         /// How much of a recording is fetched to analyse it. The program tables and a sample of
@@ -37,11 +37,17 @@ namespace TVHeadEnd
         private const int AnalysisSampleLength = 8 * 1024 * 1024;
 
         /// <summary>
-        /// When the description this plugin produces last changed shape. Raise it whenever the
-        /// media source or its streams are built differently, so that recordings Jellyfin already
-        /// stored are described again rather than keeping what an older version wrote.
+        /// When the source this listing reports last changed shape.
         /// </summary>
-        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 22, 30, 0, DateTimeKind.Utc);
+        /// <remarks>
+        /// ChannelManager saves a channel item's media sources only when the item is new or when
+        /// ChannelItemInfo.DateModified is later than the date it stored; no part of MediaSources
+        /// takes part in that decision, and DataVersion does not either -- it only invalidates the
+        /// response cache. So this is the one way an already stored item can be migrated, and it
+        /// has to be raised whenever the shape changes. It last changed when listings stopped
+        /// carrying invented streams and began reporting a placeholder.
+        /// </remarks>
+        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 0, 0, DateTimeKind.Utc);
 
         private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
@@ -93,11 +99,13 @@ namespace TVHeadEnd
         public string[] Attributes => ["Recordings"];
 
         /// <summary>
-        /// Gets the version of this channel's contents. Jellyfin keys its stored channel items on
-        /// this, so raising it once rebuilds them -- which is what clears the placeholder media
-        /// source that earlier versions of this plugin saved onto every recording.
+        /// Gets the version of this channel's contents. It forms part of the path Jellyfin caches
+        /// a channel's listing under, so raising it discards that cache and the plugin is asked
+        /// again. It does not touch items already stored: ChannelManager only rewrites those when
+        /// the item is new or something it compares has changed, and it compares no part of
+        /// MediaSources. Migrating an existing item is what DescriptionRevisionUtc is for.
         /// </summary>
-        public string DataVersion => "7";
+        public string DataVersion => "8";
 
         public string HomePageUrl
         {
@@ -282,87 +290,17 @@ namespace TVHeadEnd
             _logger.LogDebug("[TVHclient] GetChannelItems - Updating TVHeadend Recording Items");
 
             var allRecordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
-            var selected = allRecordings.Where(filter).ToList();
-
-            // Described here rather than on demand. Jellyfin looks a media source up by its
-            // identifier among the sources stored with the item, and only what a listing reported
-            // is stored -- a source handed over later through IRequiresMediaInfoCallback is never
-            // found, and the request fails before playback starts.
-            var sources = await DescribeRecordings(selected, cancellationToken).ConfigureAwait(false);
 
             return new ChannelItemResult
             {
-                Items = selected.Select(info => ConvertToChannelItem(info, sources[info.Id ?? string.Empty])).ToList()
+                Items = allRecordings.Where(filter).Select(ConvertToChannelItem).ToList()
             };
-        }
-
-        /// <summary>
-        /// Describes every recording in the listing, reusing what is already known. A finished
-        /// recording never changes, so an analysis of one holds for as long as the server runs.
-        /// </summary>
-        private async Task<Dictionary<string, MediaSourceInfo>> DescribeRecordings(
-            IReadOnlyList<MyRecordingInfo> recordings,
-            CancellationToken cancellationToken)
-        {
-            var described = new Dictionary<string, MediaSourceInfo>(StringComparer.OrdinalIgnoreCase);
-            var pending = new List<MyRecordingInfo>();
-
-            foreach (var recording in recordings)
-            {
-                var id = recording.Id ?? string.Empty;
-                if (_describedRecordings.TryGetValue(id, out var cached))
-                {
-                    described[id] = cached;
-                }
-                else if (!described.ContainsKey(id))
-                {
-                    described[id] = BuildRecordingMediaSource(id);
-                    pending.Add(recording);
-                }
-            }
-
-            if (pending.Count == 0)
-            {
-                return described;
-            }
-
-            var stopwatch = Stopwatch.StartNew();
-
-            // A handful at a time: each one is a range request plus an analysis of a few
-            // megabytes, and a full listing would otherwise be as slow as it is long.
-            using var concurrency = new SemaphoreSlim(4);
-            await Task.WhenAll(pending.Select(async recording =>
-            {
-                var id = recording.Id ?? string.Empty;
-                await concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    var source = described[id];
-                    if (await DescribeRecording(id, source, cancellationToken).ConfigureAwait(false))
-                    {
-                        source.RunTimeTicks = Runtime(recording);
-                        _describedRecordings[id] = source;
-                    }
-                }
-                finally
-                {
-                    concurrency.Release();
-                }
-            })).ConfigureAwait(false);
-
-            _logger.LogInformation(
-                "TVHeadend recordings: analysed {Count} of {Total} in {ElapsedMilliseconds} ms",
-                pending.Count,
-                recordings.Count,
-                stopwatch.ElapsedMilliseconds);
-
-            return described;
         }
 
         private static long? Runtime(MyRecordingInfo recording)
             => recording.EndDate > recording.StartDate ? (recording.EndDate - recording.StartDate).Ticks : null;
 
-        private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item, MediaSourceInfo source)
+        private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item)
         {
             _logger.LogDebug("[TVHclient] ConvertToChannelItem - Creating ChannelItemInfo");
 
@@ -378,13 +316,22 @@ namespace TVHeadEnd
                 Id = item.Id,
                 MediaType = item.ChannelType == MediaBrowser.Model.LiveTv.ChannelType.TV ? ChannelMediaType.Video : ChannelMediaType.Audio,
                 IsLiveStream = false,
-                MediaSources = [source],
 
-                // Stated on the item as well as on the source. Jellyfin keeps the item's value
-                // and discards the source's, and without a duration it treats the recording as a
-                // stream of unknown length -- which is why it transcoded with -copyts, carrying
-                // the broadcast's original timestamps through to the client.
-                RunTimeTicks = source.RunTimeTicks,
+                // A placeholder, carrying no streams at all. The listing must not analyse the
+                // recordings it lists -- that is one range request and one FFprobe run per
+                // recording, on every listing -- and describing them from guesswork instead is
+                // worse than saying nothing: Jellyfin maps streams by their position in this
+                // list, so invented entries send FFmpeg's "-map" arguments to the wrong tracks.
+                // What the recording contains is answered by GetChannelItemMediaInfo when
+                // playback is negotiated. The Placeholder type is what tells Jellyfin this is
+                // not a description it should act on; GetPlaybackMediaSources checks for exactly
+                // that before it would otherwise force a remote probe of its own.
+                MediaSources = [BuildPlaceholderSource(item.Id ?? string.Empty)],
+
+                // Stated on the item, because the source deliberately carries nothing. TVHeadend
+                // knows how long it scheduled the recording for, and without a duration Jellyfin
+                // treats the recording as a stream of unknown length.
+                RunTimeTicks = Runtime(item),
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
@@ -412,14 +359,60 @@ namespace TVHeadEnd
         }
 
         /// <summary>
+        /// Describes what a recording contains, when Jellyfin negotiates playback for it.
+        /// </summary>
+        /// <remarks>
+        /// This is where the analysis belongs. A listing would have to run one range request and
+        /// one FFprobe over every recording it returns, on every listing, to answer a question
+        /// only the recording being played actually raises.
+        /// </remarks>
+        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The media sources for the recording.</returns>
+        public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(string id, CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(id);
+
+            if (_describedRecordings.TryGetValue(id, out var cached))
+            {
+                return [cached];
+            }
+
+            var source = BuildRecordingMediaSource(id);
+            if (!await DescribeRecording(id, source, cancellationToken).ConfigureAwait(false))
+            {
+                // Undescribed, and deliberately still without invented streams. Jellyfin falls
+                // back to what it can work out itself rather than being told something untrue.
+                return [source];
+            }
+
+            source.RunTimeTicks = await GetRecordingRuntime(id, cancellationToken).ConfigureAwait(false);
+
+            // Only a successful analysis is kept. A finished recording never changes, so what was
+            // found holds for as long as the server runs.
+            _describedRecordings[id] = source;
+            return [source];
+        }
+
+        /// <summary>
+        /// Gets how long the recording runs, from the times TVHeadend scheduled it for. An
+        /// analysis cannot supply it, because what is analysed is a sample.
+        /// </summary>
+        private async Task<long?> GetRecordingRuntime(string id, CancellationToken cancellationToken)
+        {
+            var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
+            var recording = recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+            return recording is null ? null : Runtime(recording);
+        }
+
+        /// <summary>
         /// Fills in what a recording contains, from a sample of its opening.
         /// </summary>
         /// <remarks>
-        /// Reading a sample rather than the recording is what makes describing every listed
-        /// recording affordable. TVHeadend answers range requests but does not advertise
-        /// Accept-Ranges, so FFmpeg treats a recording as an unseekable stream and reads it from
-        /// end to end -- measured at 68.6 seconds for an 8 GB recording against 0.14 for the
-        /// sample.
+        /// Reading a sample rather than the recording is what makes the analysis affordable.
+        /// TVHeadend answers range requests but does not advertise Accept-Ranges, so FFmpeg
+        /// treats a recording as an unseekable stream and reads it from end to end -- measured at
+        /// 68.6 seconds for an 8 GB recording against 0.14 for the sample.
         /// </remarks>
         /// <returns><see langword="true"/> when the sample described the recording.</returns>
         private async Task<bool> DescribeRecording(string id, MediaSourceInfo source, CancellationToken cancellationToken)
@@ -463,16 +456,6 @@ namespace TVHeadEnd
                     // Left behind in the temporary directory; harmless.
                 }
             }
-        }
-
-        private static MediaSourceInfo BuildPlaceholderStreams(MediaSourceInfo source)
-        {
-            source.MediaStreams =
-            [
-                new MediaStream { Type = MediaStreamType.Video, Index = -1, IsInterlaced = true, RealFrameRate = 50.0F },
-                new MediaStream { Type = MediaStreamType.Audio, Index = -1 },
-            ];
-            return source;
         }
 
         /// <summary>
@@ -606,22 +589,45 @@ namespace TVHeadEnd
             return ("TVHeadEnd_Recording_" + recordingId).GetMD5().ToString("N", CultureInfo.InvariantCulture);
         }
 
+        /// <summary>
+        /// The source a listing reports: a placeholder, standing for a recording nobody has asked
+        /// to play yet.
+        /// </summary>
+        /// <remarks>
+        /// It carries no streams, because the listing does not analyse and must not guess. Its
+        /// identifier is deliberately the TVHeadend one rather than a GUID: the identifier a
+        /// client comes back with has to be the described source, and keeping the two textually
+        /// distinct means a placeholder can never be mistaken for a description.
+        /// </remarks>
+        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <returns>The placeholder source.</returns>
+        internal static MediaSourceInfo BuildPlaceholderSource(string id)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(id);
+
+            return new MediaSourceInfo
+            {
+                Id = "tvheadend-recording-" + id,
+                Type = MediaSourceType.Placeholder,
+                Protocol = MediaProtocol.Http,
+                Container = "mpegts",
+                MediaStreams = [],
+            };
+        }
+
         private MediaSourceInfo BuildRecordingMediaSource(string id)
         {
             var path = BuildRecordingPath(id);
 
-            // The placeholder stands in only when the analysis fails. It describes nothing
-            // truthfully, but it is what this plugin always reported, so a failure is no worse
-            // than before rather than an error.
-            return BuildPlaceholderStreams(new MediaSourceInfo
+            return new MediaSourceInfo
             {
                 Path = path,
                 Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
-
                 Id = RecordingMediaSourceId(id),
                 Container = "mpegts",
                 AnalyzeDurationMs = 2000,
-            });
+                MediaStreams = [],
+            };
         }
 
         /// <summary>
