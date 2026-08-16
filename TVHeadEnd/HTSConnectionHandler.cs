@@ -57,6 +57,7 @@ namespace TVHeadEnd
         private bool _enableSubsMaudios;
         private bool _forceDeinterlace;
         private bool _reencodeWhenNoIdr;
+        private int _liveBufferSizeMegabytes;
 
         private LiveTvService? _liveTvService;
 
@@ -144,6 +145,7 @@ namespace TVHeadEnd
             _enableSubsMaudios = config.EnableSubsMaudios;
             _forceDeinterlace = config.ForceDeinterlace;
             _reencodeWhenNoIdr = config.ReencodeWhenNoIdr;
+            _liveBufferSizeMegabytes = config.LiveBufferSizeMegabytes;
 
             if (_priority < DvrPriorityImportant || _priority > DvrPriorityNotSet)
             {
@@ -424,6 +426,12 @@ namespace TVHeadEnd
         {
             Init();
             return _reencodeWhenNoIdr;
+        }
+
+        public int GetLiveBufferSizeMegabytes()
+        {
+            Init();
+            return _liveBufferSizeMegabytes;
         }
 
         public Task<IEnumerable<MyRecordingInfo>> BuildDvrInfos(CancellationToken cancellationToken)

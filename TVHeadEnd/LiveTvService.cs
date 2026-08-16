@@ -504,6 +504,7 @@ namespace TVHeadEnd
                 _logger,
                 _mediaEncoder.EncoderPath,
                 _htsConnectionHandler.GetReencodeWhenNoIdr(),
+                _htsConnectionHandler.GetLiveBufferSizeMegabytes(),
                 GetKnownChannelVerdict(channelId),
                 requiresReencode => RememberChannelVerdict(channelId, requiresReencode),
                 _channelProbeCache.TryGetValue(channelId, out var cachedProbe) ? cachedProbe.ProgramLayout : null)

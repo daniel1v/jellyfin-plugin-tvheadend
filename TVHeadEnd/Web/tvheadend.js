@@ -21,6 +21,7 @@ export default function (view, params) {
             page.querySelector('#chkEnableSubsMaudios').checked = config.EnableSubsMaudios || false;
             page.querySelector('#chkForceDeinterlace').checked = config.ForceDeinterlace || false;
             page.querySelector('#chkReencodeWhenNoIdr').checked = config.ReencodeWhenNoIdr !== false;
+            page.querySelector('#txtLiveBufferSizeMegabytes').value = config.LiveBufferSizeMegabytes || '512';
             Dashboard.hideLoadingMsg();
         });
     });
@@ -43,6 +44,7 @@ export default function (view, params) {
             config.EnableSubsMaudios = form.querySelector('#chkEnableSubsMaudios').checked;
             config.ForceDeinterlace = form.querySelector('#chkForceDeinterlace').checked;
             config.ReencodeWhenNoIdr = form.querySelector('#chkReencodeWhenNoIdr').checked;
+            config.LiveBufferSizeMegabytes = form.querySelector('#txtLiveBufferSizeMegabytes').value;
             ApiClient.updatePluginConfiguration(TVHclientConfigurationPageVar.pluginUniqueId, config).then(Dashboard.processPluginConfigurationUpdateResult);
         });
         return false;

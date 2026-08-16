@@ -67,6 +67,10 @@
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">Some broadcasters (for example the German ARD network) signal random access only through recovery points and never send H.264 IDR frames. Many device decoders cannot start such a stream and show a black picture. When enabled, the video of affected channels is re-encoded on the server so every client can play it; audio is passed through and all other channels remain untouched. Costs CPU while an affected channel is being watched. Note: Changing this requires a server restart.</div>
                 </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size (MB):" />
+                    <div class="fieldDescription">Each channel being watched is written into a buffer of this size in a circle, so this is the whole disk cost of a channel however long it runs. It is also how far a client may fall behind the live edge, by pausing for instance, before it is moved forward. Around ten minutes of an HD broadcast fit into 512 MB. Note: Changing this requires a server restart.</div>
+                </div>
                 <div>
                     <button is="emby-button" type="submit" class="raised button-submit block">
                         <span>Save</span>

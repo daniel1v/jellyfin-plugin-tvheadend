@@ -59,7 +59,7 @@ public class TvHeadendHttpLiveStreamTests
     [Fact]
     public void ReencodeArgumentsRewriteTheVideoAndCopyEveryAudioTrack()
     {
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(@"C:\buffers\tvheadend-1.ts");
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments();
 
         // The point of the exercise: the source carries no IDR frame, so the video has to be
         // rewritten, while re-encoding the audio would be a pointless loss of quality.
@@ -71,8 +71,18 @@ public class TvHeadendHttpLiveStreamTests
         Assert.Contains("0:a?", arguments);
         Assert.Contains("-dn", arguments);
         Assert.Contains("-sn", arguments);
+    }
 
-        Assert.Equal(@"C:\buffers\tvheadend-1.ts", arguments[^1]);
+    [Fact]
+    public void ReencodeArgumentsWriteToAPipeBecauseTheBufferIsCircular()
+    {
+        // FFmpeg cannot address a ring, so its output is carried into the buffer by the plugin
+        // rather than written to a file. Nothing in the arguments may name a path.
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments();
+
+        Assert.Equal("pipe:1", arguments[^1]);
+        Assert.DoesNotContain(arguments, argument => argument.Contains(".ts", System.StringComparison.Ordinal));
+        Assert.DoesNotContain("-y", arguments);
     }
 
     [Fact]
@@ -80,7 +90,7 @@ public class TvHeadendHttpLiveStreamTests
     {
         // The channel is already being received when the encoder starts; pointing FFmpeg at
         // the tuner again would cost another connection and occupy a second tuner.
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(@"C:\buffers\tvheadend-1.ts");
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments();
 
         Assert.Equal("pipe:0", ValueAfter(arguments, "-i"));
         Assert.DoesNotContain(arguments, argument => argument.StartsWith("http", System.StringComparison.OrdinalIgnoreCase));
@@ -95,7 +105,7 @@ public class TvHeadendHttpLiveStreamTests
     {
         // Left at its default, FFmpeg spends seconds deciding what a transport stream holds,
         // which lands directly on the channel change of an affected channel.
-        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(@"C:\buffers\tvheadend-1.ts");
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments();
 
         Assert.Equal("1000000", ValueAfter(arguments, "-analyzeduration"));
         Assert.Equal("4000000", ValueAfter(arguments, "-probesize"));

@@ -45,8 +45,14 @@ namespace TVHeadEnd.Streaming
         /// </summary>
         private const int ProbeBufferSize = 131072;
 
-        private const int TransportStreamPacketSize = 188;
         private const int LiveEdgeCatchUpLength = 20000;
+
+        /// <summary>
+        /// Below this the window would be shorter than the lag a client can build up while its
+        /// decoder starts, and it would read over its own tail.
+        /// </summary>
+        private const int MinimumBufferSizeMegabytes = 32;
+
         private const int RetryDeleteCount = 10;
         private const int ReencodeStderrTailLines = 12;
 
@@ -80,8 +86,11 @@ namespace TVHeadEnd.Streaming
         private readonly Action<bool>? _reportRequiresReencode;
         private readonly string? _cachedProgramLayout;
 
+        private readonly long _bufferCapacityBytes;
+
         private Task? _feedTask;
         private LiveTransportStreamConditioner? _conditioner;
+        private LiveRingBuffer? _buffer;
         private Process? _reencodeProcess;
         private DateTime _dateOpenedUtc;
         private bool _verdictReported;
@@ -95,6 +104,7 @@ namespace TVHeadEnd.Streaming
             ILogger logger,
             string ffmpegPath,
             bool reencodeWhenNoIdr,
+            int bufferSizeMegabytes,
             bool? knownRequiresReencode = null,
             Action<bool>? reportRequiresReencode = null,
             string? cachedProgramLayout = null)
@@ -114,6 +124,7 @@ namespace TVHeadEnd.Streaming
             _logger = logger;
             _ffmpegPath = ffmpegPath;
             _reencodeWhenNoIdr = reencodeWhenNoIdr;
+            _bufferCapacityBytes = Math.Max(MinimumBufferSizeMegabytes, bufferSizeMegabytes) * 1024L * 1024L;
             _knownRequiresReencode = knownRequiresReencode;
             _reportRequiresReencode = reportRequiresReencode;
             _cachedProgramLayout = cachedProgramLayout;
@@ -218,6 +229,12 @@ namespace TVHeadEnd.Streaming
                 }
             }
 
+            if (_buffer is not null)
+            {
+                await _buffer.DisposeAsync().ConfigureAwait(false);
+                _buffer = null;
+            }
+
             await DeleteTemporaryFile().ConfigureAwait(false);
             _logger.LogInformation("TVHeadend live stream {UniqueId} closed", UniqueId);
         }
@@ -226,24 +243,17 @@ namespace TVHeadEnd.Streaming
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            var stream = new FileStream(
-                _temporaryFilePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete,
-                IODefaults.FileStreamBufferSize,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var buffer = _buffer
+                ?? throw new InvalidOperationException("The live stream has no buffer; it was not opened.");
 
-            if ((DateTime.UtcNow - _dateOpenedUtc).TotalSeconds > 10 && stream.Length > LiveEdgeCatchUpLength)
-            {
-                // A consumer joining a stream that has been running for a while starts near
-                // the live edge rather than replaying the backlog, on a packet boundary so the
-                // reader does not have to resynchronise first.
-                var liveEdgeOffset = stream.Length - LiveEdgeCatchUpLength;
-                stream.Seek(liveEdgeOffset - (liveEdgeOffset % TransportStreamPacketSize), SeekOrigin.Begin);
-            }
-
-            return stream;
+            // A consumer joining a stream that has been running for a while starts near the live
+            // edge rather than replaying the backlog. The first one instead starts at the very
+            // beginning, where the conditioner placed the program tables and a random access
+            // point, without which no decoder can begin.
+            return (DateTime.UtcNow - _dateOpenedUtc).TotalSeconds > 10
+                && buffer.WritePosition > LiveEdgeCatchUpLength
+                ? buffer.OpenReader(LiveEdgeCatchUpLength)
+                : buffer.OpenReaderFromStart();
         }
 
         public void Dispose()
@@ -259,6 +269,8 @@ namespace TVHeadEnd.Streaming
             TryKillReencodeProcess();
             _lifetimeCancellationTokenSource.Dispose();
             _reencodeProcess?.Dispose();
+            _buffer?.Dispose();
+            _buffer = null;
         }
 
         /// <summary>
@@ -372,12 +384,9 @@ namespace TVHeadEnd.Streaming
         /// received -- which costs another round of connection setup and, on a system with few
         /// tuners, may not be available at all.
         /// </remarks>
-        /// <param name="outputPath">The shared buffer file FFmpeg writes to.</param>
         /// <returns>The argument list, one argument per element.</returns>
-        internal static IReadOnlyList<string> BuildReencodeArguments(string outputPath)
+        internal static IReadOnlyList<string> BuildReencodeArguments()
         {
-            ArgumentException.ThrowIfNullOrEmpty(outputPath);
-
             List<string> arguments =
             [
                 "-hide_banner",
@@ -409,8 +418,11 @@ namespace TVHeadEnd.Streaming
                 // Passes progressive frames through untouched and deinterlaces the rest, so
                 // interlaced services do not come out combed.
                 "-vf", "yadif=deint=interlaced",
+
+                // Written to a pipe rather than a file: the buffer is circular, which FFmpeg
+                // cannot address, so its output is carried in by PumpEncoderOutput.
                 "-f", "mpegts",
-                "-y", outputPath,
+                "pipe:1",
             ];
 
             return arguments;
@@ -507,8 +519,8 @@ namespace TVHeadEnd.Streaming
             byte[]? conditionedBuffer = null;
             long bufferedBytes = 0;
             long firstByteTimestamp = 0;
-            FileStream? bufferFile = null;
-            Stream? sink = null;
+            LiveRingBuffer? ring = null;
+            Stream? encoderInput = null;
 
             var reencoding = startInReencodeMode;
             bool? requiresReencode = startInReencodeMode ? true : _reencodeWhenNoIdr ? null : false;
@@ -534,14 +546,12 @@ namespace TVHeadEnd.Streaming
                         LiveTransportStreamConditioner.EventInformationTablePid);
                     _conditioner = conditioner;
 
+                    ring = new LiveRingBuffer(_temporaryFilePath, _bufferCapacityBytes);
+                    _buffer = ring;
+
                     if (reencoding)
                     {
-                        sink = StartReencodeProcess();
-                    }
-                    else
-                    {
-                        bufferFile = OpenBufferFile();
-                        sink = bufferFile;
+                        encoderInput = StartReencodeProcess(ring);
                     }
 
                     while (true)
@@ -577,32 +587,41 @@ namespace TVHeadEnd.Streaming
 
                         if (requiresReencode == true && !reencoding)
                         {
-                            // Hand the flow over to the encoder without re-opening the
-                            // channel: the buffer file becomes FFmpeg's output, and the
-                            // stream it has been receiving becomes FFmpeg's input.
+                            // Hand the flow over to the encoder without re-opening the channel:
+                            // the stream already being received becomes FFmpeg's input, and its
+                            // output takes over the buffer. What the detection phase wrote is
+                            // the unencoded broadcast and is discarded.
                             reencoding = true;
-                            await bufferFile!.DisposeAsync().ConfigureAwait(false);
-                            bufferFile = null;
                             bufferedBytes = 0;
-                            sink = StartReencodeProcess();
+                            ring.Reset();
+                            encoderInput = StartReencodeProcess(ring);
 
                             // FFmpeg joins mid-flight and has missed the tables that went out
                             // at the start of the conditioned stream.
                             var tableBytes = conditioner.WriteProgramTables(buffer);
                             if (tableBytes > 0)
                             {
-                                await sink.WriteAsync(buffer.AsMemory(0, tableBytes), cancellationToken).ConfigureAwait(false);
+                                await encoderInput.WriteAsync(buffer.AsMemory(0, tableBytes), cancellationToken).ConfigureAwait(false);
                             }
                         }
 
-                        await sink!.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken)
-                            .ConfigureAwait(false);
-                        bufferedBytes += conditionedBytes;
+                        if (reencoding)
+                        {
+                            // The encoder's output reaches the buffer through its own pump.
+                            await encoderInput!.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await ring.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken)
+                                .ConfigureAwait(false);
+                            bufferedBytes += conditionedBytes;
+                        }
+
                         UpdateCachedLayoutMatch(conditioner);
 
                         if (!reencoding && !ready.Task.IsCompleted && IsBufferReady(bufferedBytes, firstByteTimestamp))
                         {
-                            await sink.FlushAsync(cancellationToken).ConfigureAwait(false);
                             _dateOpenedUtc = DateTime.UtcNow;
                             ready.TrySetResult();
                         }
@@ -633,17 +652,13 @@ namespace TVHeadEnd.Streaming
             finally
             {
                 // Closing FFmpeg's input lets it flush and exit; its monitor then clears the
-                // sharing flag once the encoder is really gone.
-                if (bufferFile is not null)
-                {
-                    await bufferFile.DisposeAsync().ConfigureAwait(false);
-                    EnableStreamSharing = false;
-                }
-                else if (sink is not null)
+                // sharing flag once the encoder is really gone. Without an encoder there is
+                // nothing left to wait for, so sharing ends here.
+                if (encoderInput is not null)
                 {
                     try
                     {
-                        await sink.DisposeAsync().ConfigureAwait(false);
+                        await encoderInput.DisposeAsync().ConfigureAwait(false);
                     }
                     catch (IOException)
                     {
@@ -733,47 +748,27 @@ namespace TVHeadEnd.Streaming
             return carriesNoIdr;
         }
 
-        private FileStream OpenBufferFile()
-        {
-            return new FileStream(
-                _temporaryFilePath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.Read | FileShare.Delete,
-                IODefaults.FileStreamBufferSize,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-        }
-
         /// <summary>
-        /// Starts the encoder and returns the stream its input is written to.
+        /// Starts the encoder and returns the stream its input is written to. Its output is
+        /// pumped into the ring buffer by <see cref="PumpEncoderOutput"/>, because a circular
+        /// buffer is not something FFmpeg can write to by itself.
         /// </summary>
-        private Stream StartReencodeProcess()
+        private Stream StartReencodeProcess(LiveRingBuffer ring)
         {
             _logger.LogInformation(
                 "TVHeadend live stream {UniqueId}: the broadcast carries no IDR frame, re-encoding the video so clients can start decoding",
                 UniqueId);
-
-            // A detection phase may have written to this path already. Left in place, the wait
-            // for output would be satisfied by those stale bytes and the probe would describe
-            // the original stream instead of the re-encoded one.
-            try
-            {
-                File.Delete(_temporaryFilePath);
-            }
-            catch (IOException)
-            {
-                // A reader may still hold the file; FFmpeg truncates it either way.
-            }
 
             var startInfo = new ProcessStartInfo
             {
                 FileName = _ffmpegPath,
                 UseShellExecute = false,
                 RedirectStandardInput = true,
+                RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            foreach (var argument in BuildReencodeArguments(_temporaryFilePath))
+            foreach (var argument in BuildReencodeArguments())
             {
                 startInfo.ArgumentList.Add(argument);
             }
@@ -788,7 +783,46 @@ namespace TVHeadEnd.Streaming
             _reencodeProcess = process;
             IsReencoding = true;
             _ = MonitorReencodeFeed(process, _lifetimeCancellationTokenSource.Token);
+            _ = PumpEncoderOutput(process, ring, _lifetimeCancellationTokenSource.Token);
             return process.StandardInput.BaseStream;
+        }
+
+        /// <summary>
+        /// Carries the encoder's output into the ring buffer.
+        /// </summary>
+        private async Task PumpEncoderOutput(Process process, LiveRingBuffer ring, CancellationToken cancellationToken)
+        {
+            var buffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
+            try
+            {
+                var output = process.StandardOutput.BaseStream;
+                while (true)
+                {
+                    var read = await output.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    await ring.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when the stream closes.
+            }
+            catch (IOException)
+            {
+                // FFmpeg went away; its monitor reports why.
+            }
+            catch (ObjectDisposedException)
+            {
+                // The buffer was released while the encoder was still draining.
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
 
         private async Task MonitorReencodeFeed(Process process, CancellationToken cancellationToken)
@@ -837,8 +871,7 @@ namespace TVHeadEnd.Streaming
                 openCancellationToken.ThrowIfCancellationRequested();
                 _lifetimeCancellationTokenSource.Token.ThrowIfCancellationRequested();
 
-                var fileInfo = new FileInfo(_temporaryFilePath);
-                if (fileInfo.Exists && fileInfo.Length >= ProbeBufferSize)
+                if (_buffer is { } buffer && buffer.WritePosition >= ProbeBufferSize)
                 {
                     _dateOpenedUtc = DateTime.UtcNow;
                     return;

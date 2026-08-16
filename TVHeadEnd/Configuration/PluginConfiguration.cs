@@ -28,6 +28,7 @@ namespace TVHeadEnd.Configuration
             EnableSubsMaudios = false;
             ForceDeinterlace = false;
             ReencodeWhenNoIdr = true;
+            LiveBufferSizeMegabytes = 512;
         }
 
         public string TVH_ServerName { get; set; }
@@ -64,6 +65,15 @@ namespace TVHeadEnd.Configuration
         /// other channels are passed through untouched.
         /// </summary>
         public bool ReencodeWhenNoIdr { get; set; }
+
+        /// <summary>
+        /// Gets or sets the size of the buffer each running channel occupies on disk. The live
+        /// stream is written into it in a circle, so this is the whole cost of a channel however
+        /// long it runs -- and at the same time the distance a client can be behind the live edge,
+        /// by pausing for instance, before it is moved forward. Roughly ten minutes of an HD
+        /// broadcast fit into 512 MB.
+        /// </summary>
+        public int LiveBufferSizeMegabytes { get; set; }
 
         /// <summary>
         /// Gets or sets the channels found to carry no IDR frames. Remembering them lets the
