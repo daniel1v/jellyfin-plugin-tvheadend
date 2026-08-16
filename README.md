@@ -20,9 +20,26 @@
 
 This plugin allows you to manage TVHeadend from Jellyfin.
 
+This fork reworks live TV delivery so that channels direct play on the official Jellyfin Android app.
+Channels are served from a shared, conditioned MPEG-TS buffer rather than the raw TVHeadend URL, and
+broadcasts that signal random access without IDR frames — which common device decoders refuse to start
+on, giving audio but a black picture — have their video re-encoded. Every other channel is passed
+through untouched. See the [release notes](https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases)
+for the full list.
+
 ## Installation
 
-[See the official documentation for install instructions](https://jellyfin.org/docs/general/server/plugins/index.html#installing).
+Add this fork as a plugin repository in Jellyfin under *Dashboard → Plugins → Repositories*:
+
+```
+https://raw.githubusercontent.com/daniel1v/jellyfin-plugin-tvheadend/master/manifest.json
+```
+
+TVHeadend then appears in the plugin catalogue. It carries the same plugin GUID as the official
+plugin, so it replaces rather than accompanies it — uninstall the official one first if it is
+present. Requires Jellyfin 12 (`targetAbi` 12.0.0.0).
+
+For the general mechanics, [see the official documentation](https://jellyfin.org/docs/general/server/plugins/index.html#installing).
 
 ## Build
 
@@ -50,8 +67,21 @@ dotnet build TVHeadEnd.slnx -c Release
 
 ## Releasing
 
-To release the plugin we recommend [JPRM](https://github.com/oddstr13/jellyfin-plugin-repository-manager) that will build and package the plugin.
-For additional context and for how to add the packaged plugin zip to a plugin manifest see the [JPRM documentation](https://github.com/oddstr13/jellyfin-plugin-repository-manager) for more info.
+Upstream publishes through the Jellyfin project's own infrastructure, which a fork cannot use, so
+this repository packages and publishes itself. Bump the version in `build.yaml` and
+`Directory.Build.props`, describe the release in the `changelog` block of `build.yaml`, then:
+
+```powershell
+pwsh tools/release.ps1
+gh release create v13.1.0.0 dist/tvheadend_13.1.0.0.zip --repo daniel1v/jellyfin-plugin-tvheadend
+git commit -am "Publish 13.1.0.0" && git push
+```
+
+`tools/release.ps1` takes every package detail from `build.yaml`, so the zip, the `meta.json` inside
+it and the `manifest.json` entry cannot drift apart. The checksum Jellyfin verifies is the MD5 of the
+zip, which is why the manifest is written after the zip is final — upload exactly the file the script
+produced. Upstream's route via [JPRM](https://github.com/oddstr13/jellyfin-plugin-repository-manager)
+remains an alternative.
 
 ## Contributing
 
