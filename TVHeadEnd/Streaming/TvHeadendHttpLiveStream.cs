@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,14 +17,48 @@ using Microsoft.Extensions.Logging;
 
 namespace TVHeadEnd.Streaming
 {
+    /// <summary>
+    /// Feeds a TVHeadend channel into a shared buffer file that Jellyfin hands to clients as
+    /// a local media source.
+    /// </summary>
+    /// <remarks>
+    /// The buffer is filled one of two ways. Normally the transport stream is copied through
+    /// unchanged apart from conditioning, which costs nothing and preserves the broadcast.
+    /// Broadcasts that carry no IDR frame get their video re-encoded instead, because common
+    /// device decoders never emit a frame from such a stream; which of the two applies is
+    /// measured per channel rather than configured.
+    /// </remarks>
     internal sealed class TvHeadendHttpLiveStream : ILiveStream, IDirectStreamProvider
     {
         private const int StreamBufferSize = 131072;
-        private const int MinimumProbeBufferSize = 131072;
+
+        /// <summary>
+        /// Enough of the stream for a client to begin. The conditioner puts the tables and a
+        /// keyframe at the very front, so this only has to cover the first few frames.
+        /// </summary>
+        private const int MinimumStartBufferSize = 65536;
+
+        /// <summary>
+        /// What FFprobe needs to describe the stream completely. Only relevant when the probe
+        /// cannot be reused, because it is bought with <see cref="ProbeBufferDuration"/> of
+        /// waiting on every channel change.
+        /// </summary>
+        private const int ProbeBufferSize = 131072;
+
         private const int TransportStreamPacketSize = 188;
         private const int LiveEdgeCatchUpLength = 20000;
         private const int RetryDeleteCount = 10;
-        private static readonly TimeSpan MinimumProbeBufferDuration = TimeSpan.FromSeconds(2);
+        private const int ReencodeStderrTailLines = 12;
+
+        private static readonly TimeSpan ProbeBufferDuration = TimeSpan.FromSeconds(2);
+
+        /// <summary>
+        /// The wall-clock bound on IDR detection, so that a low bitrate channel cannot stretch
+        /// the byte-based scan limit into an unbounded wait before the feed mode is decided.
+        /// </summary>
+        private static readonly TimeSpan IdrDecisionTimeLimit = TimeSpan.FromSeconds(6);
+
+        private static readonly TimeSpan ReencodeStartupTimeout = TimeSpan.FromSeconds(30);
 
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _applicationHost;
@@ -32,26 +67,39 @@ namespace TVHeadEnd.Streaming
         private readonly string _upstreamUrl;
         private readonly IReadOnlyDictionary<string, string> _upstreamHeaders;
         private readonly string _temporaryFilePath;
-        private Task? _pumpTask;
-        private DateTime _dateOpenedUtc;
-        private bool _disposed;
-        private int _debugPacingBytesPerSecond;
-        private bool _debugBypassConditioner;
-        private string? _debugContainer;
+        private readonly string _ffmpegPath;
+        private readonly bool _reencodeWhenNoIdr;
+        private readonly bool? _knownRequiresReencode;
+        private readonly Action<bool>? _reportRequiresReencode;
+        private readonly string? _cachedProgramLayout;
+
+        private Task? _feedTask;
+        private CancellationTokenSource? _conditionedFeedCancellation;
         private LiveTransportStreamConditioner? _conditioner;
+        private Process? _reencodeProcess;
+        private DateTime _dateOpenedUtc;
+        private bool _switchingToReencode;
+        private bool _verdictReported;
+        private bool _disposed;
 
         public TvHeadendHttpLiveStream(
             MediaSourceInfo mediaSource,
             IHttpClientFactory httpClientFactory,
             IConfigurationManager configurationManager,
             IServerApplicationHost applicationHost,
-            ILogger logger)
+            ILogger logger,
+            string ffmpegPath,
+            bool reencodeWhenNoIdr,
+            bool? knownRequiresReencode = null,
+            Action<bool>? reportRequiresReencode = null,
+            string? cachedProgramLayout = null)
         {
             ArgumentNullException.ThrowIfNull(mediaSource);
             ArgumentNullException.ThrowIfNull(httpClientFactory);
             ArgumentNullException.ThrowIfNull(configurationManager);
             ArgumentNullException.ThrowIfNull(applicationHost);
             ArgumentNullException.ThrowIfNull(logger);
+            ArgumentException.ThrowIfNullOrEmpty(ffmpegPath);
 
             _upstreamUrl = mediaSource.Path
                 ?? throw new ArgumentException("The opened media source must contain an upstream URL.", nameof(mediaSource));
@@ -59,6 +107,11 @@ namespace TVHeadEnd.Streaming
             _httpClientFactory = httpClientFactory;
             _applicationHost = applicationHost;
             _logger = logger;
+            _ffmpegPath = ffmpegPath;
+            _reencodeWhenNoIdr = reencodeWhenNoIdr;
+            _knownRequiresReencode = knownRequiresReencode;
+            _reportRequiresReencode = reportRequiresReencode;
+            _cachedProgramLayout = cachedProgramLayout;
 
             UniqueId = Guid.NewGuid().ToString("N");
 
@@ -67,6 +120,7 @@ namespace TVHeadEnd.Streaming
             // still running. The client then receives a source that answers 404 for the rest of
             // its session.
             _temporaryFilePath = Path.Combine(GetBufferDirectory(configurationManager), $"tvheadend-{UniqueId}.ts");
+
             MediaSource = mediaSource;
             ConsumerCount = 1;
             EnableStreamSharing = true;
@@ -84,6 +138,25 @@ namespace TVHeadEnd.Streaming
         /// needs before it can begin decoding a stream it did not receive from the start.
         /// </summary>
         public bool HasSeenIdrFrame => _conditioner?.HasSeenIdrFrame ?? true;
+
+        /// <summary>
+        /// Gets a value indicating whether the buffer is fed by an FFmpeg child process that
+        /// re-encodes the video because the broadcast carries no IDR frames.
+        /// </summary>
+        public bool IsReencoding { get; private set; }
+
+        /// <summary>
+        /// Gets the elementary stream layout the PMT announced, to cache a probe result
+        /// against, or <see langword="null"/> if no PMT was parsed.
+        /// </summary>
+        public string? ProgramLayout => _conditioner?.ProgramLayout;
+
+        /// <summary>
+        /// Gets a value indicating whether the broadcast still announces the elementary
+        /// streams a previous tune probed, so that probe can be reused instead of spending a
+        /// fresh analysis -- and the two seconds of buffering it needs -- on the channel change.
+        /// </summary>
+        public bool MatchesCachedLayout { get; private set; }
 
         public int ConsumerCount { get; set; }
 
@@ -104,116 +177,29 @@ namespace TVHeadEnd.Streaming
             Directory.CreateDirectory(Path.GetDirectoryName(_temporaryFilePath)
                 ?? throw new InvalidOperationException("The live TV buffer path has no parent directory."));
 
-            Stream upstream;
-            var owned = new List<IDisposable>();
+            var stopwatch = Stopwatch.StartNew();
 
-            // DIAGNOSE (temporaer): eine lokale Datei statt TVHeadend durch den echten
-            // Direct-Play-Pfad schicken, damit sich zwei Encodes kontrolliert vergleichen
-            // lassen, die sich nur in einer Eigenschaft unterscheiden.
-            var debugSource = TryGetDebugSourcePath();
-            if (debugSource is not null)
+            // A channel already measured to carry no IDR frames skips the detection phase, so
+            // tuning it again costs only the encoder start-up.
+            if (_reencodeWhenNoIdr && _knownRequiresReencode == true)
             {
-                _logger.LogWarning("TVHeadend DIAGNOSE: streaming local file {DebugSource} instead of the tuner", debugSource);
-                var debugStream = new FileStream(
-                    debugSource,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete,
-                    IODefaults.FileStreamBufferSize,
-                    FileOptions.Asynchronous | FileOptions.SequentialScan);
-                owned.Add(debugStream);
-                upstream = debugStream;
-
-                // Eine .mp4-Testdatei unveraendert durchreichen: der Conditioner arbeitet auf
-                // TS-Paketen und wuerde sie zerstoeren. Container passend melden.
-                if (debugSource.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
-                {
-                    _debugBypassConditioner = true;
-                    _debugContainer = "mp4,fmp4";
-
-                    // Etwas ueber Echtzeit (Clip: ~1,4 MB/s), damit die Datei wie ein
-                    // echter Live-Stream kontinuierlich waechst. Der Server erzwingt fuer
-                    // Live-TV IsInfiniteStream=true (LiveTvMediaSourceProvider.Normalize)
-                    // und haelt die Antwort offen; ohne stetigen Nachschub laeuft der
-                    // Client in sein Lesetimeout.
-                    _debugPacingBytesPerSecond = 2 * 1024 * 1024;
-                }
-                else
-                {
-                    // Eine lokale Datei waere sofort eingelesen. Auf Live-Tempo drosseln,
-                    // damit der Pump sich wie am Tuner verhaelt und der Vergleich
-                    // aussagekraeftig ist.
-                    _debugPacingBytesPerSecond = 1024 * 1024;
-                }
+                StartReencodeFeed();
+                await WaitForReencodeOutput(openCancellationToken).ConfigureAwait(false);
             }
             else
             {
-                var client = _httpClientFactory.CreateClient();
-                var request = new HttpRequestMessage(HttpMethod.Get, _upstreamUrl);
-                foreach (var header in _upstreamHeaders)
-                {
-                    request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                }
-
-                HttpResponseMessage response;
-                try
-                {
-                    using var linkedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
-                        openCancellationToken,
-                        _lifetimeCancellationTokenSource.Token);
-                    response = await client.SendAsync(
-                        request,
-                        HttpCompletionOption.ResponseHeadersRead,
-                        linkedCancellationTokenSource.Token).ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode();
-                }
-                catch
-                {
-                    request.Dispose();
-                    client.Dispose();
-                    throw;
-                }
-
-                request.Dispose();
-                owned.Add(client);
-                owned.Add(response);
-                upstream = await response.Content.ReadAsStreamAsync(_lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
+                await StartConditionedFeed(openCancellationToken).ConfigureAwait(false);
             }
 
-            var streamStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pumpTask = PumpToTemporaryFile(upstream, owned, streamStarted, _lifetimeCancellationTokenSource.Token);
-
-            try
-            {
-                await streamStarted.Task.WaitAsync(openCancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                await _lifetimeCancellationTokenSource.CancelAsync().ConfigureAwait(false);
-                throw;
-            }
-
-            // Android's integrated player treats every HTTP direct-play source as HLS.
-            // Expose the managed growing buffer as a local file source instead, so its
-            // static /Videos/{id}/stream request can receive the MPEG-TS stream directly.
-            MediaSource.Path = _temporaryFilePath;
-            MediaSource.Protocol = MediaProtocol.File;
-            MediaSource.EncoderPath = _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
-                + "/LiveTv/LiveStreamFiles/"
-                + UniqueId
-                + "/stream.ts";
-            MediaSource.EncoderProtocol = MediaProtocol.Http;
-            MediaSource.RequiredHttpHeaders = new Dictionary<string, string>();
-            MediaSource.SupportsDirectPlay = true;
-
-            if (_debugContainer is not null)
-            {
-                MediaSource.Container = _debugContainer;
-            }
+            PublishBufferAsMediaSource();
 
             _logger.LogInformation(
-                "TVHeadend managed live stream {UniqueId} opened with a shared MPEG-TS buffer",
-                UniqueId);
+                "TVHeadend live stream {UniqueId} ready after {ElapsedMilliseconds} ms ({Mode})",
+                UniqueId,
+                stopwatch.ElapsedMilliseconds,
+                IsReencoding ? "video re-encoded, broadcast carries no IDR frames"
+                    : MatchesCachedLayout ? "copy-through, probe reused"
+                    : "copy-through, probe pending");
         }
 
         public async Task Close()
@@ -225,12 +211,13 @@ namespace TVHeadEnd.Streaming
 
             EnableStreamSharing = false;
             await _lifetimeCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+            TryKillReencodeProcess();
 
-            if (_pumpTask is not null)
+            if (_feedTask is not null)
             {
                 try
                 {
-                    await _pumpTask.ConfigureAwait(false);
+                    await _feedTask.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -239,7 +226,7 @@ namespace TVHeadEnd.Streaming
             }
 
             await DeleteTemporaryFile().ConfigureAwait(false);
-            _logger.LogInformation("TVHeadend managed live stream {UniqueId} closed", UniqueId);
+            _logger.LogInformation("TVHeadend live stream {UniqueId} closed", UniqueId);
         }
 
         public Stream GetStream()
@@ -254,11 +241,11 @@ namespace TVHeadEnd.Streaming
                 IODefaults.FileStreamBufferSize,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            if (!_debugBypassConditioner && (DateTime.UtcNow - _dateOpenedUtc).TotalSeconds > 10 && stream.Length > LiveEdgeCatchUpLength)
+            if ((DateTime.UtcNow - _dateOpenedUtc).TotalSeconds > 10 && stream.Length > LiveEdgeCatchUpLength)
             {
-                // Resume on a packet boundary. Handing FFmpeg a partial packet costs it the
-                // resynchronisation and, with it, the PAT and PMT it needs to describe the
-                // video stream completely.
+                // A consumer joining a stream that has been running for a while starts near
+                // the live edge rather than replaying the backlog, on a packet boundary so the
+                // reader does not have to resynchronise first.
                 var liveEdgeOffset = stream.Length - LiveEdgeCatchUpLength;
                 stream.Seek(liveEdgeOffset - (liveEdgeOffset % TransportStreamPacketSize), SeekOrigin.Begin);
             }
@@ -276,7 +263,10 @@ namespace TVHeadEnd.Streaming
             _disposed = true;
             EnableStreamSharing = false;
             _lifetimeCancellationTokenSource.Cancel();
+            TryKillReencodeProcess();
             _lifetimeCancellationTokenSource.Dispose();
+            _conditionedFeedCancellation?.Dispose();
+            _reencodeProcess?.Dispose();
         }
 
         /// <summary>
@@ -294,6 +284,66 @@ namespace TVHeadEnd.Streaming
             return parent is null
                 ? transcodePath
                 : Path.Combine(parent, "tvheadend-livebuffers");
+        }
+
+        /// <summary>
+        /// Removes buffers left behind by a previous run. A server that stops while a stream
+        /// is open never reaches <see cref="Close"/>, and each orphan keeps a recording's
+        /// worth of disk space. Safe only before the first stream of a process is opened,
+        /// when no buffer can belong to a live stream.
+        /// </summary>
+        /// <param name="configurationManager">The Jellyfin configuration manager.</param>
+        /// <param name="logger">The logger.</param>
+        internal static void RemoveOrphanedBuffers(IConfigurationManager configurationManager, ILogger logger)
+        {
+            ArgumentNullException.ThrowIfNull(configurationManager);
+            ArgumentNullException.ThrowIfNull(logger);
+
+            try
+            {
+                var directory = GetBufferDirectory(configurationManager);
+                if (!Directory.Exists(directory))
+                {
+                    return;
+                }
+
+                long reclaimedBytes = 0;
+                var removed = 0;
+                foreach (var path in Directory.EnumerateFiles(directory, "tvheadend-*.ts"))
+                {
+                    try
+                    {
+                        var length = new FileInfo(path).Length;
+                        File.Delete(path);
+                        reclaimedBytes += length;
+                        removed++;
+                    }
+                    catch (IOException)
+                    {
+                        // Still held by something; it will be swept on a later start.
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // Same.
+                    }
+                }
+
+                if (removed > 0)
+                {
+                    logger.LogInformation(
+                        "Removed {Count} live TV buffer(s) left behind by a previous run, reclaiming {ReclaimedMegabytes} MB",
+                        removed,
+                        reclaimedBytes / (1024 * 1024));
+                }
+            }
+            catch (IOException exception)
+            {
+                logger.LogWarning(exception, "Could not sweep the live TV buffer directory");
+            }
+            catch (UnauthorizedAccessException exception)
+            {
+                logger.LogWarning(exception, "Could not sweep the live TV buffer directory");
+            }
         }
 
         internal static ILiveStream? AcquireReusable(
@@ -319,127 +369,238 @@ namespace TVHeadEnd.Streaming
             return null;
         }
 
-        private async Task PumpToTemporaryFile(
+        /// <summary>
+        /// Builds the FFmpeg argument list that re-encodes the video of an IDR-less broadcast
+        /// while copying every audio track. Subtitle and data streams are dropped; they do not
+        /// survive an encode anyway, and the output keeps a deterministic stream order.
+        /// </summary>
+        /// <param name="upstreamUrl">The authenticated TVHeadend stream URL.</param>
+        /// <param name="upstreamHeaders">HTTP headers the upstream requires, if any.</param>
+        /// <param name="outputPath">The shared buffer file FFmpeg writes to.</param>
+        /// <returns>The argument list, one argument per element.</returns>
+        internal static IReadOnlyList<string> BuildReencodeArguments(
+            string upstreamUrl,
+            IReadOnlyDictionary<string, string> upstreamHeaders,
+            string outputPath)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(upstreamUrl);
+            ArgumentNullException.ThrowIfNull(upstreamHeaders);
+            ArgumentException.ThrowIfNullOrEmpty(outputPath);
+
+            var arguments = new List<string>
+            {
+                "-hide_banner",
+                "-loglevel", "warning",
+                "-fflags", "+genpts",
+            };
+
+            if (upstreamHeaders.Count > 0)
+            {
+                arguments.Add("-headers");
+                arguments.Add(string.Join("\r\n", upstreamHeaders.Select(header => $"{header.Key}: {header.Value}")) + "\r\n");
+            }
+
+            arguments.AddRange(
+            [
+                "-i", upstreamUrl,
+                "-map", "0:v:0",
+                "-map", "0:a?",
+                "-dn", "-sn",
+                "-c:a", "copy",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "21",
+                "-maxrate", "10M",
+                "-bufsize", "14M",
+
+                // Closed GOPs whose keyframes are IDR: exactly the property the source lacks
+                // and device decoders refuse to start without.
+                "-x264-params", "keyint=50:min-keyint=25:scenecut=0",
+
+                // Passes progressive frames through untouched and deinterlaces the rest, so
+                // interlaced services do not come out combed.
+                "-vf", "yadif=deint=interlaced",
+                "-f", "mpegts",
+                "-y", outputPath,
+            ]);
+
+            return arguments;
+        }
+
+        /// <summary>
+        /// Copies the broadcast into the buffer, deciding along the way whether it can be used
+        /// as it is. If it cannot, the feed is torn down and handed to the encoder.
+        /// </summary>
+        private async Task StartConditionedFeed(CancellationToken openCancellationToken)
+        {
+            var client = _httpClientFactory.CreateClient();
+            var request = new HttpRequestMessage(HttpMethod.Get, _upstreamUrl);
+            foreach (var header in _upstreamHeaders)
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            HttpResponseMessage response;
+            try
+            {
+                using var linkedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
+                    openCancellationToken,
+                    _lifetimeCancellationTokenSource.Token);
+                response = await client.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    linkedCancellationTokenSource.Token).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+            }
+            catch
+            {
+                request.Dispose();
+                client.Dispose();
+                throw;
+            }
+
+            request.Dispose();
+            var upstream = await response.Content.ReadAsStreamAsync(_lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
+
+            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var feedMode = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _conditionedFeedCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellationTokenSource.Token);
+            _feedTask = PumpConditionedStream(
+                upstream,
+                [client, response],
+                ready,
+                feedMode,
+                _conditionedFeedCancellation.Token);
+
+            bool requiresReencode;
+            try
+            {
+                requiresReencode = await feedMode.Task.WaitAsync(openCancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await _lifetimeCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+                throw;
+            }
+
+            if (!requiresReencode)
+            {
+                try
+                {
+                    await ready.Task.WaitAsync(openCancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    await _lifetimeCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+                    throw;
+                }
+
+                return;
+            }
+
+            await SwitchToReencodeFeed(openCancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task PumpConditionedStream(
             Stream upstream,
-            List<IDisposable> owned,
-            TaskCompletionSource streamStarted,
+            IReadOnlyList<IDisposable> owned,
+            TaskCompletionSource ready,
+            TaskCompletionSource<bool> feedMode,
             CancellationToken cancellationToken)
         {
             byte[]? buffer = null;
             byte[]? conditionedBuffer = null;
             long bufferedBytes = 0;
             long firstByteTimestamp = 0;
+            bool? requiresReencode = _reencodeWhenNoIdr ? null : false;
+            if (requiresReencode == false)
+            {
+                feedMode.TrySetResult(false);
+            }
+
             try
             {
+                await using (upstream.ConfigureAwait(false))
                 {
-                    await using (upstream.ConfigureAwait(false))
+                    var output = new FileStream(
+                        _temporaryFilePath,
+                        FileMode.Create,
+                        FileAccess.Write,
+                        FileShare.Read | FileShare.Delete,
+                        IODefaults.FileStreamBufferSize,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    await using (output.ConfigureAwait(false))
                     {
-                        var output = new FileStream(
-                            _temporaryFilePath,
-                            FileMode.Create,
-                            FileAccess.Write,
-                            FileShare.Read | FileShare.Delete,
-                            IODefaults.FileStreamBufferSize,
-                            FileOptions.Asynchronous | FileOptions.SequentialScan);
-                        await using (output.ConfigureAwait(false))
+                        buffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
+                        conditionedBuffer = ArrayPool<byte>.Shared.Rent(
+                            LiveTransportStreamConditioner.GetMaximumConditionedLength(buffer.Length));
+
+                        var conditioner = new LiveTransportStreamConditioner(
+                            LiveTransportStreamConditioner.EventInformationTablePid);
+                        _conditioner = conditioner;
+
+                        while (true)
                         {
-                            buffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
-                            conditionedBuffer = ArrayPool<byte>.Shared.Rent(
-                                LiveTransportStreamConditioner.GetMaximumConditionedLength(buffer.Length));
-                            var conditioner = new LiveTransportStreamConditioner(
-                                LiveTransportStreamConditioner.EventInformationTablePid);
-                            _conditioner = conditioner;
-                            while (true)
+                            var bytesRead = await upstream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
+                                .ConfigureAwait(false);
+                            if (bytesRead == 0)
                             {
-                                int bytesRead = await upstream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
-                                    .ConfigureAwait(false);
-                                if (bytesRead == 0)
-                                {
-                                    break;
-                                }
-
-                                int conditionedBytes;
-                                ReadOnlyMemory<byte> payload;
-                                if (_debugBypassConditioner)
-                                {
-                                    conditionedBytes = bytesRead;
-                                    payload = buffer.AsMemory(0, bytesRead);
-                                }
-                                else
-                                {
-                                    conditionedBytes = conditioner.Condition(buffer.AsSpan(0, bytesRead), conditionedBuffer);
-                                    payload = conditionedBuffer.AsMemory(0, conditionedBytes);
-                                }
-
-                                if (conditionedBytes == 0)
-                                {
-                                    continue;
-                                }
-
-                                await output.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
-                                bufferedBytes += conditionedBytes;
-
-                                if (firstByteTimestamp == 0)
-                                {
-                                    firstByteTimestamp = Stopwatch.GetTimestamp();
-                                }
-                                else if (_debugPacingBytesPerSecond > 0)
-                                {
-                                    var due = TimeSpan.FromSeconds((double)bufferedBytes / _debugPacingBytesPerSecond);
-                                    var behind = due - Stopwatch.GetElapsedTime(firstByteTimestamp);
-                                    if (behind > TimeSpan.Zero)
-                                    {
-                                        await Task.Delay(behind, cancellationToken).ConfigureAwait(false);
-                                    }
-                                }
-
-                                if (!streamStarted.Task.IsCompleted
-                                    && bufferedBytes >= MinimumProbeBufferSize
-                                    && Stopwatch.GetElapsedTime(firstByteTimestamp) >= MinimumProbeBufferDuration)
-                                {
-                                    await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-                                    _dateOpenedUtc = DateTime.UtcNow;
-                                    streamStarted.TrySetResult();
-                                }
+                                break;
                             }
 
-                            if (!streamStarted.Task.IsCompleted)
+                            var conditionedBytes = conditioner.Condition(buffer.AsSpan(0, bytesRead), conditionedBuffer);
+                            if (conditionedBytes == 0)
                             {
-                                if (_debugBypassConditioner)
-                                {
-                                    // Der statische Testfall: die Datei ist jetzt vollstaendig
-                                    // geschrieben, kein "Live"-Stream, der noch waechst.
-                                    await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-                                    _dateOpenedUtc = DateTime.UtcNow;
-                                    streamStarted.TrySetResult();
-                                }
-                                else
-                                {
-                                    streamStarted.TrySetException(new EndOfStreamException(
-                                        "TVHeadend closed the live stream before sending MPEG-TS data."));
-                                }
+                                continue;
                             }
+
+                            await output.WriteAsync(conditionedBuffer.AsMemory(0, conditionedBytes), cancellationToken)
+                                .ConfigureAwait(false);
+                            bufferedBytes += conditionedBytes;
+                            if (firstByteTimestamp == 0)
+                            {
+                                firstByteTimestamp = Stopwatch.GetTimestamp();
+                            }
+
+                            requiresReencode ??= DecideFeedMode(conditioner, feedMode, firstByteTimestamp);
+                            UpdateCachedLayoutMatch(conditioner);
+
+                            if (requiresReencode == false && !ready.Task.IsCompleted && IsBufferReady(bufferedBytes, firstByteTimestamp))
+                            {
+                                await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                                _dateOpenedUtc = DateTime.UtcNow;
+                                ready.TrySetResult();
+                            }
+                        }
+
+                        if (!ready.Task.IsCompleted)
+                        {
+                            var endOfStream = new EndOfStreamException(
+                                "TVHeadend closed the live stream before sending enough MPEG-TS data.");
+                            feedMode.TrySetException(endOfStream);
+                            ready.TrySetException(endOfStream);
                         }
                     }
                 }
             }
             catch (OperationCanceledException exception)
             {
-                streamStarted.TrySetCanceled(exception.CancellationToken);
+                feedMode.TrySetCanceled(exception.CancellationToken);
+                ready.TrySetCanceled(exception.CancellationToken);
                 throw;
             }
             catch (Exception exception)
             {
-                streamStarted.TrySetException(exception);
-                _logger.LogError(exception, "TVHeadend managed live stream {UniqueId} stopped unexpectedly", UniqueId);
+                feedMode.TrySetException(exception);
+                ready.TrySetException(exception);
+                _logger.LogError(exception, "TVHeadend live stream {UniqueId} stopped unexpectedly", UniqueId);
                 throw;
             }
             finally
             {
-                // Bei einer statischen Debug-Quelle ist der Pump sofort fertig; das Sharing
-                // muss aktiv bleiben, sonst liefert GetChannelStreamMediaSources die
-                // Pending-Quelle aus und der Server proxied seine eigene Startseite als Video.
-                if (!_debugBypassConditioner)
+                // When the feed is handed to the encoder the stream stays shareable; the
+                // encoder monitor takes over responsibility for clearing the flag.
+                if (!_switchingToReencode)
                 {
                     EnableStreamSharing = false;
                 }
@@ -462,56 +623,256 @@ namespace TVHeadEnd.Streaming
         }
 
         /// <summary>
-        /// DIAGNOSE (temporaer): liest den Pfad einer lokalen Testdatei aus einer Markerdatei
-        /// neben dem Transcode-Verzeichnis. Fehlt sie, laeuft alles wie gewohnt ueber TVHeadend.
+        /// A reusable probe spares both the analysis and the buffering it needs, so a channel
+        /// whose layout is unchanged is ready as soon as a client has something to read.
         /// </summary>
-        private string? TryGetDebugSourcePath()
+        private bool IsBufferReady(long bufferedBytes, long firstByteTimestamp)
         {
-            try
+            if (MatchesCachedLayout)
             {
-                // Eine Ebene ueber dem Transcode-Verzeichnis: Jellyfin raeumt das
-                // Transcode-Verzeichnis beim Schliessen eines Streams leer und wuerde die
-                // Markerdatei mitnehmen.
-                var cacheDirectory = Path.GetDirectoryName(Path.GetDirectoryName(_temporaryFilePath));
-                if (cacheDirectory is null)
-                {
-                    return null;
-                }
-
-                var marker = Path.Combine(cacheDirectory, "tvheadend-debug-source.txt");
-                if (!File.Exists(marker))
-                {
-                    return null;
-                }
-
-                var candidate = File.ReadAllText(marker).Trim();
-
-                // Zeigt der Marker auf ein Verzeichnis, wird pro Kanal eine eigene Variante
-                // ausgeliefert: <MediaSource.Id>.ts, sonst default.ts. So lassen sich mehrere
-                // Varianten in einem Durchgang vergleichen, ohne zwischendurch umzuschalten.
-                if (Directory.Exists(candidate))
-                {
-                    var perChannel = Path.Combine(candidate, MediaSource.Id + ".ts");
-                    if (File.Exists(perChannel))
-                    {
-                        return perChannel;
-                    }
-
-                    var fallback = Path.Combine(candidate, "default.ts");
-                    return File.Exists(fallback) ? fallback : null;
-                }
-
-                return File.Exists(candidate) ? candidate : null;
+                return bufferedBytes >= MinimumStartBufferSize;
             }
-            catch (IOException)
+
+            return bufferedBytes >= ProbeBufferSize
+                && Stopwatch.GetElapsedTime(firstByteTimestamp) >= ProbeBufferDuration;
+        }
+
+        private void UpdateCachedLayoutMatch(LiveTransportStreamConditioner conditioner)
+        {
+            if (MatchesCachedLayout || _cachedProgramLayout is null || conditioner.ProgramLayout is null)
+            {
+                return;
+            }
+
+            MatchesCachedLayout = string.Equals(conditioner.ProgramLayout, _cachedProgramLayout, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Decides whether the broadcast can be copied through, once the scan has seen enough
+        /// of it, and records the verdict for the channel so later tunes skip the detection.
+        /// </summary>
+        /// <returns>
+        /// Whether the feed has to be re-encoded, or <see langword="null"/> while the scan has
+        /// not seen enough of the stream to decide.
+        /// </returns>
+        private bool? DecideFeedMode(
+            LiveTransportStreamConditioner conditioner,
+            TaskCompletionSource<bool> feedMode,
+            long firstByteTimestamp)
+        {
+            bool carriesNoIdr;
+            if (conditioner.HasSeenIdrFrame)
+            {
+                carriesNoIdr = false;
+            }
+            else if (conditioner.IdrScanBytes >= LiveTransportStreamConditioner.IdrScanLimit
+                || Stopwatch.GetElapsedTime(firstByteTimestamp) >= IdrDecisionTimeLimit)
+            {
+                carriesNoIdr = true;
+            }
+            else
             {
                 return null;
             }
+
+            if (!_verdictReported)
+            {
+                _verdictReported = true;
+                _reportRequiresReencode?.Invoke(carriesNoIdr);
+            }
+
+            feedMode.TrySetResult(carriesNoIdr);
+            return carriesNoIdr;
+        }
+
+        private async Task SwitchToReencodeFeed(CancellationToken openCancellationToken)
+        {
+            _logger.LogInformation(
+                "TVHeadend live stream {UniqueId}: no IDR frame within the scan window; re-encoding the video so clients can start decoding",
+                UniqueId);
+
+            _switchingToReencode = true;
+            if (_conditionedFeedCancellation is not null)
+            {
+                await _conditionedFeedCancellation.CancelAsync().ConfigureAwait(false);
+            }
+
+            if (_feedTask is not null)
+            {
+                try
+                {
+                    await _feedTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // The detection feed was cancelled on purpose.
+                }
+                catch (IOException)
+                {
+                    // The upstream connection may abort while being torn down.
+                }
+            }
+
+            StartReencodeFeed();
+            await WaitForReencodeOutput(openCancellationToken).ConfigureAwait(false);
+        }
+
+        private void StartReencodeFeed()
+        {
+            // A detection feed may have written to this path already. Left in place, the wait
+            // below would be satisfied by those stale bytes and the probe would describe the
+            // original stream instead of the re-encoded one.
+            try
+            {
+                File.Delete(_temporaryFilePath);
+            }
+            catch (IOException)
+            {
+                // A reader may still hold the file; FFmpeg truncates it either way.
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = _ffmpegPath,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            foreach (var argument in BuildReencodeArguments(_upstreamUrl, _upstreamHeaders, _temporaryFilePath))
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            var process = new Process { StartInfo = startInfo };
+            if (!process.Start())
+            {
+                process.Dispose();
+                throw new InvalidOperationException("The FFmpeg re-encode process could not be started.");
+            }
+
+            _reencodeProcess = process;
+            IsReencoding = true;
+            _feedTask = MonitorReencodeFeed(process, _lifetimeCancellationTokenSource.Token);
+        }
+
+        private async Task MonitorReencodeFeed(Process process, CancellationToken cancellationToken)
+        {
+            var stderrTail = new Queue<string>(ReencodeStderrTailLines);
+            try
+            {
+                string? line;
+                while ((line = await process.StandardError.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+                {
+                    if (stderrTail.Count == ReencodeStderrTailLines)
+                    {
+                        stderrTail.Dequeue();
+                    }
+
+                    stderrTail.Enqueue(line);
+                }
+
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                if (process.ExitCode != 0)
+                {
+                    _logger.LogError(
+                        "TVHeadend live stream {UniqueId}: the re-encode ended with {ExitCode}: {StderrTail}",
+                        UniqueId,
+                        process.ExitCode,
+                        string.Join(" | ", stderrTail));
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "TVHeadend live stream {UniqueId}: the re-encode ended because the upstream closed",
+                        UniqueId);
+                }
+            }
+            finally
+            {
+                EnableStreamSharing = false;
+            }
+        }
+
+        private async Task WaitForReencodeOutput(CancellationToken openCancellationToken)
+        {
+            var startedAt = Stopwatch.GetTimestamp();
+            while (true)
+            {
+                openCancellationToken.ThrowIfCancellationRequested();
+                _lifetimeCancellationTokenSource.Token.ThrowIfCancellationRequested();
+
+                var fileInfo = new FileInfo(_temporaryFilePath);
+                if (fileInfo.Exists && fileInfo.Length >= ProbeBufferSize)
+                {
+                    _dateOpenedUtc = DateTime.UtcNow;
+                    return;
+                }
+
+                if (_reencodeProcess is { HasExited: true })
+                {
+                    throw new InvalidOperationException(
+                        $"The FFmpeg re-encode process exited with {_reencodeProcess.ExitCode} before producing output.");
+                }
+
+                if (Stopwatch.GetElapsedTime(startedAt) >= ReencodeStartupTimeout)
+                {
+                    TryKillReencodeProcess();
+                    throw new TimeoutException("The FFmpeg re-encode process produced no output within the start-up timeout.");
+                }
+
+                await Task.Delay(200, openCancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private void TryKillReencodeProcess()
+        {
+            var process = _reencodeProcess;
+            if (process is null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // The process ended between the check and the kill.
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                // The process is not killable any more; it is already terminating.
+            }
+        }
+
+        /// <summary>
+        /// Points the media source at the shared buffer.
+        /// </summary>
+        /// <remarks>
+        /// Android's integrated player treats every HTTP direct-play source as HLS, so the
+        /// buffer is exposed as a local file instead. Its static /Videos/{id}/stream request
+        /// then receives the MPEG-TS stream directly.
+        /// </remarks>
+        private void PublishBufferAsMediaSource()
+        {
+            MediaSource.Path = _temporaryFilePath;
+            MediaSource.Protocol = MediaProtocol.File;
+            MediaSource.EncoderPath = _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
+                + "/LiveTv/LiveStreamFiles/"
+                + UniqueId
+                + "/stream.ts";
+            MediaSource.EncoderProtocol = MediaProtocol.Http;
+            MediaSource.RequiredHttpHeaders = new Dictionary<string, string>();
+            MediaSource.SupportsDirectPlay = true;
         }
 
         private async Task DeleteTemporaryFile()
         {
-            for (int attempt = 0; attempt <= RetryDeleteCount; attempt++)
+            for (var attempt = 0; attempt <= RetryDeleteCount; attempt++)
             {
                 try
                 {

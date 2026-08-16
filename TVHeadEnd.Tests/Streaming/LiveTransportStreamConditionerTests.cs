@@ -137,6 +137,41 @@ public class LiveTransportStreamConditionerTests
     }
 
     [Fact]
+    public void ProgramLayoutNamesEveryElementaryStreamInPmtOrder()
+    {
+        // The fingerprint a cached probe is validated against: reusing a probe is only safe
+        // while the broadcast announces the same streams in the same order, because Jellyfin
+        // addresses the track to copy by its position in the list.
+        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+
+        Condition(conditioner, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
+
+        Assert.Equal($"1b:{VideoPid:x4},03:{AudioPid:x4}", conditioner.ProgramLayout);
+    }
+
+    [Fact]
+    public void ProgramLayoutIsUnknownBeforeThePmtArrives()
+    {
+        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+
+        Condition(conditioner, ProgramAssociationTable(), out _);
+
+        Assert.Null(conditioner.ProgramLayout);
+    }
+
+    [Fact]
+    public void ProgramLayoutChangesWhenTheBroadcastAddsATrack()
+    {
+        var withoutExtraTrack = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        Condition(withoutExtraTrack, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
+
+        var withExtraTrack = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        Condition(withExtraTrack, Concat(ProgramAssociationTable(), ProgramMapTableWithSecondAudioTrack()), out _);
+
+        Assert.NotEqual(withoutExtraTrack.ProgramLayout, withExtraTrack.ProgramLayout);
+    }
+
+    [Fact]
     public void ConstructorRejectsAPidOutsideTheTransportStreamRange()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new LiveTransportStreamConditioner(0x2000));
@@ -206,6 +241,26 @@ public class LiveTransportStreamConditionerTests
             0xF0, 0x00, // program_info_length = 0
             0x1B, (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), VideoPid & 0xFF, 0xF0, 0x00, // H.264
             0x03, (byte)(0xE0 | ((AudioPid >> 8) & 0x1F)), AudioPid & 0xFF, 0xF0, 0x00, // MPEG audio
+            0x00, 0x00, 0x00, 0x00, // CRC
+        };
+
+        return SectionPacket(PmtPid, section);
+    }
+
+    private static byte[] ProgramMapTableWithSecondAudioTrack()
+    {
+        const int SecondAudioPid = 0x13ef;
+        var section = new byte[]
+        {
+            0x02, // table_id
+            0xB0, 0x1C, // section_length = 28
+            0x00, 0x01, // program_number
+            0xC1, 0x00, 0x00, // version, section numbers
+            0xE0 | ((VideoPid >> 8) & 0x1F), VideoPid & 0xFF, // PCR PID
+            0xF0, 0x00, // program_info_length = 0
+            0x1B, (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), VideoPid & 0xFF, 0xF0, 0x00, // H.264
+            0x03, (byte)(0xE0 | ((AudioPid >> 8) & 0x1F)), AudioPid & 0xFF, 0xF0, 0x00, // MPEG audio
+            0x03, (byte)(0xE0 | ((SecondAudioPid >> 8) & 0x1F)), SecondAudioPid & 0xFF, 0xF0, 0x00, // second audio
             0x00, 0x00, 0x00, 0x00, // CRC
         };
 

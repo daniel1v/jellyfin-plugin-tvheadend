@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Configuration;
@@ -50,6 +51,15 @@ namespace TVHeadEnd
         private readonly IServerApplicationHost _applicationHost;
         private readonly ConcurrentDictionary<string, TvHeadendHttpLiveStream> _activeChannelStreams = new(StringComparer.OrdinalIgnoreCase);
 
+        // Channels once measured to carry no IDR frames skip the detection phase on later
+        // tunes and start their re-encode immediately.
+        private readonly ConcurrentDictionary<string, bool> _channelRequiresReencode = new(StringComparer.OrdinalIgnoreCase);
+
+        // Probe results, keyed by channel and validated against the PMT layout they were
+        // taken from. Re-probing costs about a tenth of a second, but the buffering it needs
+        // costs two full seconds on every channel change, and that is what this avoids.
+        private readonly ConcurrentDictionary<string, CachedChannelProbe> _channelProbeCache = new(StringComparer.OrdinalIgnoreCase);
+
         private readonly ILogger<LiveTvService> _logger;
 
         public LiveTvService(
@@ -80,6 +90,8 @@ namespace TVHeadEnd
 
             // Added for stream probing
             _mediaEncoder = mediaEncoder;
+
+            TvHeadendHttpLiveStream.RemoveOrphanedBuffers(_configurationManager, _logger);
         }
 
         public DateTime LastRecordingChange { get; private set; } = DateTime.MinValue;
@@ -470,7 +482,12 @@ namespace TVHeadEnd
                 _httpClientFactory,
                 _configurationManager,
                 _applicationHost,
-                _logger)
+                _logger,
+                _mediaEncoder.EncoderPath,
+                _htsConnectionHandler.GetReencodeWhenNoIdr(),
+                _channelRequiresReencode.TryGetValue(channelId, out var knownVerdict) ? knownVerdict : null,
+                requiresReencode => _channelRequiresReencode[channelId] = requiresReencode,
+                _channelProbeCache.TryGetValue(channelId, out var cachedProbe) ? cachedProbe.ProgramLayout : null)
             {
                 OriginalStreamId = streamId,
             };
@@ -478,22 +495,36 @@ namespace TVHeadEnd
             try
             {
                 await liveStream.Open(cancellationToken).ConfigureAwait(false);
-                await ProbeStream(liveStream.MediaSource, "managed LiveTV buffer", cancellationToken).ConfigureAwait(false);
+
+                if (liveStream.MatchesCachedLayout && cachedProbe is not null)
+                {
+                    cachedProbe.ApplyTo(liveStream.MediaSource);
+                    _logger.LogInformation(
+                        "Live TV stream start: reused the probe of channel {ChannelId}; the broadcast still announces the same elementary streams",
+                        channelId);
+                }
+                else
+                {
+                    await ProbeStream(liveStream.MediaSource, "managed LiveTV buffer", cancellationToken).ConfigureAwait(false);
+                    if (liveStream.ProgramLayout is not null && !liveStream.IsReencoding)
+                    {
+                        _channelProbeCache[channelId] = CachedChannelProbe.From(liveStream.ProgramLayout, liveStream.MediaSource);
+                    }
+                }
+
                 ApplyLiveStreamOverrides(liveStream.MediaSource);
 
                 liveStream.MediaSource.SupportsDirectPlay = true;
 
-                // Worth knowing when a client reports that playback never starts. A broadcast
-                // that signals random access with recovery points instead of IDR frames -- the
-                // ARD network does, ZDF does not -- offers no synchronisation sample to players
-                // that only accept IDRs. ExoPlayer is one of those unless the host application
-                // sets DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES, and without
-                // it the player stays in its buffering state indefinitely. Nothing the server
-                // can do short of re-encoding changes that, so this only records the fact.
-                if (!liveStream.HasSeenIdrFrame)
+                // A broadcast that signals random access with recovery points instead of IDR
+                // frames -- the ARD network does, ZDF does not -- offers no synchronisation
+                // sample to common device decoders, which then never emit a frame. When the
+                // re-encode for such streams is switched off, record the fact so a report of
+                // "audio but black picture" can be traced here.
+                if (!liveStream.IsReencoding && !liveStream.HasSeenIdrFrame)
                 {
-                    _logger.LogInformation(
-                        "Live TV stream start: channel {ChannelId} carries no IDR frames. Players that only accept IDR synchronisation samples cannot start such a stream",
+                    _logger.LogWarning(
+                        "Live TV stream start: channel {ChannelId} carries no IDR frames and re-encoding is disabled. Many device decoders cannot start this stream and show a black picture",
                         channelId);
                 }
 
@@ -940,6 +971,56 @@ namespace TVHeadEnd
         private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
         {
             return Task.Run(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
+        }
+
+        /// <summary>
+        /// A probe result together with the PMT layout it was taken from.
+        /// </summary>
+        private sealed class CachedChannelProbe
+        {
+            private CachedChannelProbe(string programLayout, string serializedMediaStreams, string? container, int? bitrate)
+            {
+                ProgramLayout = programLayout;
+                SerializedMediaStreams = serializedMediaStreams;
+                Container = container;
+                Bitrate = bitrate;
+            }
+
+            public string ProgramLayout { get; }
+
+            private string SerializedMediaStreams { get; }
+
+            private string? Container { get; }
+
+            private int? Bitrate { get; }
+
+            public static CachedChannelProbe From(string programLayout, MediaSourceInfo mediaSource)
+            {
+                // Held serialized so that every tune gets its own instances. The source
+                // handed to Jellyfin is mutated afterwards -- the default audio track is
+                // marked on it, and Jellyfin fills in localized display titles -- and two
+                // viewers on one channel must not share those objects.
+                return new CachedChannelProbe(
+                    programLayout,
+                    JsonSerializer.Serialize(mediaSource.MediaStreams),
+                    mediaSource.Container,
+                    mediaSource.Bitrate);
+            }
+
+            public void ApplyTo(MediaSourceInfo mediaSource)
+            {
+                mediaSource.MediaStreams = JsonSerializer.Deserialize<List<MediaStream>>(SerializedMediaStreams) ?? [];
+                mediaSource.Container = Container;
+                mediaSource.Bitrate = Bitrate;
+
+                // The plugin keeps the full probe result including real stream indices, so
+                // Jellyfin must not reduce it to its own cached live TV view.
+                mediaSource.SupportsProbing = false;
+                mediaSource.SupportsDirectStream = true;
+                mediaSource.SupportsTranscoding = true;
+                mediaSource.RunTimeTicks = null;
+                mediaSource.DefaultSubtitleStreamIndex = null;
+            }
         }
     }
 }

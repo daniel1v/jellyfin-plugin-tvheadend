@@ -60,6 +60,13 @@
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">Note: Changing this requires a server restart.</div>
                 </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" id="chkReencodeWhenNoIdr" />
+                        <span>Re-encode video of broadcasts without IDR frames</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">Some broadcasters (for example the German ARD network) signal random access only through recovery points and never send H.264 IDR frames. Many device decoders cannot start such a stream and show a black picture. When enabled, the video of affected channels is re-encoded on the server so every client can play it; audio is passed through and all other channels remain untouched. Costs CPU while an affected channel is being watched. Note: Changing this requires a server restart.</div>
+                </div>
                 <div>
                     <button is="emby-button" type="submit" class="raised button-submit block">
                         <span>Save</span>

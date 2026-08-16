@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.Text;
 
 namespace TVHeadEnd.Streaming
 {
@@ -49,9 +51,11 @@ namespace TVHeadEnd.Streaming
         // keyframe should have been seen, and short enough not to delay a channel change.
         private const int RandomAccessSearchLimit = 4 * 1024 * 1024;
 
-        // Enough video for several GOPs of any broadcast, so that "no IDR seen" means the
-        // broadcaster does not send them rather than that we looked too briefly.
-        private const int IdrScanLimit = 8 * 1024 * 1024;
+        /// <summary>
+        /// Enough video for several GOPs of any broadcast, so that "no IDR seen" means the
+        /// broadcaster does not send them rather than that we looked too briefly.
+        /// </summary>
+        internal const int IdrScanLimit = 8 * 1024 * 1024;
 
         private readonly int _droppedPid;
         private readonly byte[] _partialPacket = new byte[PacketLength];
@@ -102,6 +106,21 @@ namespace TVHeadEnd.Streaming
         /// Gets the number of bytes inspected while looking for an IDR frame.
         /// </summary>
         public int IdrScanBytes { get; private set; }
+
+        /// <summary>
+        /// Gets the elementary streams the PMT announces, as "streamtype:pid" in PMT order,
+        /// or <see langword="null"/> until the PMT has been parsed.
+        /// </summary>
+        /// <remarks>
+        /// This is what a cached probe result has to be validated against. Jellyfin
+        /// addresses the stream FFmpeg should copy by its position in
+        /// <see cref="MediaBrowser.Model.Dto.MediaSourceInfo.MediaStreams"/>, so reusing a
+        /// probe from an earlier tune is only safe while the broadcast still announces the
+        /// same elementary streams in the same order. Services do change their layout --
+        /// a second audio track for a film, a subtitle track appearing -- and the fingerprint
+        /// catches exactly that, within the first few packets rather than after a probe.
+        /// </remarks>
+        public string? ProgramLayout { get; private set; }
 
         /// <summary>
         /// Gets the smallest destination size that can hold the conditioned form of a
@@ -361,19 +380,37 @@ namespace TVHeadEnd.Streaming
             var programInfoLength = ((section[10] & 0x0F) << 8) | section[11];
             var offset = 12 + programInfoLength;
 
+            var layout = new StringBuilder();
+            var videoPid = -1;
             while (offset + 5 <= end)
             {
                 var streamType = section[offset];
                 var elementaryPid = ((section[offset + 1] & 0x1F) << 8) | section[offset + 2];
                 var elementaryInfoLength = ((section[offset + 3] & 0x0F) << 8) | section[offset + 4];
 
-                if (IsVideoStreamType(streamType))
+                if (layout.Length > 0)
                 {
-                    _videoPid = elementaryPid;
-                    return;
+                    layout.Append(',');
+                }
+
+                layout.Append(CultureInfo.InvariantCulture, $"{streamType:x2}:{elementaryPid:x4}");
+
+                if (videoPid < 0 && IsVideoStreamType(streamType))
+                {
+                    videoPid = elementaryPid;
                 }
 
                 offset += 5 + elementaryInfoLength;
+            }
+
+            if (videoPid >= 0)
+            {
+                _videoPid = videoPid;
+            }
+
+            if (layout.Length > 0)
+            {
+                ProgramLayout = layout.ToString();
             }
         }
     }

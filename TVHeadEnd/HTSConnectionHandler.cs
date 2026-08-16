@@ -56,6 +56,7 @@ namespace TVHeadEnd
         private string _password = string.Empty;
         private bool _enableSubsMaudios;
         private bool _forceDeinterlace;
+        private bool _reencodeWhenNoIdr;
 
         private LiveTvService? _liveTvService;
 
@@ -142,6 +143,7 @@ namespace TVHeadEnd
             _channelType = config.ChannelType.Trim();
             _enableSubsMaudios = config.EnableSubsMaudios;
             _forceDeinterlace = config.ForceDeinterlace;
+            _reencodeWhenNoIdr = config.ReencodeWhenNoIdr;
 
             if (_priority < DvrPriorityImportant || _priority > DvrPriorityNotSet)
             {
@@ -416,6 +418,12 @@ namespace TVHeadEnd
         {
             Init();
             return _forceDeinterlace;
+        }
+
+        public bool GetReencodeWhenNoIdr()
+        {
+            Init();
+            return _reencodeWhenNoIdr;
         }
 
         public Task<IEnumerable<MyRecordingInfo>> BuildDvrInfos(CancellationToken cancellationToken)

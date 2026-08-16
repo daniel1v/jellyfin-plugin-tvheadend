@@ -27,6 +27,7 @@ namespace TVHeadEnd.Configuration
             HideRecordingsChannel = false;
             EnableSubsMaudios = false;
             ForceDeinterlace = false;
+            ReencodeWhenNoIdr = true;
         }
 
         public string TVH_ServerName { get; set; }
@@ -54,5 +55,14 @@ namespace TVHeadEnd.Configuration
         public bool EnableSubsMaudios { get; set; }
 
         public bool ForceDeinterlace { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the video of broadcasts that carry no
+        /// H.264 IDR frames is re-encoded into the shared live buffer. Such broadcasts --
+        /// the ARD network among them -- signal random access purely through recovery
+        /// points, and common device decoders never emit a frame from them. Audio and all
+        /// other channels are passed through untouched.
+        /// </summary>
+        public bool ReencodeWhenNoIdr { get; set; }
     }
 }
