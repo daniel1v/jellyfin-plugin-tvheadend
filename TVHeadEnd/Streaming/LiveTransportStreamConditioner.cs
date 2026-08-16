@@ -52,8 +52,9 @@ namespace TVHeadEnd.Streaming
         private const int RandomAccessSearchLimit = 4 * 1024 * 1024;
 
         /// <summary>
-        /// Enough video for several GOPs of any broadcast, so that "no IDR seen" means the
-        /// broadcaster does not send them rather than that we looked too briefly.
+        /// Caps the cost of the IDR scan on a long running stream. The decision itself is made
+        /// on elapsed time and falls well inside this budget; once it is spent the stream is
+        /// simply passed through without further inspection.
         /// </summary>
         internal const int IdrScanLimit = 8 * 1024 * 1024;
 

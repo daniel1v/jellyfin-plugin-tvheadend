@@ -81,6 +81,24 @@ public class TvHeadendHttpLiveStreamTests
     }
 
     [Fact]
+    public void ReencodeArgumentsBoundTheInputAnalysisBeforeTheInput()
+    {
+        // Left at its default, FFmpeg spends seconds deciding what a transport stream holds,
+        // which lands directly on the channel change of an affected channel.
+        var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(
+            "http://tvheadend.invalid/stream/channel/1",
+            new Dictionary<string, string>(),
+            @"C:\buffers\tvheadend-1.ts");
+
+        Assert.Equal("1000000", ValueAfter(arguments, "-analyzeduration"));
+        Assert.Equal("4000000", ValueAfter(arguments, "-probesize"));
+
+        var list = arguments.ToList();
+        Assert.True(list.IndexOf("-analyzeduration") < list.IndexOf("-i"));
+        Assert.True(list.IndexOf("-probesize") < list.IndexOf("-i"));
+    }
+
+    [Fact]
     public void ReencodeArgumentsPassUpstreamHeadersWhenTicketlessAuthenticationIsUsed()
     {
         var arguments = TvHeadendHttpLiveStream.BuildReencodeArguments(

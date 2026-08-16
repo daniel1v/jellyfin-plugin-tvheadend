@@ -53,10 +53,17 @@ namespace TVHeadEnd.Streaming
         private static readonly TimeSpan ProbeBufferDuration = TimeSpan.FromSeconds(2);
 
         /// <summary>
-        /// The wall-clock bound on IDR detection, so that a low bitrate channel cannot stretch
-        /// the byte-based scan limit into an unbounded wait before the feed mode is decided.
+        /// How long to wait for an IDR frame before concluding the broadcast carries none.
         /// </summary>
-        private static readonly TimeSpan IdrDecisionTimeLimit = TimeSpan.FromSeconds(6);
+        /// <remarks>
+        /// Measured across twelve services: those that send IDRs send the first within 219 to
+        /// 503 ms and repeat roughly every second; those that do not send none at all. Nothing
+        /// falls in between, so the worst case is starting just after an IDR and waiting one
+        /// interval, about 1.2 seconds. Erring long only delays the first tune of an affected
+        /// channel; erring short costs an unnecessary re-encode, so this keeps a margin over
+        /// the longest interval observed rather than hugging it.
+        /// </remarks>
+        private static readonly TimeSpan IdrDecisionTimeLimit = TimeSpan.FromSeconds(2);
 
         private static readonly TimeSpan ReencodeStartupTimeout = TimeSpan.FromSeconds(30);
 
@@ -392,6 +399,12 @@ namespace TVHeadEnd.Streaming
                 "-hide_banner",
                 "-loglevel", "warning",
                 "-fflags", "+genpts",
+
+                // FFmpeg would otherwise spend up to its five second default deciding what a
+                // transport stream contains. The PMT names every elementary stream within the
+                // first packets, which is all the encoder needs.
+                "-analyzeduration", "1000000",
+                "-probesize", "4000000",
             };
 
             if (upstreamHeaders.Count > 0)
@@ -665,9 +678,11 @@ namespace TVHeadEnd.Streaming
             {
                 carriesNoIdr = false;
             }
-            else if (conditioner.IdrScanBytes >= LiveTransportStreamConditioner.IdrScanLimit
-                || Stopwatch.GetElapsedTime(firstByteTimestamp) >= IdrDecisionTimeLimit)
+            else if (conditioner.IdrScanBytes > 0
+                && Stopwatch.GetElapsedTime(firstByteTimestamp) >= IdrDecisionTimeLimit)
             {
+                // Deliberately on elapsed time rather than on bytes scanned: a byte budget
+                // makes low bitrate channels wait longest, which is the wrong way round.
                 carriesNoIdr = true;
             }
             else
