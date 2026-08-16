@@ -16,6 +16,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<HTSConnectionHandler>();
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
-        serviceCollection.AddSingleton<IChannel, RecordingsChannel>();
+
+        // Registered under its own type as well, so the endpoint serving recordings can ask it
+        // what its analysis found instead of establishing the same thing a second time. Both
+        // registrations resolve to the one instance.
+        serviceCollection.AddSingleton<RecordingsChannel>();
+        serviceCollection.AddSingleton<IChannel>(provider => provider.GetRequiredService<RecordingsChannel>());
     }
 }

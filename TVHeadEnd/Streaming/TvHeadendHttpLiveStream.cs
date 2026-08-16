@@ -396,9 +396,16 @@ namespace TVHeadEnd.Streaming
         /// received -- which costs another round of connection setup and, on a system with few
         /// tuners, may not be available at all.
         /// </remarks>
+        /// <param name="input">
+        /// What FFmpeg reads. A live channel hands it the pipe the conditioned stream is written
+        /// to; a recording hands it the pipe the endpoint feeds from TVHeadend. Neither lets
+        /// FFmpeg open the source itself, which is what keeps it from seeking.
+        /// </param>
         /// <returns>The argument list, one argument per element.</returns>
-        internal static IReadOnlyList<string> BuildReencodeArguments()
+        internal static IReadOnlyList<string> BuildReencodeArguments(string input = "pipe:0")
         {
+            ArgumentException.ThrowIfNullOrEmpty(input);
+
             List<string> arguments =
             [
                 "-hide_banner",
@@ -412,7 +419,7 @@ namespace TVHeadEnd.Streaming
                 "-probesize", "4000000",
 
                 "-f", "mpegts",
-                "-i", "pipe:0",
+                "-i", input,
                 "-map", "0:v:0",
                 "-map", "0:a?",
                 "-dn", "-sn",

@@ -61,6 +61,10 @@ namespace TVHeadEnd
         // server runs. Without this every listing of a folder would analyse its contents again.
         private readonly ConcurrentDictionary<string, MediaSourceInfo> _describedRecordings = new(StringComparer.OrdinalIgnoreCase);
 
+        // Recordings found to carry no IDR frame, remembered from the analysis so the endpoint
+        // that serves them does not have to establish it a second time.
+        private readonly ConcurrentDictionary<string, bool> _recordingsWithoutIdr = new(StringComparer.OrdinalIgnoreCase);
+
         public RecordingsChannel(
             ILoggerFactory loggerFactory,
             HTSConnectionHandler htsConnectionHandler,
@@ -395,6 +399,21 @@ namespace TVHeadEnd
         }
 
         /// <summary>
+        /// Gets a value indicating whether this recording has to be re-encoded to be playable.
+        /// </summary>
+        /// <remarks>
+        /// Established during the analysis and remembered, so the endpoint serving the recording
+        /// asks rather than works it out again. Withholding direct play and the remux is not
+        /// enough on its own: Jellyfin still copies the video inside its transcoding job, because
+        /// the stream matches the target codec and that decision is made there rather than from
+        /// the media source. Only a re-encode creates the frames a decoder can start on.
+        /// </remarks>
+        /// <param name="recordingId">The TVHeadend recording identifier.</param>
+        /// <returns>Whether the recording carries no IDR frame.</returns>
+        public bool RequiresReencode(string recordingId)
+            => !string.IsNullOrEmpty(recordingId) && _recordingsWithoutIdr.ContainsKey(recordingId);
+
+        /// <summary>
         /// Gets how long the recording runs, from the times TVHeadend scheduled it for. An
         /// analysis cannot supply it, because what is analysed is a sample.
         /// </summary>
@@ -447,6 +466,7 @@ namespace TVHeadEnd
                     // which carries the missing frames straight through to the client.
                     source.SupportsDirectPlay = false;
                     source.SupportsDirectStream = false;
+                    _recordingsWithoutIdr[id] = true;
                     _logger.LogInformation(
                         "TVHeadend recording {RecordingId} carries no IDR frame; it is not offered for direct play",
                         id);
