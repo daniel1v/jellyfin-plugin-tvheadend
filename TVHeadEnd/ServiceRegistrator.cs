@@ -1,8 +1,12 @@
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using TVHeadEnd.Media;
+using TVHeadEnd.Playback;
 
 namespace TVHeadEnd;
 
@@ -15,6 +19,18 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         serviceCollection.AddSingleton<HTSConnectionHandler>();
+
+        // The one place client information enters the plugin. Registered here so that the
+        // playback layer can depend on the abstraction and never on Jellyfin's request pipeline.
+        serviceCollection.AddHttpContextAccessor();
+        serviceCollection.AddSingleton<IPlaybackClientContextAccessor, JellyfinPlaybackClientContextAccessor>();
+
+        // What the plugin has observed about each channel. One instance: the live path writes it,
+        // the settings page discards it, and both have to see the same thing.
+        serviceCollection.AddSingleton(provider => new ChannelMediaDescriptorStore(
+            provider.GetRequiredService<IApplicationPaths>(),
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger<ChannelMediaDescriptorStore>()));
+
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
 
         // Registered under its own type as well, so the endpoint serving recordings can ask it

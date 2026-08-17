@@ -31,7 +31,7 @@ public sealed class IdrScanTests : IDisposable
         // TVHeadend server running a WebTV profile produces -- says nothing about it.
         File.WriteAllBytes(_path, Encoding.ASCII.GetBytes(new string('x', 4096)));
 
-        Assert.True(SourceDescriber.CarriesIdrFrames(_path));
+        Assert.NotEqual(H264RandomAccessKind.RecoveryOpenGop, SourceDescriber.ScanRandomAccess(_path));
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class IdrScanTests : IDisposable
 
         File.WriteAllBytes(_path, stream);
 
-        Assert.True(SourceDescriber.CarriesIdrFrames(_path));
+        Assert.NotEqual(H264RandomAccessKind.RecoveryOpenGop, SourceDescriber.ScanRandomAccess(_path));
     }
 
     [Fact]
@@ -63,12 +63,12 @@ public sealed class IdrScanTests : IDisposable
     {
         File.WriteAllBytes(_path, []);
 
-        Assert.True(SourceDescriber.CarriesIdrFrames(_path));
+        Assert.NotEqual(H264RandomAccessKind.RecoveryOpenGop, SourceDescriber.ScanRandomAccess(_path));
     }
 
     [Fact]
     public void AMissingSamplePathIsRefused()
     {
-        Assert.ThrowsAny<ArgumentException>(() => SourceDescriber.CarriesIdrFrames(string.Empty));
+        Assert.ThrowsAny<ArgumentException>(() => SourceDescriber.ScanRandomAccess(string.Empty));
     }
 }

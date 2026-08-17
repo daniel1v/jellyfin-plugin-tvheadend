@@ -1,91 +1,105 @@
-﻿using System;
+using System;
 using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Media;
 
 namespace TVHeadEnd.Streaming
 {
     /// <summary>
-    /// Fills in what a TVHeadend source contains, from a local sample of it.
+    /// Describes a recording from a sample of it.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A live channel and a recording pose the same question and are answered the same way. The
-    /// remote source is never analysed: for a channel the sample is the shared buffer, for a
-    /// recording it is the opening fetched by a range request. Analysing the source itself is
-    /// both slow -- TVHeadend answers range requests but does not advertise Accept-Ranges, so
-    /// FFmpeg reads a recording from end to end -- and, for a channel, a second subscription.
+    /// A thin adapter over <see cref="MediaInspector"/> for the recordings path, which needs the
+    /// same facts a channel does but fills in an existing <see cref="MediaSourceInfo"/> rather
+    /// than building a channel descriptor. It exists so live and recordings share one analysis
+    /// and one set of rules about what may be claimed.
     /// </para>
     /// <para>
-    /// The two rules that follow are the ones this plugin has broken before, in both paths, and
-    /// they are why the description belongs in one place: stream order is never touched, and the
-    /// runtime never comes from the sample.
+    /// The two rules this plugin has broken in both paths in turn: stream order is never touched,
+    /// and the runtime never comes from the sample.
     /// </para>
     /// </remarks>
-    internal sealed class SourceDescriber
+    public sealed class SourceDescriber
     {
         private const int ScanChunkLength = 65536;
 
-        private readonly IMediaEncoder _mediaEncoder;
-        private readonly ILogger _logger;
+        private readonly MediaInspector _inspector;
 
-        internal SourceDescriber(IMediaEncoder mediaEncoder, ILogger logger)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SourceDescriber"/> class.
+        /// </summary>
+        /// <param name="mediaEncoder">The Jellyfin media encoder.</param>
+        /// <param name="logger">The logger.</param>
+        public SourceDescriber(IMediaEncoder mediaEncoder, ILogger logger)
         {
-            ArgumentNullException.ThrowIfNull(mediaEncoder);
-            ArgumentNullException.ThrowIfNull(logger);
-
-            _mediaEncoder = mediaEncoder;
-            _logger = logger;
+            _inspector = new MediaInspector(mediaEncoder, logger);
         }
 
         /// <summary>
-        /// Marks the audio track that the widest range of clients can decode, so that a broadcast
-        /// carrying MPEG audio alongside a Dolby track does not end up on a device without an MP2
-        /// decoder.
+        /// Reports how the video of a sample offers a decoder a place to start.
         /// </summary>
         /// <remarks>
-        /// The order of <see cref="MediaSourceInfo.MediaStreams"/> is deliberately left alone.
-        /// Jellyfin's <c>EncodingHelper.GetMapArgs</c> addresses the stream it wants FFmpeg to
-        /// copy by its position in this list, so the list has to stay in the order FFprobe
-        /// reported. Reordering it makes <c>-map</c> point at a different track than the one
-        /// described in the manifest, which surfaces on the client as a decoder failure for a
-        /// codec the manifest never advertised.
+        /// The same question the live path asks, answered by the same scanner, because it is a
+        /// property of the broadcast and not of how it is delivered. The scan is bounded by the
+        /// sample, and the H.264 analysis only ever runs for H.264: an earlier version fed MPEG-2
+        /// into it, where the slice start code <c>00 00 01 05</c> satisfies the IDR pattern by
+        /// coincidence.
         /// </remarks>
-        /// <param name="mediaSource">The described media source.</param>
-        internal static void PreferCompatibleAudioTrack(MediaSourceInfo mediaSource)
+        /// <param name="samplePath">A local file holding the opening of the stream.</param>
+        /// <returns>How the video offers random access.</returns>
+        public static H264RandomAccessKind ScanRandomAccess(string samplePath)
         {
-            ArgumentNullException.ThrowIfNull(mediaSource);
+            ArgumentException.ThrowIfNullOrEmpty(samplePath);
 
-            var audioStreams = mediaSource.MediaStreams
-                .Where(stream => stream.Type == MediaStreamType.Audio)
-                .ToList();
-            if (audioStreams.Count == 0)
+            var probe = new VideoRandomAccessProbe();
+            var conditioner = new TransportStreamConditioner(
+                TransportStreamConditioner.EventInformationTablePid,
+                probe);
+            var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkLength);
+            var conditioned = ArrayPool<byte>.Shared.Rent(
+                TransportStreamConditioner.GetMaximumConditionedLength(ScanChunkLength));
+
+            try
             {
-                return;
+                using var sample = new FileStream(samplePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                var first = true;
+
+                int read;
+                while ((read = sample.Read(buffer, 0, ScanChunkLength)) > 0)
+                {
+                    if (first)
+                    {
+                        first = false;
+                        if (!SourceContainer.IsTransportStream(buffer.AsSpan(0, read)))
+                        {
+                            return H264RandomAccessKind.NotApplicable;
+                        }
+                    }
+
+                    conditioner.Condition(buffer.AsSpan(0, read), conditioned);
+                    if (probe.Kind == H264RandomAccessKind.Idr)
+                    {
+                        return H264RandomAccessKind.Idr;
+                    }
+                }
+
+                // The sample ran out. For H.264 that is a real answer -- nothing in it offered an
+                // IDR -- and for anything else the question never applied.
+                return probe.VideoStreamType == H264RandomAccessAnalyzer.StreamType && probe.HasInspectedVideo
+                    ? H264RandomAccessKind.RecoveryOpenGop
+                    : H264RandomAccessKind.NotApplicable;
             }
-
-            string[] preferredCodecs = ["aac", "ac3", "eac3", "mp3"];
-            var preferredAudio = preferredCodecs
-                .Select(codec => audioStreams.FirstOrDefault(stream => string.Equals(stream.Codec, codec, StringComparison.OrdinalIgnoreCase)))
-                .FirstOrDefault(stream => stream is not null)
-                ?? audioStreams.FirstOrDefault(stream => stream.IsDefault)
-                ?? audioStreams[0];
-
-            foreach (var stream in audioStreams)
+            finally
             {
-                stream.IsDefault = ReferenceEquals(stream, preferredAudio);
+                ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(conditioned);
             }
-
-            mediaSource.DefaultAudioStreamIndex = preferredAudio.Index;
         }
 
         /// <summary>
@@ -101,145 +115,35 @@ namespace TVHeadEnd.Streaming
         /// must never reach Jellyfin, which dereferences the video stream while preparing
         /// playback and throws before any fallback could take effect.
         /// </returns>
-        internal async Task<bool> DescribeFromSample(
+        public async Task<bool> DescribeFromSample(
             MediaSourceInfo target,
             string samplePath,
             string what,
             CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(target);
-            ArgumentException.ThrowIfNullOrEmpty(samplePath);
 
-            var stopwatch = Stopwatch.StartNew();
-            var info = await _mediaEncoder.GetMediaInfo(
-                new MediaInfoRequest
-                {
-                    MediaType = MediaBrowser.Model.Dlna.DlnaProfileType.Video,
-                    MediaSource = new MediaSourceInfo { Path = samplePath, Protocol = MediaProtocol.File },
-                    ExtractChapters = false,
-                },
-                cancellationToken).ConfigureAwait(false);
-
-            var streams = info?.MediaStreams;
-            if (info is null || streams is null || streams.Count == 0)
+            var inspected = await _inspector
+                .Inspect(samplePath, what, target.Container ?? SourceContainer.TransportStream, cancellationToken)
+                .ConfigureAwait(false);
+            if (inspected is null)
             {
-                _logger.LogWarning(
-                    "TVHeadend source description: {What} yielded no streams after {ElapsedMilliseconds} ms",
-                    what,
-                    stopwatch.ElapsedMilliseconds);
                 return false;
             }
 
-            // Verbatim, in the order FFprobe reported. See PreferCompatibleAudioTrack.
-            target.MediaStreams = streams;
-
-            target.Container = SourceContainer.Describe(info.Container, target.Container);
-            target.Bitrate = info.Bitrate;
-            target.Timestamp = info.Timestamp;
-            target.Video3DFormat = info.Video3DFormat;
-            target.VideoType = info.VideoType;
-
-            // Deliberately not taken from the analysis. It describes the sample -- a slice of a
-            // recording, or a ring buffer holding the last few minutes of a channel -- and never
-            // the source. A caller that knows the real runtime sets it; one that has none, such
-            // as live TV, leaves it empty.
+            // Verbatim, in analysis order: Jellyfin addresses streams by their position.
+            target.MediaStreams = [.. inspected.Streams];
+            target.Container = inspected.Container;
+            target.Bitrate = inspected.Bitrate;
+            target.Timestamp = inspected.Timestamp;
+            target.VideoType = inspected.VideoType;
+            target.Video3DFormat = inspected.Video3DFormat;
 
             // The full result is in hand, including real stream indices. Without this Jellyfin
-            // replaces it with its own cached live TV view: first video, first audio, indices
-            // unknown -- which is exactly the description that makes its "-map" arguments land
-            // on the wrong tracks.
+            // replaces it with its own cached view, whose "-map" arguments land on wrong tracks.
             target.SupportsProbing = false;
-
-            PreferCompatibleAudioTrack(target);
-
-            var video = streams.FirstOrDefault(stream => stream.Type == MediaStreamType.Video);
-            _logger.LogInformation(
-                "TVHeadend source description: {What} took {ElapsedMilliseconds} ms -- {Container}, {StreamCount} streams ({Streams}); video {Width}x{Height} {Profile}@{Level} {FrameRate}fps",
-                what,
-                stopwatch.ElapsedMilliseconds,
-                target.Container,
-                streams.Count,
-                Summarise(streams),
-                video?.Width,
-                video?.Height,
-                video?.Profile,
-                video?.Level,
-                video?.RealFrameRate);
 
             return true;
         }
-
-        /// <summary>
-        /// Reports whether the sample's video carries IDR frames.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// The same question the live path asks, answered by the same scanner, because it is a
-        /// property of the broadcast and not of how it is delivered. Broadcasters differ: ZDF
-        /// sends an IDR roughly every 0.6 seconds, the ARD network sends none at all and signals
-        /// random access with recovery points instead. A device decoder will not start on the
-        /// latter -- it consumes the samples without ever emitting a frame, and the player waits
-        /// forever.
-        /// </para>
-        /// <para>
-        /// Bounded by the sample, so it ends whatever the sample contains. An earlier attempt
-        /// bounded it on the scanner's own byte counter, which only advances for H.264 video
-        /// packets and therefore never reached its limit on an MPEG-2 recording.
-        /// </para>
-        /// </remarks>
-        /// <param name="samplePath">A local file holding the opening of the stream.</param>
-        /// <returns>
-        /// <see langword="false"/> only when the sample is a transport stream carrying H.264 video
-        /// in which no IDR frame was found. Anything else raises no objection.
-        /// </returns>
-        internal static bool CarriesIdrFrames(string samplePath)
-        {
-            ArgumentException.ThrowIfNullOrEmpty(samplePath);
-
-            var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
-            var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkLength);
-            var conditioned = ArrayPool<byte>.Shared.Rent(
-                LiveTransportStreamConditioner.GetMaximumConditionedLength(ScanChunkLength));
-
-            try
-            {
-                using var sample = new FileStream(samplePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                var isTransportStream = false;
-                var first = true;
-
-                int read;
-                while ((read = sample.Read(buffer, 0, ScanChunkLength)) > 0)
-                {
-                    if (first)
-                    {
-                        first = false;
-                        isTransportStream = SourceContainer.IsTransportStream(buffer.AsSpan(0, read));
-                        if (!isTransportStream)
-                        {
-                            return true;
-                        }
-                    }
-
-                    conditioner.Condition(buffer.AsSpan(0, read), conditioned);
-                    if (conditioner.HasSeenIdrFrame)
-                    {
-                        return true;
-                    }
-                }
-
-                // Only a transport stream whose video was actually inspected can be said to carry
-                // none. Without a video PID -- an MPEG-2 recording, say -- the scanner has nothing
-                // to report and the question does not apply.
-                return !isTransportStream || conditioner.IdrScanBytes == 0;
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-                ArrayPool<byte>.Shared.Return(conditioned);
-            }
-        }
-
-        private static string Summarise(IReadOnlyList<MediaStream> streams)
-            => string.Join(", ", streams.Select(stream => $"{stream.Index}:{stream.Codec}{(stream.IsDefault ? "*" : string.Empty)}"));
     }
 }

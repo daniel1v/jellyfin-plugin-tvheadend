@@ -454,7 +454,9 @@ namespace TVHeadEnd
                     .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
                     .ConfigureAwait(false);
 
-                if (described && _htsConnectionHandler.GetReencodeWhenNoIdr() && !SourceDescriber.CarriesIdrFrames(sample))
+                if (described
+                    && Plugin.Instance.Configuration.EnableLegacyH264Fallback
+                    && SourceDescriber.ScanRandomAccess(sample) == Streaming.H264RandomAccessKind.RecoveryOpenGop)
                 {
                     // A broadcast that signals random access with recovery points instead of IDR
                     // frames -- the ARD network does -- offers a device decoder nothing to start

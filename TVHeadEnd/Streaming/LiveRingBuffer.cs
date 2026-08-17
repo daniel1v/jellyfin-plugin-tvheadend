@@ -153,6 +153,18 @@ namespace TVHeadEnd.Streaming
             return new RingReader(_path, this, AlignToPacket(OldestPosition));
         }
 
+        /// <summary>
+        /// Opens a reader at a specific logical position, which
+        /// <see cref="StreamBootstrapIndex"/> established is a place a decoder may start.
+        /// </summary>
+        /// <param name="position">The logical position to start reading at.</param>
+        /// <returns>A stream over the buffer.</returns>
+        internal Stream OpenReaderAt(long position)
+        {
+            var clamped = Math.Clamp(position, OldestPosition, WritePosition);
+            return new RingReader(_path, this, AlignToPacket(clamped));
+        }
+
         private static long AlignToPacket(long position) => position - (position % TransportStreamPacketSize);
 
         /// <summary>

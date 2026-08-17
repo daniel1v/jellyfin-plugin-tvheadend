@@ -213,7 +213,7 @@ namespace TVHeadEnd.Api
                 CreateNoWindow = true,
             };
 
-            foreach (var argument in TvHeadendHttpLiveStream.BuildReencodeArguments())
+            foreach (var argument in Legacy.LegacyH264Encoder.BuildArguments())
             {
                 startInfo.ArgumentList.Add(argument);
             }

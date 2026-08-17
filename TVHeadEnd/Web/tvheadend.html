@@ -23,7 +23,7 @@
                     <div class="fieldDescription">0 = Important, 1 = High, 2 = Normal, 3 = Low, 4 = Unimportant, 5 = leave it to the TVHeadend DVR configuration (default)</div>
                 </div>
                 <div class="inputContainer">
-                    <input is="emby-input" type="text" id="txtProfile" label="Profile for Recordings" />
+                    <input is="emby-input" type="text" id="txtDvrProfile" label="TVHeadend DVR configuration for recordings" />
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtPrePadding" label="Pre-recording Padding in seconds" />
@@ -55,17 +55,28 @@
                 </div>
                 <div class="checkboxContainer checkboxContainer-withDescription">
                     <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkForceDeinterlace" />
-                        <span>Force video deinterlacing for all channels and recordings. (Experimental)</span>
+                        <input is="emby-checkbox" type="checkbox" id="chkAnalyzeChannelFormatsOnRefresh" />
+                        <span>Analyze unknown channel formats during refresh</span>
                     </label>
-                    <div class="fieldDescription checkboxFieldDescription">Note: Changing this requires a server restart.</div>
+                    <div class="fieldDescription checkboxFieldDescription">Channels are normally analyzed the first time somebody watches them, which costs that viewer a few seconds once. With this enabled the analysis happens during a channel refresh instead, one channel at a time, so playback can offer the right variants from the very first tune. Each analysis briefly occupies a tuner. Failures are skipped and never fail the refresh.</div>
                 </div>
-                <div class="checkboxContainer checkboxContainer-withDescription">
-                    <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkReencodeWhenNoIdr" />
-                        <span>Re-encode video of broadcasts without IDR frames</span>
-                    </label>
-                    <div class="fieldDescription checkboxFieldDescription">Some broadcasters (for example the German ARD network) signal random access only through recovery points and never send H.264 IDR frames. Many device decoders cannot start such a stream and show a black picture. When enabled, the video of affected channels is re-encoded on the server so every client can play it; audio is passed through and all other channels remain untouched. Costs CPU while an affected channel is being watched. Note: Changing this requires a server restart.</div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtNativeStreamProfile" label="TVHeadend stream profile: native" />
+                    <div class="fieldDescription">The profile the broadcast is received through. "pass" forwards it untouched and is what every channel description is taken from. Changing this discards all stored descriptions.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtMpeg2H264CompatibilityProfile" label="TVHeadend stream profile: MPEG-2 to H.264 (optional)" />
+                    <div class="fieldDescription">Offered alongside the broadcast for channels carrying MPEG-2 video, so clients that cannot decode it play H.264 without a Jellyfin transcode. A client that can decode MPEG-2 still receives the broadcast. Leave empty to offer none.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtH264IdrNormalizationProfile" label="TVHeadend stream profile: H.264 IDR normalization (optional)" />
+                    <div class="fieldDescription">For broadcasts that signal random access only through recovery points and never send an IDR frame. Used only for clients known to be unable to start on such a stream; every other client still receives the broadcast. Must genuinely re-encode and produce real IDR frames. Leave empty to offer none.</div>
+                </div>
+                <div class="inputContainer" id="streamProfileStatus" style="margin-top:0.6em;"></div>
+                <div class="inputContainer">
+                    <button is="emby-button" type="button" id="btnReanalyze" class="raised block">Re-analyze channel formats</button>
+                    <div class="fieldDescription">Discards every stored channel description so they are established again. Use after changing anything inside a TVHeadend profile: a changed schema or a changed native profile is noticed automatically, a change inside a profile is not.</div>
+                </div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size (MB):" />

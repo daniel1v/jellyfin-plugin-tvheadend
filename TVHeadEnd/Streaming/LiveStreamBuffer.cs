@@ -1,0 +1,174 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace TVHeadEnd.Streaming
+{
+    /// <summary>
+    /// The buffer one live stream is written into, together with the places a decoder may start
+    /// in it.
+    /// </summary>
+    /// <remarks>
+    /// Shared by every kind of live stream so that joining one is the same operation whatever
+    /// produced it.
+    /// </remarks>
+    public sealed class LiveStreamBuffer : IAsyncDisposable
+    {
+        /// <summary>
+        /// While the buffer still holds less than this, a reader is served from its beginning:
+        /// nothing has been overwritten, and the very front is where the conditioner placed the
+        /// program tables and the first access point.
+        /// </summary>
+        private const long ReadFromStartWindow = 4 * 1024 * 1024;
+
+        /// <summary>
+        /// Below this the window would be shorter than the lag a client can build up while its
+        /// decoder starts, and it would read over its own tail.
+        /// </summary>
+        public const int MinimumSizeMegabytes = 32;
+
+        private const int RetryDeleteCount = 10;
+
+        private readonly LiveRingBuffer _ring;
+        private readonly string _path;
+
+        private bool _disposed;
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="LiveStreamBuffer"/> class.
+        /// </summary>
+        /// <param name="path">The buffer file.</param>
+        /// <param name="sizeMegabytes">The configured buffer window.</param>
+        public LiveStreamBuffer(string path, int sizeMegabytes)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(path);
+
+            _path = path;
+            _ring = new LiveRingBuffer(path, Math.Max(MinimumSizeMegabytes, sizeMegabytes) * 1024L * 1024L);
+        }
+
+        /// <summary>
+        /// Gets the buffer file, which is what Jellyfin hands clients as a local media source.
+        /// </summary>
+        public string Path => _path;
+
+        /// <summary>
+        /// Gets or sets where a decoder may start.
+        /// </summary>
+        /// <remarks>
+        /// Assigned once the container is known. Until then nothing is indexed, which is correct:
+        /// a reader arriving that early is served from the beginning anyway.
+        /// </remarks>
+        public ILiveStreamBootstrap? Bootstrap { get; set; }
+
+        /// <summary>
+        /// Gets how many bytes have been written.
+        /// </summary>
+        public long WritePosition => _ring.WritePosition;
+
+        /// <summary>
+        /// Gets a value indicating whether the buffer file still exists. A source whose buffer
+        /// has gone is worse than no source at all: the client keeps requesting something that
+        /// answers 404 instead of opening a fresh stream.
+        /// </summary>
+        public bool Exists => File.Exists(_path);
+
+        /// <summary>
+        /// Appends to the buffer, recording the access points the chunk contains.
+        /// </summary>
+        /// <param name="data">The bytes to append.</param>
+        /// <param name="randomAccessOffsets">Where inside the chunk a decoder may start.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task that completes once the bytes are readable.</returns>
+        public async ValueTask Write(
+            ReadOnlyMemory<byte> data,
+            IReadOnlyList<int>? randomAccessOffsets,
+            CancellationToken cancellationToken)
+        {
+            if (data.IsEmpty)
+            {
+                return;
+            }
+
+            // Taken before the write: positions are relative to the start of this chunk.
+            var basePosition = _ring.WritePosition;
+            await _ring.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+
+            Bootstrap?.Record(basePosition, data.Span, randomAccessOffsets);
+        }
+
+        /// <summary>
+        /// Discards everything written so far.
+        /// </summary>
+        public void Reset()
+        {
+            _ring.Reset();
+            Bootstrap?.Reset();
+        }
+
+        /// <summary>
+        /// Opens a reader for a consumer.
+        /// </summary>
+        /// <remarks>
+        /// A consumer joining a stream that has been running for a while is placed at the most
+        /// recent access point still inside the window, preceded by the program tables valid
+        /// there. Placing it a fixed distance behind the live edge instead -- which is what an
+        /// earlier version did -- lands it in the middle of a picture with no tables, which is
+        /// exactly the state a tuner hands over and which no decoder recovers from.
+        /// </remarks>
+        /// <returns>A stream over the buffer.</returns>
+        public Stream OpenReader()
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if (_ring.WritePosition <= ReadFromStartWindow)
+            {
+                return _ring.OpenReaderFromStart();
+            }
+
+            if (Bootstrap is null || !Bootstrap.TryGetJoinPosition(_ring.OldestPosition, out var position))
+            {
+                return _ring.OpenReaderFromStart();
+            }
+
+            var prefix = Bootstrap.CreateBootstrapPrefix();
+            var reader = _ring.OpenReaderAt(position);
+            return prefix.Length > 0 ? new PrefixedStream(prefix, reader) : reader;
+        }
+
+        /// <inheritdoc />
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            await _ring.DisposeAsync().ConfigureAwait(false);
+            await DeleteBufferFile().ConfigureAwait(false);
+        }
+
+        private async Task DeleteBufferFile()
+        {
+            for (var attempt = 0; attempt <= RetryDeleteCount; attempt++)
+            {
+                try
+                {
+                    File.Delete(_path);
+                    return;
+                }
+                catch (IOException) when (attempt < RetryDeleteCount)
+                {
+                    await Task.Delay(200).ConfigureAwait(false);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    return;
+                }
+            }
+        }
+    }
+}

@@ -18,7 +18,7 @@ public class LiveTransportStreamConditionerTests
     {
         // A tuner starts mid-GOP, so the leading video packets reference a picture
         // parameter set the decoder never received.
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         var source = Concat(
             ProgramAssociationTable(),
             ProgramMapTable(),
@@ -35,7 +35,7 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ConditionEmitsTheTablesAheadOfTheFirstRandomAccessPoint()
     {
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         var source = Concat(
             ProgramAssociationTable(),
             ProgramMapTable(),
@@ -55,7 +55,7 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ConditionPassesEverythingThroughOnceStarted()
     {
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         Condition(
             conditioner,
             Concat(ProgramAssociationTable(), ProgramMapTable(), VideoPacket(startsUnit: true, randomAccess: true)),
@@ -72,17 +72,17 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ConditionRemovesTheEventInformationTablePidAfterStarting()
     {
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         var source = Concat(
             ProgramAssociationTable(),
             ProgramMapTable(),
             VideoPacket(startsUnit: true, randomAccess: true),
-            Packet(LiveTransportStreamConditioner.EventInformationTablePid),
+            Packet(TransportStreamConditioner.EventInformationTablePid),
             AudioPacket());
 
         Condition(conditioner, source, out var output);
 
-        Assert.DoesNotContain(LiveTransportStreamConditioner.EventInformationTablePid, PidsOf(output));
+        Assert.DoesNotContain(TransportStreamConditioner.EventInformationTablePid, PidsOf(output));
         Assert.Equal([0x00, PmtPid, VideoPid, AudioPid], PidsOf(output));
     }
 
@@ -90,14 +90,14 @@ public class LiveTransportStreamConditionerTests
     public void ConditionReassemblesPacketsSplitAcrossChunks()
     {
         // The upstream HTTP body arrives in chunks that do not respect packet boundaries.
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         var stream = Concat(
             ProgramAssociationTable(),
             ProgramMapTable(),
             VideoPacket(startsUnit: true, randomAccess: true),
-            Packet(LiveTransportStreamConditioner.EventInformationTablePid),
+            Packet(TransportStreamConditioner.EventInformationTablePid),
             AudioPacket());
-        var destination = new byte[LiveTransportStreamConditioner.GetMaximumConditionedLength(77)];
+        var destination = new byte[TransportStreamConditioner.GetMaximumConditionedLength(77)];
         var kept = new List<byte>();
 
         foreach (var chunk in Chunk(stream, 77))
@@ -113,7 +113,7 @@ public class LiveTransportStreamConditionerTests
     public void ConditionWaitsForTheTablesBeforeStarting()
     {
         // Without the PMT the video PID is unknown, so a keyframe cannot be recognised.
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         var written = Condition(conditioner, VideoPacket(startsUnit: true, randomAccess: true), out _);
 
@@ -124,7 +124,7 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ConditionResynchronisesAfterLeadingGarbage()
     {
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         var source = Concat(
             [0x00, 0x01, 0x02],
             ProgramAssociationTable(),
@@ -142,7 +142,7 @@ public class LiveTransportStreamConditionerTests
         // The fingerprint a cached probe is validated against: reusing a probe is only safe
         // while the broadcast announces the same streams in the same order, because Jellyfin
         // addresses the track to copy by its position in the list.
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         Condition(conditioner, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
 
@@ -152,7 +152,7 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ProgramLayoutIsUnknownBeforeThePmtArrives()
     {
-        var conditioner = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         Condition(conditioner, ProgramAssociationTable(), out _);
 
@@ -162,10 +162,10 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ProgramLayoutChangesWhenTheBroadcastAddsATrack()
     {
-        var withoutExtraTrack = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var withoutExtraTrack = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         Condition(withoutExtraTrack, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
 
-        var withExtraTrack = new LiveTransportStreamConditioner(LiveTransportStreamConditioner.EventInformationTablePid);
+        var withExtraTrack = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         Condition(withExtraTrack, Concat(ProgramAssociationTable(), ProgramMapTableWithSecondAudioTrack()), out _);
 
         Assert.NotEqual(withoutExtraTrack.ProgramLayout, withExtraTrack.ProgramLayout);
@@ -174,13 +174,24 @@ public class LiveTransportStreamConditionerTests
     [Fact]
     public void ConstructorRejectsAPidOutsideTheTransportStreamRange()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new LiveTransportStreamConditioner(0x2000));
-        Assert.Throws<ArgumentOutOfRangeException>(() => new LiveTransportStreamConditioner(-1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TransportStreamConditioner(0x2000));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TransportStreamConditioner(-2));
     }
 
-    private static int Condition(LiveTransportStreamConditioner conditioner, byte[] source, out byte[] output)
+    [Fact]
+    public void MinusOneDropsNothing()
     {
-        var destination = new byte[LiveTransportStreamConditioner.GetMaximumConditionedLength(source.Length)];
+        // What an already-conditioned stream is indexed with: nothing has to be filtered out of
+        // the plugin's own output, only its access points recorded.
+        var conditioner = new TransportStreamConditioner(-1, probe: null, startImmediately: true);
+        var packet = Packet(TransportStreamConditioner.EventInformationTablePid);
+
+        Assert.Equal(packet.Length, Condition(conditioner, packet, out _));
+    }
+
+    private static int Condition(TransportStreamConditioner conditioner, byte[] source, out byte[] output)
+    {
+        var destination = new byte[TransportStreamConditioner.GetMaximumConditionedLength(source.Length)];
         var written = conditioner.Condition(source, destination);
         output = destination.AsSpan(0, written).ToArray();
         return written;

@@ -1,11 +1,10 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Configuration;
@@ -14,15 +13,16 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.DataHelper;
 using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 using TVHeadEnd.HTSP.Responses;
+using TVHeadEnd.Media;
+using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using TVHeadEnd.TimeoutHelper;
+using TVHeadEnd.Tvheadend;
 using static TVHeadEnd.TicketType;
 
 namespace TVHeadEnd
@@ -49,24 +49,19 @@ namespace TVHeadEnd
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfigurationManager _configurationManager;
         private readonly IServerApplicationHost _applicationHost;
-        private readonly ConcurrentDictionary<string, TvHeadendHttpLiveStream> _activeChannelStreams = new(StringComparer.OrdinalIgnoreCase);
-        private readonly SourceDescriber _sourceDescriber;
 
-        // Channels measured to carry no IDR frames skip the detection phase and start their
-        // re-encode immediately. Persisted, so the first tune after a restart is fast too;
-        // the scan keeps running alongside the encoder, so a channel that starts sending IDR
-        // frames drops out of the list again by itself.
-        private readonly ConcurrentDictionary<string, bool> _channelRequiresReencode = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Lock _verdictPersistenceLock = new();
-
-        // Probe results, keyed by channel and validated against the PMT layout they were
-        // taken from. Re-probing costs about a tenth of a second, but the buffering it needs
-        // costs two full seconds on every channel change, and that is what this avoids.
-        private readonly ConcurrentDictionary<string, CachedChannelProbe> _channelProbeCache = new(StringComparer.OrdinalIgnoreCase);
+        // The playback layer. This service is the adapter to Jellyfin and owns none of it: what
+        // a channel is belongs to the descriptor store, how it is analysed to the analyzer,
+        // which variants exist to the playback policy, and every stream to itself.
+        private readonly ChannelMediaDescriptorStore _descriptors;
+        private readonly ChannelMediaAnalyzer _analyzer;
+        private readonly ChannelFormatPreAnalyzer _preAnalyzer;
+        private readonly IPlaybackClientContextAccessor _clientContext;
+        private readonly string _bufferDirectory;
 
         private readonly ILogger<LiveTvService> _logger;
 
-        private bool _verdictsLoaded;
+        private bool _profilesDiscovered;
 
         public LiveTvService(
             ILoggerFactory loggerFactory,
@@ -75,7 +70,9 @@ namespace TVHeadEnd
             ILibraryManager libraryManager,
             IHttpClientFactory httpClientFactory,
             IConfigurationManager configurationManager,
-            IServerApplicationHost applicationHost)
+            IServerApplicationHost applicationHost,
+            ChannelMediaDescriptorStore descriptors,
+            IPlaybackClientContextAccessor clientContext)
         {
             // System.Diagnostics.StackTrace t = new System.Diagnostics.StackTrace();
             _logger = loggerFactory.CreateLogger<LiveTvService>();
@@ -95,9 +92,13 @@ namespace TVHeadEnd
             }
 
             _mediaEncoder = mediaEncoder;
-            _sourceDescriber = new SourceDescriber(mediaEncoder, _logger);
+            _clientContext = clientContext;
+            _analyzer = new ChannelMediaAnalyzer(new MediaInspector(mediaEncoder, _logger), _logger);
+            _descriptors = descriptors;
+            _preAnalyzer = new ChannelFormatPreAnalyzer(_descriptors, _logger);
 
-            TvHeadendHttpLiveStream.RemoveOrphanedBuffers(_configurationManager, _logger);
+            _bufferDirectory = LiveBufferDirectory.Resolve(_configurationManager);
+            LiveBufferDirectory.RemoveOrphaned(_bufferDirectory, _logger);
         }
 
         public DateTime LastRecordingChange { get; private set; } = DateTime.MinValue;
@@ -229,7 +230,7 @@ namespace TVHeadEnd
             HTSMessage createAutorecMessage = new HTSMessage();
             createAutorecMessage.Method = "addAutorecEntry";
             BuildAutorecFields(createAutorecMessage, info);
-            createAutorecMessage.PutField("configName", _htsConnectionHandler.GetProfile());
+            createAutorecMessage.PutField("configName", _htsConnectionHandler.GetDvrProfile());
 
             await SendAutorecMessage(createAutorecMessage, nameof(CreateSeriesTimerAsync), cancellationToken).ConfigureAwait(false);
         }
@@ -338,7 +339,7 @@ namespace TVHeadEnd
             createTimerMessage.PutField("startExtra", (long)(info.PrePaddingSeconds / 60));
             createTimerMessage.PutField("stopExtra", (long)(info.PostPaddingSeconds / 60));
             createTimerMessage.PutField("priority", _htsConnectionHandler.GetPriority()); // info.Priority delivers always 0 - no GUI
-            createTimerMessage.PutField("configName", _htsConnectionHandler.GetProfile());
+            createTimerMessage.PutField("configName", _htsConnectionHandler.GetDvrProfile());
             createTimerMessage.PutField("description", info.Overview);
             createTimerMessage.PutField("title", info.Name);
             createTimerMessage.PutField("creator", Plugin.Instance.Configuration.Username);
@@ -449,7 +450,53 @@ namespace TVHeadEnd
                 }
             }
 
+            // Descriptions of channels TVHeadend no longer offers are of no use to anyone.
+            var channelIds = list.Select(channel => channel.Id).Where(id => !string.IsNullOrEmpty(id)).ToList();
+            _descriptors.RemoveMissingChannels(channelIds);
+
+            if (Plugin.Instance.Configuration.AnalyzeChannelFormatsOnRefresh)
+            {
+                await AnalyzeUnknownChannels(channelIds, cancellationToken).ConfigureAwait(false);
+            }
+
             return list;
+        }
+
+        /// <summary>
+        /// Describes the channels nothing current is known about, one at a time.
+        /// </summary>
+        /// <remarks>
+        /// Awaited rather than started and forgotten, so a cancelled refresh really does stop the
+        /// analysis and no tuner is left occupied by work nobody is waiting for.
+        /// </remarks>
+        private async Task AnalyzeUnknownChannels(IReadOnlyCollection<string> channelIds, CancellationToken cancellationToken)
+        {
+            var nativeProfile = _htsConnectionHandler.GetStreamProfiles().GetProfileName(StreamProfileRole.Native);
+
+            await _preAnalyzer.Run(
+                channelIds,
+                nativeProfile,
+                async (channelId, token) =>
+                {
+                    // Deliberately the native profile only: a compatibility profile would start a
+                    // transcoder on the TVHeadend server for a channel nobody is watching.
+                    var stream = await OpenVariant(channelId, PlaybackVariant.Native, nativeProfile, token)
+                        .ConfigureAwait(false);
+                    try
+                    {
+                        return await _analyzer.Analyze(
+                            channelId,
+                            nativeProfile,
+                            stream.Buffer.Path,
+                            stream.Observation,
+                            token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        await stream.DisposeAsync().ConfigureAwait(false);
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -471,217 +518,350 @@ namespace TVHeadEnd
                 "Open them with GetChannelStreamWithDirectStreamProvider.");
         }
 
+        /// <summary>
+        /// Offers the variants of a channel, without opening anything.
+        /// </summary>
+        /// <remarks>
+        /// This must never cost a TVHeadend subscription: Jellyfin calls it during playback
+        /// negotiation, and for every channel in a list. Everything it needs comes from what
+        /// earlier tunes stored and from which stream profiles are configured.
+        /// </remarks>
+        /// <param name="channelId">The channel.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The variants on offer, native first.</returns>
+        public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
+        {
+            var profiles = _htsConnectionHandler.GetStreamProfiles();
+            var nativeProfile = profiles.GetProfileName(StreamProfileRole.Native);
+            var native = _descriptors.Get(channelId, nativeProfile);
+
+            var offers = PlaybackVariantPolicy.SelectVariants(
+                native,
+                GetVariantAvailability(profiles),
+                _clientContext.Current);
+
+            var sources = offers
+                .Select(offer => JellyfinMediaSourceMapper.CreatePending(
+                    channelId,
+                    offer,
+                    native,
+                    _descriptors.Get(channelId, nativeProfile, offer.Variant.ToString())))
+                .ToList();
+
+            _logger.LogInformation(
+                "Live TV playback negotiation: channel {ChannelId} ({ChannelName}) offers {Offers} to {Client}",
+                channelId,
+                _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>",
+                string.Join(", ", offers.Select(offer => offer.Variant.ToString())),
+                _clientContext.Current.Describe());
+
+            return Task.FromResult(sources);
+        }
+
+        /// <summary>
+        /// Opens a channel in the variant Jellyfin selected against the client's device profile.
+        /// </summary>
+        /// <param name="channelId">The channel to open.</param>
+        /// <param name="streamId">The media source identifier Jellyfin selected.</param>
+        /// <param name="currentLiveStreams">The streams Jellyfin already holds open.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The opened live stream.</returns>
         public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(
             string channelId,
             string streamId,
             List<ILiveStream> currentLiveStreams,
             CancellationToken cancellationToken)
         {
-            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
-            var reusableStream = TvHeadendHttpLiveStream.AcquireReusable(
-                currentLiveStreams,
-                streamId,
-                mediaSourceId);
-            if (reusableStream is not null)
-            {
-                if (reusableStream is TvHeadendHttpLiveStream reusableTvheadendStream)
-                {
-                    _activeChannelStreams[mediaSourceId] = reusableTvheadendStream;
-                }
+            ArgumentNullException.ThrowIfNull(currentLiveStreams);
 
+            var requested = PlaybackVariantId.Resolve(channelId, streamId) ?? PlaybackVariant.Native;
+            var profiles = _htsConnectionHandler.GetStreamProfiles();
+            var nativeProfile = profiles.GetProfileName(StreamProfileRole.Native);
+
+            // Reuse is keyed by channel and role together, so a broadcast and a rendering of it
+            // can never be handed out for one another.
+            var reusable = currentLiveStreams
+                .OfType<TvheadendLiveStream>()
+                .FirstOrDefault(stream => stream.EnableStreamSharing
+                    && stream.HasBuffer
+                    && string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(stream.VariantRole, requested.ToString(), StringComparison.Ordinal));
+            if (reusable is not null)
+            {
+                reusable.ConsumerCount++;
                 _logger.LogInformation(
-                    "Live TV stream reuse: managed stream {UniqueId} now has {ConsumerCount} consumers",
-                    reusableStream.UniqueId,
-                    reusableStream.ConsumerCount);
-                return reusableStream;
+                    "Live TV stream reuse: {Role} of channel {ChannelId} now has {ConsumerCount} consumers",
+                    reusable.VariantRole,
+                    channelId,
+                    reusable.ConsumerCount);
+                return reusable;
             }
 
-            var mediaSource = await CreateOpenedChannelMediaSource(channelId, cancellationToken).ConfigureAwait(false);
-            var liveStream = new TvHeadendHttpLiveStream(
-                mediaSource,
-                _httpClientFactory,
-                _configurationManager,
-                _applicationHost,
-                _logger,
-                _mediaEncoder.EncoderPath,
-                _htsConnectionHandler.GetReencodeWhenNoIdr(),
-                _htsConnectionHandler.GetLiveBufferSizeMegabytes(),
-                GetKnownChannelVerdict(channelId),
-                requiresReencode => RememberChannelVerdict(channelId, requiresReencode),
-                _channelProbeCache.TryGetValue(channelId, out var cachedProbe) ? cachedProbe.ProgramLayout : null)
-            {
-                OriginalStreamId = streamId,
-            };
+            var stopwatch = Stopwatch.StartNew();
+            var stream = await OpenVariant(channelId, requested, nativeProfile, cancellationToken).ConfigureAwait(false);
+            var openedAt = stopwatch.ElapsedMilliseconds;
 
             try
             {
-                await liveStream.Open(cancellationToken).ConfigureAwait(false);
+                var observation = stream.Observation;
+                var descriptor = await DescribeOpenedStream(
+                    channelId,
+                    requested,
+                    nativeProfile,
+                    stream,
+                    observation,
+                    cancellationToken).ConfigureAwait(false);
 
-                if (liveStream.MatchesCachedLayout && cachedProbe is not null)
+                // Only one thing forces a change of variant mid-open, and only towards safety: a
+                // broadcast that turns out to offer no place an affected client's decoder can
+                // start. The corrected description is stored either way.
+                var reconciled = PlaybackVariantPolicy.ReconcileAfterOpen(
+                    requested,
+                    observation.RandomAccess,
+                    GetVariantAvailability(profiles),
+                    _clientContext.Current);
+
+                if (reconciled != requested)
                 {
-                    cachedProbe.ApplyTo(liveStream.MediaSource);
                     _logger.LogInformation(
-                        "Live TV stream start: reused the probe of channel {ChannelId}; the broadcast still announces the same elementary streams",
-                        channelId);
-                }
-                else
-                {
-                    await ProbeStream(liveStream.MediaSource, cancellationToken).ConfigureAwait(false);
-                    if (liveStream.ProgramLayout is not null && !liveStream.IsReencoding)
-                    {
-                        _channelProbeCache[channelId] = CachedChannelProbe.From(liveStream.ProgramLayout, liveStream.MediaSource);
-                    }
+                        "Live TV stream start: channel {ChannelId} signals random access without IDR frames and {Client} cannot start on that, so {Role} is used instead",
+                        channelId,
+                        _clientContext.Current.Describe(),
+                        reconciled);
+
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    return await OpenReconciled(channelId, reconciled, nativeProfile, streamId, cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
-                ApplyLiveStreamOverrides(liveStream.MediaSource);
+                PublishOpenedStream(channelId, requested, stream, descriptor);
+                stream.OriginalStreamId = streamId;
 
-                liveStream.MediaSource.SupportsDirectPlay = true;
+                _logger.LogInformation(
+                    "Live TV stream start: channel {ChannelId} handed to Jellyfin after {ElapsedMilliseconds} ms as {Role} (opening took {OpenMilliseconds} ms)",
+                    channelId,
+                    stopwatch.ElapsedMilliseconds,
+                    requested,
+                    openedAt);
 
-                // A broadcast that signals random access with recovery points instead of IDR
-                // frames -- the ARD network does, ZDF does not -- offers no synchronisation
-                // sample to common device decoders, which then never emit a frame. When the
-                // re-encode for such streams is switched off, record the fact so a report of
-                // "audio but black picture" can be traced here.
-                if (!liveStream.IsReencoding && !liveStream.HasSeenIdrFrame)
-                {
-                    _logger.LogWarning(
-                        "Live TV stream start: channel {ChannelId} carries no IDR frames and re-encoding is disabled. Many device decoders cannot start this stream and show a black picture",
-                        channelId);
-                }
-
-                _activeChannelStreams[mediaSourceId] = liveStream;
-                return liveStream;
+                return stream;
             }
             catch
             {
-                await liveStream.Close().ConfigureAwait(false);
-                liveStream.Dispose();
+                await stream.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
         }
 
         /// <summary>
-        /// Builds the media source for a channel from a fresh access ticket. The source is not
-        /// probed here: it describes the upstream TVHeadend URL, which the managed live stream
-        /// consumes but no client ever sees. Probing it would open a second subscription to a
-        /// channel that is about to be received anyway, and would describe the broadcast rather
-        /// than what ends up in the buffer.
+        /// Opens one variant of a channel, reading the TVHeadend profile its role names.
         /// </summary>
-        private async Task<MediaSourceInfo> CreateOpenedChannelMediaSource(
+        private async Task<TvheadendLiveStream> OpenVariant(
             string channelId,
+            PlaybackVariant variant,
+            string? nativeProfile,
             CancellationToken cancellationToken)
         {
-            var streamStartStopwatch = Stopwatch.StartNew();
-            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
+            var stopwatch = Stopwatch.StartNew();
             var ticket = await _channelTicketHandler.GetTicket(channelId, cancellationToken).ConfigureAwait(false);
             _logger.LogInformation(
                 "Live TV stream start: access ticket ready for channel {ChannelId} after {ElapsedMilliseconds} ms",
                 channelId,
-                streamStartStopwatch.ElapsedMilliseconds);
+                stopwatch.ElapsedMilliseconds);
             _logger.LogInformation(
                 "Live TV stream start: HTSP channel mapping {ChannelId} -> {ChannelName}",
                 channelId,
                 _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>");
 
-            MediaSourceInfo livetvasset;
-            if (_htsConnectionHandler.GetEnableSubsMaudios())
-            {
-                _logger.LogInformation("Live TV stream start: support for live TV subtitles and multiple audio tracks is enabled");
+            var endpoint = _htsConnectionHandler.GetHttpEndpoint();
+            var profiles = _htsConnectionHandler.GetStreamProfiles();
+            await EnsureProfilesDiscovered(endpoint, profiles, cancellationToken).ConfigureAwait(false);
+            var profile = profiles.GetProfileName(ToRole(variant));
 
-                // Use HTTP basic auth in HTTP header instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                livetvasset = LiveTvMediaSourceFactory.CreateOpened(
-                    mediaSourceId,
-                    _htsConnectionHandler.GetHttpBaseUrl() + ticket.Path);
-                livetvasset.RequiredHttpHeaders = _htsConnectionHandler.GetHeaders();
-            }
-            else
-            {
-                livetvasset = LiveTvMediaSourceFactory.CreateOpened(
-                    mediaSourceId,
-                    _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url);
-            }
+            var upstreamUrl = endpoint.CreateTicketedStreamUrl(ticket.Url, profile);
+            var describedAlready = _descriptors.Get(channelId, nativeProfile, VariantRoleName(variant)) is not null;
 
-            _logger.LogInformation(
-                "Live TV stream start: upstream source ready for channel {ChannelId} after {ElapsedMilliseconds} ms; awaiting the managed-buffer probe",
+            var stream = new TvheadendLiveStream(
                 channelId,
-                streamStartStopwatch.ElapsedMilliseconds);
+                variant.ToString(),
+                upstreamUrl,
+                endpoint.CreateHeaders(),
+                JellyfinMediaSourceMapper.CreatePending(channelId, new VariantOffer(variant, true), null),
+                Path.Combine(_bufferDirectory, $"tvheadend-{Guid.NewGuid():N}.ts"),
+                _htsConnectionHandler.GetLiveBufferSizeMegabytes(),
+                describedAlready,
+                _httpClientFactory,
+                _logger);
 
-            return livetvasset;
+            await stream.Open(cancellationToken).ConfigureAwait(false);
+            return stream;
         }
 
-        private void ApplyLiveStreamOverrides(MediaSourceInfo mediaSource)
+        private async Task<ILiveStream> OpenReconciled(
+            string channelId,
+            PlaybackVariant variant,
+            string? nativeProfile,
+            string streamId,
+            CancellationToken cancellationToken)
         {
-            SourceDescriber.PreferCompatibleAudioTrack(mediaSource);
-
-            if (!_htsConnectionHandler.GetForceDeinterlace())
+            var stream = await OpenVariant(channelId, variant, nativeProfile, cancellationToken).ConfigureAwait(false);
+            try
             {
-                return;
+                var descriptor = await DescribeOpenedStream(
+                    channelId,
+                    variant,
+                    nativeProfile,
+                    stream,
+                    stream.Observation,
+                    cancellationToken).ConfigureAwait(false);
+
+                PublishOpenedStream(channelId, variant, stream, descriptor);
+                stream.OriginalStreamId = streamId;
+                return stream;
             }
-
-            _logger.LogInformation("Live TV stream start: force video deinterlacing for all channels and recordings is enabled");
-            foreach (MediaStream stream in mediaSource.MediaStreams)
+            catch
             {
-                if (stream.Type == MediaStreamType.Video && stream.IsInterlaced == false)
-                {
-                    stream.IsInterlaced = true;
-                }
-
-                stream.RealFrameRate = 50.0F;
+                await stream.DisposeAsync().ConfigureAwait(false);
+                throw;
             }
         }
 
         /// <summary>
-        /// Describes what the shared buffer actually contains, through the same component that
-        /// describes a recording. It reads the local buffer, never the upstream channel, so it
-        /// costs no TVHeadend subscription and reports the re-encoded video where a channel goes
-        /// through the encoder.
+        /// Analyses what an opened stream actually contains and stores it.
         /// </summary>
-        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, CancellationToken cancellationToken)
+        /// <remarks>
+        /// The analysis reads the local buffer, never the upstream channel. For a compatibility
+        /// role the result is also checked against what the role promises, and the role is marked
+        /// invalid if the configured TVHeadend profile does not deliver it.
+        /// </remarks>
+        private async Task<ChannelMediaDescriptor?> DescribeOpenedStream(
+            string channelId,
+            PlaybackVariant variant,
+            string? nativeProfile,
+            TvheadendLiveStream stream,
+            TransportObservation observation,
+            CancellationToken cancellationToken)
         {
-            var described = await _sourceDescriber
-                .DescribeFromSample(mediaSourceInfo, mediaSourceInfo.Path, "the live buffer", cancellationToken)
-                .ConfigureAwait(false);
+            var role = VariantRoleName(variant);
+            var stored = _descriptors.Get(channelId, nativeProfile, role);
+            if (stored is not null && stored.MatchesProgram(observation.ProgramSignature))
+            {
+                _logger.LogInformation(
+                    "Live TV stream start: reused the stored description of channel {ChannelId}; the broadcast still announces the same elementary streams",
+                    channelId);
 
-            if (!described)
+                // The random access verdict always comes from this tune, even when everything
+                // else is reused: an identical PMT proves nothing about the GOP structure.
+                return stored with { RandomAccess = observation.RandomAccess };
+            }
+
+            var descriptor = await _analyzer.Analyze(
+                channelId,
+                nativeProfile,
+                stream.Buffer.Path,
+                observation,
+                cancellationToken).ConfigureAwait(false);
+            if (descriptor is null)
+            {
+                return null;
+            }
+
+            descriptor = descriptor with { VariantRole = role };
+            _descriptors.Record(descriptor);
+
+            if (variant != PlaybackVariant.Native)
+            {
+                var satisfies = JellyfinMediaSourceMapper.SatisfiesContract(variant, descriptor);
+                _htsConnectionHandler.GetStreamProfiles().RecordValidation(
+                    ToRole(variant),
+                    satisfies,
+                    satisfies ? null : $"produced {descriptor.VideoCodec} with {descriptor.RandomAccess} random access");
+
+                if (!satisfies)
+                {
+                    _logger.LogWarning(
+                        "Live TV stream start: the TVHeadend profile for {Role} produced {Codec} with {RandomAccess} random access, which does not satisfy the role. It will not be offered again until the profile is corrected",
+                        variant,
+                        descriptor.VideoCodec,
+                        descriptor.RandomAccess);
+                }
+            }
+
+            return descriptor;
+        }
+
+        private void PublishOpenedStream(
+            string channelId,
+            PlaybackVariant variant,
+            TvheadendLiveStream stream,
+            ChannelMediaDescriptor? descriptor)
+        {
+            var supportsDirectPlay = variant != PlaybackVariant.Native
+                || descriptor?.RandomAccess != H264RandomAccessKind.RecoveryOpenGop
+                || !PlaybackQuirkPolicy.Applies(_clientContext.Current, PlaybackQuirk.H264DvbRecoveryOpenGopColdStart);
+
+            stream.MediaSource = JellyfinMediaSourceMapper.CreateOpened(
+                channelId,
+                new VariantOffer(variant, supportsDirectPlay),
+                descriptor,
+                stream.Buffer.Path,
+                _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
+                    + "/LiveTv/LiveStreamFiles/"
+                    + stream.UniqueId
+                    + "/stream.ts");
+        }
+
+        /// <summary>
+        /// Asks TVHeadend once which stream profiles it offers, so the settings page can say
+        /// whether a configured name exists.
+        /// </summary>
+        /// <remarks>
+        /// Done here rather than during playback negotiation, which must stay free of network
+        /// work, and awaited rather than started and forgotten. A server that will not answer
+        /// costs one failed request per lifetime and changes nothing else: a profile that cannot
+        /// be listed still works if its name is right.
+        /// </remarks>
+        private async Task EnsureProfilesDiscovered(
+            TvheadendHttpEndpoint endpoint,
+            TvheadendStreamProfiles profiles,
+            CancellationToken cancellationToken)
+        {
+            if (_profilesDiscovered)
             {
                 return;
             }
 
-            // A channel has no runtime, whatever the buffer happens to hold.
-            mediaSourceInfo.RunTimeTicks = null;
-            mediaSourceInfo.Size = null;
-            mediaSourceInfo.DefaultSubtitleStreamIndex = null;
-            mediaSourceInfo.SupportsDirectStream = true;
-            mediaSourceInfo.SupportsTranscoding = true;
-        }
+            _profilesDiscovered = true;
+            var discovery = new TvheadendProfileDiscovery(_httpClientFactory, _logger);
+            var names = await discovery.ListProfiles(endpoint, cancellationToken).ConfigureAwait(false);
+            profiles.ApplyDiscovery(names);
 
-        public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
-        {
-            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
-            if (_activeChannelStreams.TryGetValue(mediaSourceId, out var activeStream))
+            foreach (var status in profiles.GetStatus())
             {
-                // A stream whose buffer has gone is worse than no stream at all: the client
-                // would keep requesting a source that answers 404 instead of opening a fresh one.
-                if (activeStream.EnableStreamSharing && activeStream.HasBuffer)
-                {
-                    _logger.LogInformation(
-                        "Live TV playback negotiation: returning active direct-play source {MediaSourceId} for channel {ChannelId}",
-                        mediaSourceId,
-                        channelId);
-                    return Task.FromResult<List<MediaSourceInfo>>([activeStream.MediaSource]);
-                }
-
-                _activeChannelStreams.TryRemove(mediaSourceId, out _);
+                _logger.LogInformation(
+                    "TVHeadend stream profile {Role}: {ProfileName} is {State}{Detail}",
+                    status.Role,
+                    string.IsNullOrEmpty(status.ProfileName) ? "<not configured>" : status.ProfileName,
+                    status.State,
+                    string.IsNullOrEmpty(status.Detail) ? string.Empty : " -- " + status.Detail);
             }
-
-            _logger.LogInformation(
-                "Live TV playback negotiation: pending source {MediaSourceId} ready for channel {ChannelId} ({ChannelName}); opening is required",
-                mediaSourceId,
-                channelId,
-                _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>");
-
-            return Task.FromResult<List<MediaSourceInfo>>([LiveTvMediaSourceFactory.CreatePending(mediaSourceId)]);
         }
+
+        private PlaybackVariantAvailability GetVariantAvailability(TvheadendStreamProfiles profiles)
+            => new(
+                profiles.IsUsable(StreamProfileRole.Mpeg2H264Compatibility),
+                profiles.IsUsable(StreamProfileRole.H264IdrNormalization));
+
+        private static StreamProfileRole ToRole(PlaybackVariant variant)
+            => variant switch
+            {
+                PlaybackVariant.Mpeg2H264Compatibility => StreamProfileRole.Mpeg2H264Compatibility,
+                PlaybackVariant.H264IdrNormalization => StreamProfileRole.H264IdrNormalization,
+                _ => StreamProfileRole.Native,
+            };
+
+        private static string? VariantRoleName(PlaybackVariant variant)
+            => variant == PlaybackVariant.Native ? null : variant.ToString();
 
         public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
         {
@@ -863,122 +1043,6 @@ namespace TVHeadEnd
         private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
         {
             return Task.Run(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
-        }
-
-        /// <summary>
-        /// Gets what an earlier tune measured about a channel, loading the persisted list on
-        /// first use. Not in the constructor: this service is built before the plugin instance
-        /// that holds the configuration exists.
-        /// </summary>
-        private bool? GetKnownChannelVerdict(string channelId)
-        {
-            lock (_verdictPersistenceLock)
-            {
-                if (!_verdictsLoaded)
-                {
-                    _verdictsLoaded = true;
-                    foreach (var persisted in Plugin.Instance.Configuration.ChannelsWithoutIdr)
-                    {
-                        _channelRequiresReencode.TryAdd(persisted, true);
-                    }
-                }
-            }
-
-            return _channelRequiresReencode.TryGetValue(channelId, out var verdict) ? verdict : null;
-        }
-
-        /// <summary>
-        /// Records whether a channel needs its video re-encoded, and persists the list when it
-        /// changes so the next start does not have to measure again.
-        /// </summary>
-        private void RememberChannelVerdict(string channelId, bool requiresReencode)
-        {
-            if (_channelRequiresReencode.TryGetValue(channelId, out var previous) && previous == requiresReencode)
-            {
-                return;
-            }
-
-            _channelRequiresReencode[channelId] = requiresReencode;
-
-            lock (_verdictPersistenceLock)
-            {
-                var configuration = Plugin.Instance.Configuration;
-                var channels = _channelRequiresReencode
-                    .Where(entry => entry.Value)
-                    .Select(entry => entry.Key)
-                    .Order(StringComparer.Ordinal)
-                    .ToArray();
-                if (channels.SequenceEqual(configuration.ChannelsWithoutIdr, StringComparer.Ordinal))
-                {
-                    return;
-                }
-
-                configuration.ChannelsWithoutIdr = channels;
-                Plugin.Instance.SaveConfiguration();
-            }
-
-            if (requiresReencode)
-            {
-                _logger.LogInformation(
-                    "Live TV stream start: channel {ChannelId} carries no IDR frames and will be re-encoded from now on",
-                    channelId);
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Live TV stream start: channel {ChannelId} carries IDR frames again and no longer needs re-encoding",
-                    channelId);
-            }
-        }
-
-        /// <summary>
-        /// A probe result together with the PMT layout it was taken from.
-        /// </summary>
-        private sealed class CachedChannelProbe
-        {
-            private CachedChannelProbe(string programLayout, string serializedMediaStreams, string? container, int? bitrate)
-            {
-                ProgramLayout = programLayout;
-                SerializedMediaStreams = serializedMediaStreams;
-                Container = container;
-                Bitrate = bitrate;
-            }
-
-            public string ProgramLayout { get; }
-
-            private string SerializedMediaStreams { get; }
-
-            private string? Container { get; }
-
-            private int? Bitrate { get; }
-
-            public static CachedChannelProbe From(string programLayout, MediaSourceInfo mediaSource)
-            {
-                // Held serialized so that every tune gets its own instances. The source
-                // handed to Jellyfin is mutated afterwards -- the default audio track is
-                // marked on it, and Jellyfin fills in localized display titles -- and two
-                // viewers on one channel must not share those objects.
-                return new CachedChannelProbe(
-                    programLayout,
-                    JsonSerializer.Serialize(mediaSource.MediaStreams),
-                    mediaSource.Container,
-                    mediaSource.Bitrate);
-            }
-
-            public void ApplyTo(MediaSourceInfo mediaSource)
-            {
-                mediaSource.MediaStreams = JsonSerializer.Deserialize<List<MediaStream>>(SerializedMediaStreams) ?? [];
-                mediaSource.Container = Container;
-                mediaSource.Bitrate = Bitrate;
-
-                // The plugin keeps the full probe result including real stream indices, so
-                // Jellyfin must not reduce it to its own cached live TV view.
-                mediaSource.SupportsProbing = false;
-                mediaSource.SupportsDirectStream = true;
-                mediaSource.SupportsTranscoding = true;
-                mediaSource.RunTimeTicks = null;
-                mediaSource.DefaultSubtitleStreamIndex = null;
-            }
         }
     }
 }

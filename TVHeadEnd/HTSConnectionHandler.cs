@@ -7,6 +7,7 @@ using MediaBrowser.Controller.LiveTv;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.DataHelper;
 using TVHeadEnd.HTSP;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd
 {
@@ -45,7 +46,8 @@ namespace TVHeadEnd
 
         private HTSConnectionAsync? _htsConnection;
         private int _priority;
-        private string _profile = string.Empty;
+        private string _dvrProfile = string.Empty;
+        private TvheadendStreamProfiles? _streamProfiles;
         private string _httpBaseUrl = string.Empty;
         private string _channelType = string.Empty;
         private string _tvhServerName = string.Empty;
@@ -55,8 +57,6 @@ namespace TVHeadEnd
         private string _userName = string.Empty;
         private string _password = string.Empty;
         private bool _enableSubsMaudios;
-        private bool _forceDeinterlace;
-        private bool _reencodeWhenNoIdr;
         private int _liveBufferSizeMegabytes;
 
         private LiveTvService? _liveTvService;
@@ -116,6 +116,14 @@ namespace TVHeadEnd
 
             var config = Plugin.Instance.Configuration;
 
+            // Settings that changed meaning or location are moved before anything reads them, so
+            // that no code has to know both the old and the new shape.
+            if (config.Migrate())
+            {
+                Plugin.Instance.SaveConfiguration();
+                _logger.LogInformation("[TVHclient] Configuration migrated to the current layout");
+            }
+
             _logger.LogDebug("[TVHclient] HTSConnectionHandler - Config initialized");
 
             if (string.IsNullOrEmpty(config.TVH_ServerName))
@@ -140,12 +148,14 @@ namespace TVHeadEnd
             }
 
             _priority = config.Priority;
-            _profile = config.Profile.Trim();
+            _dvrProfile = config.DvrProfile.Trim();
             _channelType = config.ChannelType.Trim();
             _enableSubsMaudios = config.EnableSubsMaudios;
-            _forceDeinterlace = config.ForceDeinterlace;
-            _reencodeWhenNoIdr = config.ReencodeWhenNoIdr;
             _liveBufferSizeMegabytes = config.LiveBufferSizeMegabytes;
+            _streamProfiles = new TvheadendStreamProfiles(
+                config.NativeStreamProfile,
+                config.Mpeg2H264CompatibilityProfile,
+                config.H264IdrNormalizationProfile);
 
             if (_priority < DvrPriorityImportant || _priority > DvrPriorityNotSet)
             {
@@ -232,12 +242,8 @@ namespace TVHeadEnd
         /// <returns>The HTTP base URL.</returns>
         private string BuildHttpBaseUrl()
         {
-            if (_enableSubsMaudios)
-            {
-                // Use HTTP basic auth instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                return "http://" + _userName + ":" + _password + "@" + _tvhServerName + ":" + _httpPort + _webRoot;
-            }
-
+            // Never with credentials. This address reaches clients, and authentication belongs
+            // in a header regardless of whether multiple audio tracks are offered.
             return "http://" + _tvhServerName + ":" + _httpPort + _webRoot;
         }
 
@@ -396,10 +402,39 @@ namespace TVHeadEnd
             return _priority;
         }
 
-        public string GetProfile()
+        /// <summary>
+        /// Gets the TVHeadend DVR configuration timers and autorec rules are created under.
+        /// </summary>
+        /// <returns>The DVR configuration name.</returns>
+        public string GetDvrProfile()
         {
             Init();
-            return _profile;
+            return _dvrProfile;
+        }
+
+        /// <summary>
+        /// Gets which TVHeadend stream profile serves which playback role.
+        /// </summary>
+        /// <returns>The configured roles.</returns>
+        public TvheadendStreamProfiles GetStreamProfiles()
+        {
+            Init();
+            return _streamProfiles ??= new TvheadendStreamProfiles(
+                TvheadendStreamProfiles.DefaultNativeProfile,
+                null,
+                null);
+        }
+
+        /// <summary>
+        /// Gets where TVHeadend's HTTP interface is, and how to authenticate to it.
+        /// </summary>
+        /// <returns>The endpoint.</returns>
+        public TvheadendHttpEndpoint GetHttpEndpoint()
+        {
+            // The web root is taken from the HTSP handshake, so a connection is required before
+            // the address is known to be correct.
+            EnsureConnection();
+            return new TvheadendHttpEndpoint(_tvhServerName, _httpPort, _webRoot, _userName, _password);
         }
 
         public string GetHttpBaseUrl()
@@ -414,18 +449,6 @@ namespace TVHeadEnd
         {
             Init();
             return _enableSubsMaudios;
-        }
-
-        public bool GetForceDeinterlace()
-        {
-            Init();
-            return _forceDeinterlace;
-        }
-
-        public bool GetReencodeWhenNoIdr()
-        {
-            Init();
-            return _reencodeWhenNoIdr;
         }
 
         public int GetLiveBufferSizeMegabytes()
