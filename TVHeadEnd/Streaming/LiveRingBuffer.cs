@@ -158,11 +158,18 @@ namespace TVHeadEnd.Streaming
         /// <see cref="StreamBootstrapIndex"/> established is a place a decoder may start.
         /// </summary>
         /// <param name="position">The logical position to start reading at.</param>
+        /// <param name="alignment">The byte boundary the position has to respect.</param>
         /// <returns>A stream over the buffer.</returns>
-        internal Stream OpenReaderAt(long position)
+        internal Stream OpenReaderAt(long position, int alignment)
         {
+            ArgumentOutOfRangeException.ThrowIfLessThan(alignment, 1);
+
+            // The alignment belongs to the container, not to the buffer. Rounding a Matroska
+            // position down to a transport stream packet boundary moves it up to 187 bytes into
+            // the middle of an element, which is how a correct join position still produced
+            // noise.
             var clamped = Math.Clamp(position, OldestPosition, WritePosition);
-            return new RingReader(_path, this, AlignToPacket(clamped));
+            return new RingReader(_path, this, clamped - (clamped % alignment));
         }
 
         private static long AlignToPacket(long position) => position - (position % TransportStreamPacketSize);

@@ -57,7 +57,7 @@ namespace TVHeadEnd.Streaming
 
                 long reclaimedBytes = 0;
                 var removed = 0;
-                foreach (var path in Directory.EnumerateFiles(bufferDirectory, "tvheadend-*.ts"))
+                foreach (var path in Directory.EnumerateFiles(bufferDirectory, "tvheadend-*"))
                 {
                     try
                     {

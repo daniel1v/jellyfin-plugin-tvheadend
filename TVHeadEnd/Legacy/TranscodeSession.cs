@@ -68,6 +68,15 @@ namespace TVHeadEnd.Legacy
         public Stream Input => _process.StandardInput.BaseStream;
 
         /// <summary>
+        /// Gets a task that completes once FFmpeg has written its last output byte.
+        /// </summary>
+        /// <remarks>
+        /// Lets a caller that turns this output into a stream close it at the right moment,
+        /// rather than leaving a reader waiting on a process that has already finished.
+        /// </remarks>
+        public Task Completion => _outputTask;
+
+        /// <summary>
         /// Gets a value indicating whether the process has ended.
         /// </summary>
         public bool HasExited

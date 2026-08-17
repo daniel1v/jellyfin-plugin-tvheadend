@@ -8,6 +8,25 @@ Profiles are configured by name in the plugin settings. Where the plugin has per
 `/api/profile/list`, the settings offer the existing profiles as a list; otherwise the name can be
 typed freely.
 
+## MPEG-TS is not negotiable for the compatibility roles
+
+Jellyfin serves a direct-played live stream with a hardcoded content type, in
+`VideosController.GetVideoStream`:
+
+```csharp
+var liveStream = new ProgressiveFileStream(liveStreamInfo.GetStream());
+// TODO (moved from MediaBrowser.Api): Don't hardcode contentType
+return File(liveStream, MimeTypes.GetMimeType("file.ts"));
+```
+
+Every live stream is therefore announced as `video/mp2t`, whatever it actually is. A player that
+believes the declared type — which players reasonably do — finds no sync byte in a Matroska body
+and never renders a frame. Measured on a Pixel 10: the stream decoded perfectly with FFmpeg,
+began with a keyframe, and still produced nothing but a buffering spinner.
+
+The plugin cannot correct the declaration, so a compatibility profile that emits anything other
+than MPEG-TS is rejected and the role falls back to the native stream.
+
 ## Roles
 
 ### Native — required

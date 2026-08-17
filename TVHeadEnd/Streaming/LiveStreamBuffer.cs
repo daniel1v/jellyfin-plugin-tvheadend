@@ -17,13 +17,6 @@ namespace TVHeadEnd.Streaming
     public sealed class LiveStreamBuffer : IAsyncDisposable
     {
         /// <summary>
-        /// While the buffer still holds less than this, a reader is served from its beginning:
-        /// nothing has been overwritten, and the very front is where the conditioner placed the
-        /// program tables and the first access point.
-        /// </summary>
-        private const long ReadFromStartWindow = 4 * 1024 * 1024;
-
-        /// <summary>
         /// Below this the window would be shorter than the lag a client can build up while its
         /// decoder starts, and it would read over its own tail.
         /// </summary>
@@ -112,21 +105,25 @@ namespace TVHeadEnd.Streaming
         /// Opens a reader for a consumer.
         /// </summary>
         /// <remarks>
-        /// A consumer joining a stream that has been running for a while is placed at the most
-        /// recent access point still inside the window, preceded by the program tables valid
-        /// there. Placing it a fixed distance behind the live edge instead -- which is what an
-        /// earlier version did -- lands it in the middle of a picture with no tables, which is
-        /// exactly the state a tuner hands over and which no decoder recovers from.
+        /// <para>
+        /// Every consumer is placed at the most recent entry point still inside the window,
+        /// preceded by whatever that container needs there. Placing it a fixed distance behind
+        /// the live edge instead -- which is what an earlier version did -- lands it in the
+        /// middle of a picture with no tables, which is exactly the state a tuner hands over and
+        /// which no decoder recovers from.
+        /// </para>
+        /// <para>
+        /// Including the very first consumer, which is why there is no shortcut for a buffer that
+        /// has not wrapped yet. A container writes what it likes before the first video keyframe:
+        /// measured on a Matroska stream, reading from the first byte gave audio starting at
+        /// 0.08 s and video only at 3.28 s, and a player with three seconds of sound and no
+        /// picture sits in its buffering state exactly as if the stream were broken.
+        /// </para>
         /// </remarks>
         /// <returns>A stream over the buffer.</returns>
         public Stream OpenReader()
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-
-            if (_ring.WritePosition <= ReadFromStartWindow)
-            {
-                return _ring.OpenReaderFromStart();
-            }
 
             if (Bootstrap is null || !Bootstrap.TryGetJoinPosition(_ring.OldestPosition, out var position))
             {
@@ -134,7 +131,7 @@ namespace TVHeadEnd.Streaming
             }
 
             var prefix = Bootstrap.CreateBootstrapPrefix();
-            var reader = _ring.OpenReaderAt(position);
+            var reader = _ring.OpenReaderAt(position, Bootstrap.Alignment);
             return prefix.Length > 0 ? new PrefixedStream(prefix, reader) : reader;
         }
 

@@ -72,7 +72,11 @@ namespace TVHeadEnd.Streaming
         private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly StreamBootstrapIndex _transportBootstrap = new();
+        private readonly string _bufferPath;
+        private readonly int _bufferSizeMegabytes;
+        private readonly string? _legacyNormalizerFfmpegPath;
 
+        private Legacy.LegacyH264LiveNormalizer? _legacyNormalizer;
         private TransportStreamConditioner? _conditioner;
         private VideoRandomAccessProbe? _probe;
         private Task? _feedTask;
@@ -89,7 +93,7 @@ namespace TVHeadEnd.Streaming
         /// <param name="upstreamUrl">The TVHeadend stream URL, including its profile.</param>
         /// <param name="upstreamHeaders">The headers the request needs.</param>
         /// <param name="mediaSource">The media source this stream backs.</param>
-        /// <param name="bufferPath">Where to write the buffer.</param>
+        /// <param name="bufferPath">Where to write the buffer, without an extension.</param>
         /// <param name="bufferSizeMegabytes">The configured buffer window.</param>
         /// <param name="describedAlready">
         /// Whether a current description is already stored, which spares the analysis and the
@@ -97,6 +101,11 @@ namespace TVHeadEnd.Streaming
         /// </param>
         /// <param name="httpClientFactory">The HTTP client factory.</param>
         /// <param name="logger">The logger.</param>
+        /// <param name="legacyNormalizerFfmpegPath">
+        /// Set only while no TVHeadend profile fills the IDR normalization role, in which case
+        /// the broadcast is run through the plugin's own transitional encoder. Everything below
+        /// this point then sees an ordinary transport stream and does not know the difference.
+        /// </param>
         public TvheadendLiveStream(
             string channelId,
             string variantRole,
@@ -107,7 +116,8 @@ namespace TVHeadEnd.Streaming
             int bufferSizeMegabytes,
             bool describedAlready,
             IHttpClientFactory httpClientFactory,
-            ILogger logger)
+            ILogger logger,
+            string? legacyNormalizerFfmpegPath = null)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
             ArgumentException.ThrowIfNullOrEmpty(variantRole);
@@ -125,9 +135,11 @@ namespace TVHeadEnd.Streaming
             _httpClientFactory = httpClientFactory;
             _describedAlready = describedAlready;
             _logger = logger;
+            _legacyNormalizerFfmpegPath = legacyNormalizerFfmpegPath;
 
             UniqueId = Guid.NewGuid().ToString("N");
-            Buffer = new LiveStreamBuffer(bufferPath, bufferSizeMegabytes);
+            _bufferPath = bufferPath;
+            _bufferSizeMegabytes = bufferSizeMegabytes;
 
             MediaSource = mediaSource;
             ConsumerCount = 1;
@@ -150,12 +162,12 @@ namespace TVHeadEnd.Streaming
         /// <summary>
         /// Gets the buffer this stream fills.
         /// </summary>
-        public LiveStreamBuffer Buffer { get; }
+        public LiveStreamBuffer Buffer { get; private set; } = null!;
 
         /// <summary>
         /// Gets a value indicating whether the buffer still exists.
         /// </summary>
-        public bool HasBuffer => Buffer.Exists;
+        public bool HasBuffer => Buffer?.Exists == true;
 
         /// <summary>
         /// Gets what the transport layer observed while receiving the stream.
@@ -186,7 +198,7 @@ namespace TVHeadEnd.Streaming
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Buffer.Path)
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_bufferPath)
                 ?? throw new InvalidOperationException("The live TV buffer path has no parent directory."));
 
             var stopwatch = Stopwatch.StartNew();
@@ -214,6 +226,17 @@ namespace TVHeadEnd.Streaming
 
             request.Dispose();
             var upstream = await response.Content.ReadAsStreamAsync(_lifetime.Token).ConfigureAwait(false);
+
+            if (!string.IsNullOrEmpty(_legacyNormalizerFfmpegPath))
+            {
+                _legacyNormalizer = Legacy.LegacyH264LiveNormalizer.Start(
+                    upstream,
+                    _legacyNormalizerFfmpegPath,
+                    _logger,
+                    $"channel {ChannelId} {VariantRole}",
+                    _lifetime.Token);
+                upstream = _legacyNormalizer.Output;
+            }
 
             _feedTask = Feed(upstream, [client, response], _lifetime.Token);
 
@@ -289,7 +312,16 @@ namespace TVHeadEnd.Streaming
                 }
             }
 
-            await Buffer.DisposeAsync().ConfigureAwait(false);
+            if (_legacyNormalizer is not null)
+            {
+                await _legacyNormalizer.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (Buffer is not null)
+            {
+                await Buffer.DisposeAsync().ConfigureAwait(false);
+            }
+
             _lifetime.Dispose();
 
             _logger.LogInformation("TVHeadend live stream {UniqueId} closed", UniqueId);
@@ -357,6 +389,15 @@ namespace TVHeadEnd.Streaming
                             // arrived. A transport stream is conditioned and its access points
                             // come from the conditioner; anything else is passed through and
                             // finds its own.
+                            // The buffer is named after what actually arrived. Jellyfin serves it
+                            // to a direct-playing client straight from disk and takes the content
+                            // type from the extension, so a Matroska stream in a file called .ts
+                            // is announced as video/mp2t -- and a player that believes it finds
+                            // no sync byte and never renders a frame.
+                            Buffer = new LiveStreamBuffer(
+                                _bufferPath + (_isTransportStream == true ? ".ts" : ".mkv"),
+                                _bufferSizeMegabytes);
+
                             if (_isTransportStream == true)
                             {
                                 Buffer.Bootstrap = _transportBootstrap;

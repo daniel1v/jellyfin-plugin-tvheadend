@@ -51,9 +51,23 @@ namespace TVHeadEnd.Playback
             // Measured on a Pixel 10 with org.jellyfin.mobile 2.7.1, whose c2.google.avc.decoder
             // gates output on an IDR. No upper bound is set because no later version has been
             // tested; when one is, this becomes a range and eventually disappears.
+            //
+            // The name is what the client puts in its authorization header, and the spellings
+            // differ between the Jellyfin Android applications. Guessing at one of them is how
+            // this quirk silently did nothing at all.
+            new QuirkEntry(
+                PlaybackQuirk.H264DvbRecoveryOpenGopColdStart,
+                Client: "Jellyfin for Android",
+                MinimumVersion: null,
+                MaximumVersion: null),
             new QuirkEntry(
                 PlaybackQuirk.H264DvbRecoveryOpenGopColdStart,
                 Client: "Jellyfin Android",
+                MinimumVersion: null,
+                MaximumVersion: null),
+            new QuirkEntry(
+                PlaybackQuirk.H264DvbRecoveryOpenGopColdStart,
+                Client: "Android TV",
                 MinimumVersion: null,
                 MaximumVersion: null),
             new QuirkEntry(

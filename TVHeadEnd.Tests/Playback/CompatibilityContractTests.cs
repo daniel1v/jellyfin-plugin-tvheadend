@@ -47,23 +47,23 @@ public class CompatibilityContractTests
     }
 
     [Fact]
-    public void MatroskaSatisfiesBothRolesWhenTheVideoIsRight()
+    public void MatroskaSatisfiesNoRoleHoweverGoodTheVideoIs()
     {
-        // The container is the means, not the end. Measured on a real installation, the Matroska
-        // output runs at real time where the transport stream one collapsed to 7 %, and it keeps
-        // more of the original audio tracks. What the roles are for is video a client can decode.
+        // Jellyfin serves a direct-played live stream with a hardcoded content type of
+        // video/mp2t. A player that believes it finds no sync byte in a Matroska body and never
+        // renders a frame, and the plugin cannot correct the declaration.
         var observed = Observed("h264", H264RandomAccessKind.NotApplicable) with
         {
             Container = "matroska,webm",
             IsTransportStream = false,
         };
 
-        Assert.True(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.Mpeg2H264Compatibility, observed));
-        Assert.True(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.H264IdrNormalization, observed));
+        Assert.False(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.Mpeg2H264Compatibility, observed));
+        Assert.False(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.H264IdrNormalization, observed));
     }
 
     [Fact]
-    public void AContainerWithoutH264SatisfiesNothing()
+    public void ATransportStreamWithoutH264SatisfiesNothing()
     {
         var observed = Observed("mpeg2video", H264RandomAccessKind.NotApplicable) with
         {
@@ -114,7 +114,10 @@ public class CompatibilityContractTests
         var source = JellyfinMediaSourceMapper.CreatePending(
             "42",
             new VariantOffer(PlaybackVariant.Mpeg2H264Compatibility, true),
-            native);
+            native,
+            observedVariant: null,
+            itemId: null,
+            describeStreams: true);
 
         var video = System.Linq.Enumerable.First(source.MediaStreams, stream => stream.Type == MediaStreamType.Video);
 

@@ -36,6 +36,12 @@ namespace TVHeadEnd.Streaming
         private byte[]? _programAssociationTable;
         private byte[]? _programMapTable;
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// A transport stream is addressable at packet boundaries and nowhere else.
+        /// </remarks>
+        public int Alignment => TransportStreamPacket.Length;
+
         /// <summary>
         /// Gets a value indicating whether both program tables have been seen.
         /// </summary>

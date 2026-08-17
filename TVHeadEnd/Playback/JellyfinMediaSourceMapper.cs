@@ -31,26 +31,47 @@ namespace TVHeadEnd.Playback
         /// What this variant's output was observed to be on an earlier open, or
         /// <see langword="null"/> if it has never been produced.
         /// </param>
+        /// <param name="itemId">
+        /// The channel's own item identifier, to be used for the variant offered first. Clients
+        /// that do not choose a source send this back as the media source identifier, and a
+        /// source has to answer to it or nothing opens at all.
+        /// </param>
+        /// <param name="describeStreams">
+        /// Whether to attach what the source contains. Only worth doing when more than one variant
+        /// is offered and Jellyfin has to choose between them.
+        /// </param>
         /// <returns>An unopened media source.</returns>
         public static MediaSourceInfo CreatePending(
             string channelId,
             VariantOffer offer,
             ChannelMediaDescriptor? native,
-            ChannelMediaDescriptor? observedVariant = null)
+            ChannelMediaDescriptor? observedVariant = null,
+            string? itemId = null,
+            bool describeStreams = false)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
 
             var source = CreateShell(channelId, offer);
+            if (!string.IsNullOrEmpty(itemId))
+            {
+                source.Id = itemId;
+            }
 
-            // Without streams Jellyfin has nothing to evaluate the device profile against. What
-            // may be claimed here differs sharply between the two cases: for the broadcast it is
-            // an observation, for a compatibility output that has never run it is only what the
-            // role contract guarantees.
-            var descriptor = offer.Variant == PlaybackVariant.Native
-                ? native
-                : observedVariant ?? ProjectFromContract(offer.Variant, native);
+            // Streams are attached only when there is a choice to make. Jellyfin evaluates the
+            // device profile as soon as it has something to evaluate, and an unopened source has
+            // no path yet -- it reports the bare server address -- so that evaluation can only
+            // end in a direct play error and a decision to transcode. With nothing to go on,
+            // Jellyfin opens the source first and judges the real thing.
+            if (describeStreams)
+            {
+                var descriptor = offer.Variant == PlaybackVariant.Native
+                    ? native
+                    : observedVariant ?? ProjectFromContract(offer.Variant, native);
 
-            descriptor?.ApplyTo(source);
+                descriptor?.ApplyTo(source);
+                PreferWidelyDecodableAudio(source);
+            }
+
             source.Name = DescribeVariant(offer.Variant);
             return source;
         }
@@ -77,6 +98,7 @@ namespace TVHeadEnd.Playback
 
             var source = CreateShell(channelId, offer);
             descriptor?.ApplyTo(source);
+            PreferWidelyDecodableAudio(source);
             source.Name = DescribeVariant(offer.Variant);
             source.RequiresOpening = false;
 
@@ -89,6 +111,10 @@ namespace TVHeadEnd.Playback
             source.EncoderPath = encoderUrl;
             source.EncoderProtocol = MediaProtocol.Http;
             source.RequiredHttpHeaders = new Dictionary<string, string>();
+
+            // Now there is something to play, and the policy decides whether this variant may be
+            // handed to a client unmodified.
+            source.SupportsDirectPlay = offer.SupportsDirectPlay;
 
             // A channel has no runtime, whatever the buffer happens to hold.
             source.RunTimeTicks = null;
@@ -123,10 +149,20 @@ namespace TVHeadEnd.Playback
                 return false;
             }
 
-            // What the roles are actually for: video a client can decode. The container is the
-            // means, not the end -- measured on a real installation, the Matroska output carries
-            // more of the original audio tracks than the transport stream one did, and the
-            // buffer indexes entry points for either.
+            // MPEG-TS, and nothing else. Jellyfin serves a direct-played live stream with a
+            // hardcoded content type of video/mp2t -- its own source says so, TODO and all:
+            //
+            //     return File(liveStream, MimeTypes.GetMimeType("file.ts"));
+            //
+            // A client that believes the declared type, as players reasonably do, finds no sync
+            // byte in a Matroska body and never renders a frame. The plugin cannot correct the
+            // declaration, so the content has to match it.
+            if (!observed.IsTransportStream
+                || observed.Container?.Contains("mpegts", StringComparison.OrdinalIgnoreCase) != true)
+            {
+                return false;
+            }
+
             if (!string.Equals(observed.VideoCodec, "h264", StringComparison.OrdinalIgnoreCase))
             {
                 return false;
@@ -140,6 +176,54 @@ namespace TVHeadEnd.Playback
             return variant != PlaybackVariant.H264IdrNormalization
                 || !observed.IsTransportStream
                 || observed.RandomAccess == H264RandomAccessKind.Idr;
+        }
+
+        /// <summary>
+        /// Marks the audio track the widest range of clients can decode.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A preference, which is why it lives in the mapping and not in the analysis: the
+        /// descriptor keeps every track exactly as the broadcast carries them, and this only
+        /// says which one a client should reach for first.
+        /// </para>
+        /// <para>
+        /// It matters more than it looks. A German broadcast typically carries MPEG audio first
+        /// and a Dolby track after it, and devices without an MP2 decoder are common -- so
+        /// without this, Jellyfin selects the first track, finds the client cannot decode it, and
+        /// transcodes a stream whose video it was perfectly happy to pass through.
+        /// </para>
+        /// <para>
+        /// The order of the list is deliberately left alone. Jellyfin's
+        /// <c>EncodingHelper.GetMapArgs</c> addresses the track it wants FFmpeg to copy by its
+        /// position, so reordering makes <c>-map</c> point at something other than the track the
+        /// manifest describes.
+        /// </para>
+        /// </remarks>
+        /// <param name="source">The media source to mark up.</param>
+        public static void PreferWidelyDecodableAudio(MediaSourceInfo source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+
+            var audio = source.MediaStreams.Where(stream => stream.Type == MediaStreamType.Audio).ToList();
+            if (audio.Count == 0)
+            {
+                return;
+            }
+
+            string[] preferred = ["aac", "ac3", "eac3", "mp3"];
+            var chosen = preferred
+                .Select(codec => audio.FirstOrDefault(stream => string.Equals(stream.Codec, codec, StringComparison.OrdinalIgnoreCase)))
+                .FirstOrDefault(stream => stream is not null)
+                ?? audio.FirstOrDefault(stream => stream.IsDefault)
+                ?? audio[0];
+
+            foreach (var stream in audio)
+            {
+                stream.IsDefault = ReferenceEquals(stream, chosen);
+            }
+
+            source.DefaultAudioStreamIndex = chosen.Index;
         }
 
         /// <summary>
@@ -166,7 +250,13 @@ namespace TVHeadEnd.Playback
                 IsInfiniteStream = true,
                 RequiresOpening = true,
                 RequiresClosing = true,
-                SupportsDirectPlay = offer.SupportsDirectPlay,
+
+                // Never on an unopened source. It has no path yet, only the promise of one, and
+                // Jellyfin's Android client answers direct play on an HTTP source by parsing the
+                // URL as an HLS playlist -- which is why the opened source is published as a
+                // local file. Whether this variant may be played directly at all is decided when
+                // it is opened, where there is something real to play.
+                SupportsDirectPlay = false,
                 SupportsDirectStream = true,
                 SupportsTranscoding = true,
                 SupportsProbing = true,

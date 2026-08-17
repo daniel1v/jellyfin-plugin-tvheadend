@@ -16,6 +16,12 @@ namespace TVHeadEnd.Streaming
     public interface ILiveStreamBootstrap
     {
         /// <summary>
+        /// Gets the byte boundary a join position has to respect. A transport stream is only
+        /// addressable at packet boundaries; other containers are addressable exactly.
+        /// </summary>
+        int Alignment { get; }
+
+        /// <summary>
         /// Records what was just appended to the buffer.
         /// </summary>
         /// <param name="basePosition">The logical position the chunk was written at.</param>
