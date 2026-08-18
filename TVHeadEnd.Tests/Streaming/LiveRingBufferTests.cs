@@ -34,7 +34,7 @@ public sealed class LiveRingBufferTests : IDisposable
 
         await ring.WriteAsync(written, CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         Assert.Equal(written, await ReadFully(reader, written.Length));
     }
 
@@ -46,7 +46,7 @@ public sealed class LiveRingBufferTests : IDisposable
         await using var ring = new LiveRingBuffer(_path, 64 * PacketSize);
         await ring.WriteAsync(Pattern(0, PacketSize), CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         await ReadFully(reader, PacketSize);
 
         var buffer = new byte[PacketSize];
@@ -66,7 +66,7 @@ public sealed class LiveRingBufferTests : IDisposable
         const int capacity = 16 * PacketSize;
         await using var ring = new LiveRingBuffer(_path, capacity);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         var received = new MemoryStream();
         var chunk = new byte[4 * PacketSize];
 
@@ -110,7 +110,7 @@ public sealed class LiveRingBufferTests : IDisposable
         await using var ring = new LiveRingBuffer(_path, capacity);
         await ring.WriteAsync(Pattern(0, PacketSize), CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
 
         // The writer laps the reader several times over.
         for (var round = 1; round < 30; round++)
@@ -141,7 +141,7 @@ public sealed class LiveRingBufferTests : IDisposable
         var encoded = Pattern(1000, 2 * PacketSize);
         await ring.WriteAsync(encoded, CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         Assert.Equal(encoded, await ReadFully(reader, encoded.Length));
     }
 

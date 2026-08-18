@@ -13,18 +13,15 @@ namespace TVHeadEnd.Tvheadend;
 /// </summary>
 /// <remarks>
 /// <para>
-/// One HTSP connection carries everything: the channel, DVR and series feed, every request the
-/// plugin makes, and every live subscription. A subscription is multiplexed onto it rather than
-/// given a connection of its own, which is what the protocol is designed for and what keeps a
-/// running channel from costing a socket and a handshake.
+/// One HTSP connection carries the channel list, the guide, the DVR feed and every request the
+/// plugin makes. Live playback is not on it: the broadcast arrives over HTTP and describes
+/// itself, so a running channel costs this connection nothing.
 /// </para>
 /// <para>
 /// Reconnection is deliberately unambitious. A lost connection fails everything waiting on it,
 /// and the next operation opens a fresh one; nothing is silently re-established behind a
-/// caller's back. Live streams are not resurrected either -- a stream whose metadata connection
-/// died keeps playing from its buffer, and the next tune builds a correct picture from scratch.
-/// Rebuilding that state transparently would be a state machine earning its keep only in the
-/// case where TVHeadend was restarting anyway.
+/// caller's back. A live stream already open is unaffected, because it does not depend on this
+/// connection once it has started.
 /// </para>
 /// </remarks>
 public sealed class TvheadendConnection : IAsyncDisposable
@@ -111,34 +108,6 @@ public sealed class TvheadendConnection : IAsyncDisposable
     {
         var connection = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
         return await connection.SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Opens a metadata subscription on a channel.
-    /// </summary>
-    /// <remarks>
-    /// Every stream index is filtered out at once, so TVHeadend keeps parsing the service and
-    /// keeps describing it, but never puts a frame of audio or video on the socket. The media
-    /// itself arrives over HTTP; this subscription exists to be told what the media is.
-    /// </remarks>
-    /// <param name="channelId">The HTSP channel identifier.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The subscription.</returns>
-    public async Task<HtspSubscription> SubscribeForMetadataAsync(int channelId, CancellationToken cancellationToken)
-    {
-        var connection = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
-
-        return await connection.SubscribeAsync(
-            channelId,
-            new HtspSubscriptionOptions
-            {
-                // The broadcast is already being received over HTTP, so this subscription must
-                // never be the one that wins a contended tuner: it attaches to the service the
-                // media path started, and asking for weight would only let it displace somebody.
-                Weight = 0,
-                DisableAllStreams = true,
-            },
-            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -19,7 +19,6 @@ export default function (view, params) {
             page.querySelector('#selChannelType').value = config.ChannelType || 'Ignore';
             page.querySelector('#chkHideRecordingsChannel').checked = config.HideRecordingsChannel || false;
             page.querySelector('#chkEnableSubsMaudios').checked = config.EnableSubsMaudios || false;
-            page.querySelector('#chkEnableLegacyH264Fallback').checked = config.EnableLegacyH264Fallback || false;
             page.querySelector('#txtLiveBufferSizeMegabytes').value = config.LiveBufferSizeMegabytes || '512';
             Dashboard.hideLoadingMsg();
         });
@@ -42,7 +41,6 @@ export default function (view, params) {
             config.ChannelType = form.querySelector('#selChannelType').value;
             config.HideRecordingsChannel = form.querySelector('#chkHideRecordingsChannel').checked;
             config.EnableSubsMaudios = form.querySelector('#chkEnableSubsMaudios').checked;
-            config.EnableLegacyH264Fallback = form.querySelector('#chkEnableLegacyH264Fallback').checked;
             config.LiveBufferSizeMegabytes = form.querySelector('#txtLiveBufferSizeMegabytes').value;
             ApiClient.updatePluginConfiguration(TVHclientConfigurationPageVar.pluginUniqueId, config).then(Dashboard.processPluginConfigurationUpdateResult);
         });

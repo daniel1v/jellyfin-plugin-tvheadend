@@ -9,27 +9,17 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
-using Tvheadend.Htsp;
-using Tvheadend.Htsp.Model;
 
 namespace TVHeadEnd.Streaming;
 
 /// <summary>
-/// One live channel: the transport stream TVHeadend delivers over HTTP, and the HTSP subscription
-/// that says what is in it.
+/// One live channel: the transport stream TVHeadend delivers over HTTP.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The media path is TVHeadend's <c>pass</c> profile and nothing else -- the broadcast forwarded
-/// untouched, with its own PCR, program tables and random access points intact. Alongside it runs
-/// an HTSP subscription on the same service with every stream index filtered out, so TVHeadend
-/// keeps parsing and keeps describing the stream without ever putting a frame of it on that
-/// second socket.
-/// </para>
-/// <para>
-/// The subscription lives as long as the stream does, rather than being read once and dropped.
-/// That is what makes a mid-broadcast change in the elementary streams visible: TVHeadend sends a
-/// fresh description, and the media source is corrected to match.
+/// untouched, with its own PCR, program tables and random access points intact. What the stream
+/// contains is read from that same stream, by the conditioner, as it goes past.
 /// </para>
 /// <para>
 /// The buffer is a fixed-size ring, so a channel left running costs the same disk space after
@@ -74,8 +64,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     private readonly TimeSpan _startupTimeLimit;
 
     private TransportStreamConditioner? _conditioner;
-    private HtspSubscription? _subscription;
-    private Func<HtspSubscriptionStart, Task>? _onRedescribed;
     private Task? _feedTask;
     private bool _closed;
     private bool _disposed;
@@ -170,6 +158,17 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     /// </summary>
     public ProgramMapTable? ProgramMap => _conditioner?.ProgramMap;
 
+    /// <summary>
+    /// Gets a value indicating whether delivery began at a point the broadcast marked as a random
+    /// access point, rather than at a picture start accepted because the search ran out of time.
+    /// </summary>
+    /// <remarks>
+    /// Diagnostic only. Either way the stream is delivered; the difference is whether the opening
+    /// frames are guaranteed to decode, and a broadcaster that never sets the indicator is a
+    /// thing worth being able to see in a log.
+    /// </remarks>
+    public bool StartedOnConfirmedRandomAccessPoint => _conditioner?.StartedOnRandomAccessPoint ?? false;
+
     /// <inheritdoc />
     public int ConsumerCount { get; set; }
 
@@ -187,28 +186,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
 
     /// <inheritdoc />
     public string UniqueId { get; }
-
-    /// <summary>
-    /// Hands the stream the HTSP subscription that describes it.
-    /// </summary>
-    /// <remarks>
-    /// Ownership passes with it: the subscription is closed when the stream is, which is what
-    /// releases TVHeadend's second claim on the service.
-    /// </remarks>
-    /// <param name="subscription">The subscription, already filtered down to metadata.</param>
-    /// <param name="onRedescribed">
-    /// What to do when TVHeadend describes the stream again, which it does whenever the broadcast
-    /// changes shape.
-    /// </param>
-    public void AttachMetadata(HtspSubscription subscription, Func<HtspSubscriptionStart, Task> onRedescribed)
-    {
-        ArgumentNullException.ThrowIfNull(subscription);
-        ArgumentNullException.ThrowIfNull(onRedescribed);
-
-        _subscription = subscription;
-        _onRedescribed = onRedescribed;
-        subscription.Started += OnSubscriptionStarted;
-    }
 
     /// <inheritdoc />
     public async Task Open(CancellationToken openCancellationToken)
@@ -312,13 +289,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         _disposed = true;
         EnableStreamSharing = false;
 
-        if (_subscription is not null)
-        {
-            _subscription.Started -= OnSubscriptionStarted;
-            await _subscription.DisposeAsync().ConfigureAwait(false);
-            _subscription = null;
-        }
-
         await _lifetime.CancelAsync().ConfigureAwait(false);
 
         if (_feedTask is not null)
@@ -345,33 +315,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         _lifetime.Dispose();
 
         _logger.LogDebug("Live TV: stream closed for channel {ChannelId} ({ChannelName})", ChannelId, ChannelName ?? "<unknown>");
-    }
-
-    private void OnSubscriptionStarted(object? sender, HtspSubscriptionStart start)
-    {
-        var handler = _onRedescribed;
-        if (handler is null || _disposed)
-        {
-            return;
-        }
-
-        // TVHeadend has described the stream again, which means the broadcast changed shape. The
-        // media source is corrected on a background continuation rather than on the connection's
-        // read loop, which must never be made to wait.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await handler(start).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                _logger.LogWarning(
-                    exception,
-                    "Live TV: channel {ChannelId} was described again but the media source could not be updated",
-                    ChannelId);
-            }
-        });
     }
 
     private async Task Feed(

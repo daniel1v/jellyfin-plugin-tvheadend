@@ -125,13 +125,20 @@ namespace TVHeadEnd.Streaming
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            if (Bootstrap is null || !Bootstrap.TryGetJoinPosition(_ring.OldestPosition, out var position))
+            if (Bootstrap is null)
             {
-                return _ring.OpenReaderFromStart();
+                return _ring.OpenReaderFromStart(null);
             }
 
+            // Wherever the reader ends up, it is given the program tables first. Duplicating the
+            // ones already in the buffer costs a decoder nothing; arriving without them is what
+            // it cannot recover from.
             var prefix = Bootstrap.CreateBootstrapPrefix();
-            var reader = _ring.OpenReaderAt(position, Bootstrap.Alignment);
+
+            var reader = Bootstrap.TryGetJoinPosition(_ring.OldestPosition, out var position)
+                ? _ring.OpenReaderAt(position, Bootstrap)
+                : _ring.OpenReaderFromStart(Bootstrap);
+
             return prefix.Length > 0 ? new PrefixedStream(prefix, reader) : reader;
         }
 

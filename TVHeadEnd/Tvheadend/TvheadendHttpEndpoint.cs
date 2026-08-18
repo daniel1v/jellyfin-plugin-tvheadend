@@ -132,7 +132,7 @@ public sealed class TvheadendHttpEndpoint
     /// <summary>
     /// Builds the address of a JSON API endpoint.
     /// </summary>
-    /// <param name="path">The API path, such as "api/service/streams".</param>
+    /// <param name="path">The API path, such as "dvrfile/17".</param>
     /// <returns>The API URL.</returns>
     public string CreateApiUrl(string path)
     {

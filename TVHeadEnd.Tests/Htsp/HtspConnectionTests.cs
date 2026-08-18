@@ -3,7 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Tvheadend.Htsp;
-using Tvheadend.Htsp.Model;
+
 using Tvheadend.Htsp.Protocol;
 using Xunit;
 
@@ -76,119 +76,6 @@ public class HtspConnectionTests
     }
 
     [Fact]
-    public async Task ASubscriptionMessageReachesTheSubscriptionItNames()
-    {
-        // Two subscriptions on one connection. Routing by subscriptionId is what keeps one
-        // channel's description from being applied to another's stream.
-        await using var server = new FakeHtspServer();
-        server.OnRequest = (request, _) => IsHandshake(request.Method)
-            ? Handshake(request)
-            : new HtspMessage();
-
-        server.Start();
-        await using var connection = await ConnectAsync(server);
-
-        var first = await connection.SubscribeAsync(101, new HtspSubscriptionOptions(), CancellationToken.None);
-        var second = await connection.SubscribeAsync(202, new HtspSubscriptionOptions(), CancellationToken.None);
-
-        await server.SendAsync(SubscriptionStart(second.SubscriptionId, videoPid: 0, width: 1920, height: 1080));
-
-        var describedSecond = await second.WaitForStartAsync(CancellationToken.None).WaitAsync(Patience);
-        Assert.Equal(1920, describedSecond.Video!.Width);
-
-        // The first was never described, and must not have picked up the other's message.
-        Assert.Null(first.Start);
-        Assert.Equal(HtspSubscriptionState.Starting, first.State);
-    }
-
-    [Fact]
-    public async Task SubscribingFiltersEveryStreamIndexStraightAway()
-    {
-        // The media arrives over HTTP; this subscription exists to be told what it is. Leaving
-        // the payload enabled would move the whole broadcast a second time.
-        await using var server = new FakeHtspServer();
-        server.OnRequest = (request, _) => IsHandshake(request.Method)
-            ? Handshake(request)
-            : new HtspMessage();
-
-        server.Start();
-        await using var connection = await ConnectAsync(server);
-
-        await connection.SubscribeAsync(
-            7,
-            new HtspSubscriptionOptions { DisableAllStreams = true },
-            CancellationToken.None);
-
-        var filter = await server.WaitForRequestAsync("subscriptionFilterStream");
-        var disabled = filter.GetInt64List("disable");
-
-        Assert.Equal(HtspSubscription.FilteredStreamCount, disabled.Count);
-        Assert.Equal(0, disabled[0]);
-        Assert.Equal(HtspSubscription.FilteredStreamCount - 1, disabled[^1]);
-
-        // And it has to come after the subscription exists, or the server has nothing to apply
-        // it to.
-        var methods = server.ReceivedRequests().Select(request => request.Method).ToList();
-        Assert.True(methods.IndexOf("subscribe") < methods.IndexOf("subscriptionFilterStream"));
-    }
-
-    [Fact]
-    public async Task ASubscriptionAcceptsBeingDescribedAgain()
-    {
-        // TVHeadend re-describes a stream whenever the broadcast changes shape. The subscription
-        // outlives the first description precisely so that this is visible.
-        await using var server = new FakeHtspServer();
-        server.OnRequest = (request, _) => IsHandshake(request.Method)
-            ? Handshake(request)
-            : new HtspMessage();
-
-        server.Start();
-        await using var connection = await ConnectAsync(server);
-
-        var subscription = await connection.SubscribeAsync(9, new HtspSubscriptionOptions(), CancellationToken.None);
-
-        var descriptions = new System.Collections.Concurrent.ConcurrentQueue<HtspSubscriptionStart>();
-        subscription.Started += (_, start) => descriptions.Enqueue(start);
-
-        await server.SendAsync(SubscriptionStart(subscription.SubscriptionId, videoPid: 0, width: 720, height: 576));
-        await subscription.WaitForStartAsync(CancellationToken.None).WaitAsync(Patience);
-
-        await server.SendAsync(SubscriptionStart(subscription.SubscriptionId, videoPid: 0, width: 1920, height: 1080));
-
-        await WaitUntil(() => descriptions.Count == 2);
-
-        Assert.Equal(2, descriptions.Count);
-        Assert.Equal(1920, subscription.Start!.Video!.Width);
-        Assert.Equal(HtspSubscriptionState.Running, subscription.State);
-    }
-
-    [Fact]
-    public async Task AStopFromTheServerEndsTheSubscription()
-    {
-        await using var server = new FakeHtspServer();
-        server.OnRequest = (request, _) => IsHandshake(request.Method)
-            ? Handshake(request)
-            : new HtspMessage();
-
-        server.Start();
-        await using var connection = await ConnectAsync(server);
-
-        var subscription = await connection.SubscribeAsync(11, new HtspSubscriptionOptions(), CancellationToken.None);
-
-        await server.SendAsync(new HtspMessage()
-            .Set("method", "subscriptionStop")
-            .Set("subscriptionId", subscription.SubscriptionId)
-            .Set("status", "noFreeAdapter"));
-
-        await WaitUntil(() => subscription.State == HtspSubscriptionState.Stopped);
-
-        // A caller still waiting to be told what the stream is learns that it never will be,
-        // rather than waiting for ever.
-        await Assert.ThrowsAsync<HtspException>(
-            () => subscription.WaitForStartAsync(CancellationToken.None).WaitAsync(Patience));
-    }
-
-    [Fact]
     public async Task AMessageBelongingToNothingIsRaisedAsAnEvent()
     {
         // The channel and DVR feed arrives this way, with no sequence number and no
@@ -245,32 +132,6 @@ public class HtspConnectionTests
         .Set("servername", "FakeTvheadend")
         .Set("serverversion", "4.3")
         .Set("challenge", new byte[32]);
-
-    private static HtspMessage SubscriptionStart(int subscriptionId, int videoPid, int width, int height)
-        => new HtspMessage()
-            .Set("method", "subscriptionStart")
-            .Set("subscriptionId", subscriptionId)
-            .Set(
-                "streams",
-                [
-                    new HtspMessage()
-                        .Set("index", 1)
-                        .Set("type", "H264")
-                        .Set("width", width)
-                        .Set("height", height)
-                        .Set("duration", 3600),
-                    new HtspMessage()
-                        .Set("index", 2)
-                        .Set("type", "MPEG2AUDIO")
-                        .Set("language", "deu")
-                        .Set("channels", 2)
-                        .Set("rate", 3),
-                ])
-            .Set(
-                "sourceinfo",
-                new HtspMessage()
-                    .Set("mux_uuid", "mux-1")
-                    .Set("service", "Das Erste HD"));
 
     private static async Task<HtspConnection> ConnectAsync(FakeHtspServer server)
     {

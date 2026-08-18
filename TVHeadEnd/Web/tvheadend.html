@@ -8,15 +8,15 @@
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtHTTP_Port" label="HTTP Port" />
-                    <div class="fieldDescription">Carries the broadcast itself and TVHeadend's administrative API.</div>
+                    <div class="fieldDescription">Carries the broadcast itself.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtHTSP_Port" label="HTSP Port" />
-                    <div class="fieldDescription">Carries the channel list, the guide, and the description of every running stream.</div>
+                    <div class="fieldDescription">Carries the channel list, the guide and the DVR.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtUserName" label="Username" />
-                    <div class="fieldDescription">This account needs <strong>administrator</strong> rights in TVHeadend. The plugin reads which PID each elementary stream is carried on from TVHeadend's <code>service/streams</code> API, which is restricted to administrators; that is what lets it describe a channel's tracks to Jellyfin at their real positions. Without it live TV still plays, but Jellyfin has to inspect the stream itself.</div>
+                    <div class="fieldDescription">An ordinary TVHeadend streaming account is enough. No administrator rights are needed.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtPassword" label="Password" />
@@ -55,13 +55,6 @@
                         <span>Offer live TV subtitles and multiple audio tracks</span>
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">Whether additional audio tracks and subtitle tracks are offered to clients.</div>
-                </div>
-                <div class="checkboxContainer checkboxContainer-withDescription">
-                    <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkEnableLegacyH264Fallback" />
-                        <span>Re-encode recordings that carry no IDR frame</span>
-                    </label>
-                    <div class="fieldDescription checkboxFieldDescription">Recordings only. Some broadcasters signal random access with recovery points rather than IDR frames, which device decoders cannot start on. Live TV is unaffected: it is served as received and Jellyfin decides what each client can play.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size (MB):" />

@@ -35,7 +35,6 @@ public class PluginConfiguration : BasePluginConfiguration
         ChannelType = "Ignore";
         HideRecordingsChannel = false;
         EnableSubsMaudios = false;
-        EnableLegacyH264Fallback = true;
         LiveBufferSizeMegabytes = 512;
         RecordingAccessSecret = string.Empty;
     }
@@ -46,14 +45,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public string TVH_ServerName { get; set; }
 
     /// <summary>
-    /// Gets or sets the port TVHeadend's HTTP interface listens on, which carries the media and
-    /// the administrative API.
+    /// Gets or sets the port TVHeadend's HTTP interface listens on, which carries the broadcast.
     /// </summary>
     public int HTTP_Port { get; set; }
 
     /// <summary>
     /// Gets or sets the port TVHeadend's HTSP interface listens on, which carries the control
-    /// protocol and the description of a running stream.
+    /// protocol, the channel list, the guide and the DVR.
     /// </summary>
     public int HTSP_Port { get; set; }
 
@@ -61,10 +59,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the user name.
     /// </summary>
     /// <remarks>
-    /// The account needs administrator rights. TVHeadend's <c>service/streams</c> API is what
-    /// tells the plugin which PID each elementary stream is carried on, and it is restricted to
-    /// administrators; without it the plugin can still play a channel but cannot describe its
-    /// streams to Jellyfin, and falls back to letting Jellyfin inspect the stream itself.
+    /// An ordinary streaming account is enough. The plugin reads the channel list, the guide and
+    /// the DVR over HTSP and the broadcast over HTTP; nothing in the live path touches an
+    /// administrative API.
     /// </remarks>
     public string Username { get; set; }
 
@@ -121,17 +118,6 @@ public class PluginConfiguration : BasePluginConfiguration
     /// offered.
     /// </summary>
     public bool EnableSubsMaudios { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether a recording whose video offers no IDR frames may
-    /// be re-encoded on the way to the client.
-    /// </summary>
-    /// <remarks>
-    /// Recordings only. Live TV serves the broadcast as received and lets Jellyfin decide what a
-    /// client can play; a recording is seekable, and a client that cannot start on a recovery
-    /// point has no second chance at it.
-    /// </remarks>
-    public bool EnableLegacyH264Fallback { get; set; }
 
     /// <summary>
     /// Gets or sets the size of the buffer each running channel occupies on disk.

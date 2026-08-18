@@ -27,10 +27,8 @@ namespace Tvheadend.Htsp;
 /// <see cref="TaskCompletionSource{TResult}"/> that the read loop completes.
 /// </para>
 /// <para>
-/// Messages divide in three. A reply carries the <c>seq</c> of its request and completes it. A
-/// message carrying a <c>subscriptionId</c> belongs to a subscription and is routed to it.
-/// Everything else -- the channel, DVR and EPG feed -- is raised on
-/// <see cref="MessageReceived"/>.
+/// Messages divide in two. A reply carries the <c>seq</c> of its request and completes it;
+/// everything else -- the channel, DVR and EPG feed -- is raised on <see cref="MessageReceived"/>.
 /// </para>
 /// </remarks>
 public sealed class HtspConnection : IAsyncDisposable
@@ -39,7 +37,6 @@ public sealed class HtspConnection : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<long, TaskCompletionSource<HtspMessage>> _pending = new();
-    private readonly ConcurrentDictionary<int, HtspSubscription> _subscriptions = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -63,8 +60,7 @@ public sealed class HtspConnection : IAsyncDisposable
     }
 
     /// <summary>
-    /// Raised for every asynchronous message that belongs neither to a request nor to a
-    /// subscription.
+    /// Raised for every asynchronous message that is not a reply to a request.
     /// </summary>
     /// <remarks>
     /// Raised on the read loop, so a handler that blocks stops the connection. Handlers are
@@ -240,77 +236,6 @@ public sealed class HtspConnection : IAsyncDisposable
         await SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Opens a subscription on a channel.
-    /// </summary>
-    /// <param name="channelId">The HTSP channel identifier.</param>
-    /// <param name="options">How to subscribe.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The subscription, already registered for its asynchronous messages.</returns>
-    public async Task<HtspSubscription> SubscribeAsync(
-        int channelId,
-        HtspSubscriptionOptions options,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-
-        var subscriptionId = NextSubscriptionId();
-        var subscription = new HtspSubscription(this, subscriptionId, channelId, _logger);
-
-        // Registered before the request goes out: TVHeadend may send subscriptionStart the
-        // instant it has a picture, and the reply and that message travel the same socket in
-        // that order, so there is no window in which a message could arrive unrouted.
-        _subscriptions[subscriptionId] = subscription;
-
-        try
-        {
-            var request = HtspMessage.Create("subscribe")
-                .Set("subscriptionId", subscriptionId)
-                .Set("channelId", channelId)
-                .Set("weight", options.Weight)
-                .Set("90khz", 1L);
-
-            if (!string.IsNullOrEmpty(options.Profile))
-            {
-                request.Set("profile", options.Profile);
-            }
-
-            if (options.QueueDepth is { } queueDepth)
-            {
-                request.Set("queueDepth", queueDepth);
-            }
-
-            await SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
-
-            if (options.DisableAllStreams)
-            {
-                await subscription.DisableAllStreamsAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            return subscription;
-        }
-        catch
-        {
-            _subscriptions.TryRemove(subscriptionId, out _);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Sends a request that belongs to a subscription.
-    /// </summary>
-    /// <param name="request">The request.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The reply.</returns>
-    internal Task<HtspMessage> SendSubscriptionRequestAsync(HtspMessage request, CancellationToken cancellationToken)
-        => SendRequestAsync(request, cancellationToken);
-
-    /// <summary>
-    /// Forgets a subscription, so its messages stop being routed.
-    /// </summary>
-    /// <param name="subscriptionId">The subscription identifier.</param>
-    internal void Unregister(int subscriptionId) => _subscriptions.TryRemove(subscriptionId, out _);
-
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
@@ -360,22 +285,6 @@ public sealed class HtspConnection : IAsyncDisposable
         _writeLock.Dispose();
         _lifetime.Dispose();
         _closed.TrySetResult();
-    }
-
-    private int NextSubscriptionId()
-    {
-        // Distinct from the request sequence: TVHeadend keys subscriptions by this alone, and a
-        // collision would route one subscription's start message to another.
-        for (var attempt = 0; attempt < 1000; attempt++)
-        {
-            var candidate = (int)(Interlocked.Increment(ref _sequence) & 0x00FFFFFF);
-            if (candidate > 0 && !_subscriptions.ContainsKey(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        throw new HtspException("No free HTSP subscription identifier could be found.");
     }
 
     private async Task HandshakeAsync(CancellationToken cancellationToken)
@@ -500,13 +409,6 @@ public sealed class HtspConnection : IAsyncDisposable
             return;
         }
 
-        if (message.GetInt32("subscriptionId") is { } subscriptionId
-            && _subscriptions.TryGetValue(subscriptionId, out var subscription))
-        {
-            subscription.Handle(message);
-            return;
-        }
-
         try
         {
             MessageReceived?.Invoke(this, message);
@@ -525,14 +427,6 @@ public sealed class HtspConnection : IAsyncDisposable
             if (_pending.TryRemove(sequence, out var completion))
             {
                 completion.TrySetException(exception);
-            }
-        }
-
-        foreach (var subscriptionId in _subscriptions.Keys)
-        {
-            if (_subscriptions.TryRemove(subscriptionId, out var subscription))
-            {
-                subscription.Fail(exception);
             }
         }
 

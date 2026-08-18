@@ -37,19 +37,6 @@ namespace TVHeadEnd
         /// </summary>
         private const int AnalysisSampleLength = 8 * 1024 * 1024;
 
-        /// <summary>
-        /// When the source this listing reports last changed shape.
-        /// </summary>
-        /// <remarks>
-        /// ChannelManager saves a channel item's media sources only when the item is new or when
-        /// ChannelItemInfo.DateModified is later than the date it stored; no part of MediaSources
-        /// takes part in that decision, and DataVersion does not either -- it only invalidates the
-        /// response cache. So this is the one way an already stored item can be migrated, and it
-        /// has to be raised whenever the shape changes. It last changed when listings stopped
-        /// carrying invented streams and began reporting a placeholder.
-        /// </remarks>
-        private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 45, 0, DateTimeKind.Utc);
-
         private readonly ILogger<LiveTvService> _logger;
         private readonly TvheadendConnection _connection;
         private readonly LiveTvService _liveTvService;
@@ -61,10 +48,6 @@ namespace TVHeadEnd
         // A finished recording never changes, so what an analysis found holds for as long as the
         // server runs. Without this every listing of a folder would analyse its contents again.
         private readonly ConcurrentDictionary<string, MediaSourceInfo> _describedRecordings = new(StringComparer.OrdinalIgnoreCase);
-
-        // Recordings found to carry no IDR frame, remembered from the analysis so the endpoint
-        // that serves them does not have to establish it a second time.
-        private readonly ConcurrentDictionary<string, bool> _recordingsWithoutIdr = new(StringComparer.OrdinalIgnoreCase);
 
         public RecordingsChannel(
             ILoggerFactory loggerFactory,
@@ -108,11 +91,9 @@ namespace TVHeadEnd
         /// <summary>
         /// Gets the version of this channel's contents. It forms part of the path Jellyfin caches
         /// a channel's listing under, so raising it discards that cache and the plugin is asked
-        /// again. It does not touch items already stored: ChannelManager only rewrites those when
-        /// the item is new or something it compares has changed, and it compares no part of
-        /// MediaSources. Migrating an existing item is what DescriptionRevisionUtc is for.
+        /// again.
         /// </summary>
-        public string DataVersion => "8";
+        public string DataVersion => "9";
 
         public string HomePageUrl
         {
@@ -124,24 +105,19 @@ namespace TVHeadEnd
             get { return ChannelParentalRating.GeneralAudience; }
         }
 
+        /// <summary>
+        /// Gets the key Jellyfin caches this channel's listing under.
+        /// </summary>
+        /// <remarks>
+        /// Only what actually changes the listing. This used to mix in the day, the hour and a
+        /// five-minute bucket, which discarded the cache on a timer whether or not anything had
+        /// happened; the recordings themselves change when TVHeadend says they do, and that is
+        /// what the key follows.
+        /// </remarks>
+        /// <param name="userId">The user the listing is for. Every user sees the same recordings.</param>
+        /// <returns>The cache key.</returns>
         public string GetCacheKey(string userId)
-        {
-            var now = DateTime.UtcNow;
-
-            var values = new List<string>();
-
-            values.Add(now.DayOfYear.ToString(CultureInfo.InvariantCulture));
-            values.Add(now.Hour.ToString(CultureInfo.InvariantCulture));
-
-            double minute = now.Minute;
-            minute /= 5;
-
-            values.Add(Math.Floor(minute).ToString(CultureInfo.InvariantCulture));
-
-            values.Add(GetService().LastRecordingChange.Ticks.ToString(CultureInfo.InvariantCulture));
-
-            return string.Join("-", values.ToArray());
-        }
+            => GetService().LastRecordingChange.Ticks.ToString(CultureInfo.InvariantCulture);
 
         public InternalChannelFeatures GetChannelFeatures()
         {
@@ -315,21 +291,10 @@ namespace TVHeadEnd
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
-                StartDate = item.StartDate,
-                EndDate = item.EndDate,
-                // ProductionYear = item.ProductionYear,
-                // Studios = item.Studios,
-                Type = ChannelItemType.Media,
-                // Jellyfin re-saves a channel item, and with it the description of what the item
-                // contains, only when the item is new or when this date is later than the one it
-                // stored -- ChannelManager compares no part of MediaSources. So the date has to
-                // cover both reasons the description can change: the recording itself changing,
-                // and this plugin describing it differently than the version that wrote the
-                // stored copy. Without the second, an existing recording keeps whatever
-                // description it was first given, forever.
-                DateModified = item.DateLastUpdated > DescriptionRevisionUtc
-                    ? item.DateLastUpdated
-                    : DescriptionRevisionUtc,
+                // Jellyfin re-saves a channel item only when the item is new or when this date
+                // is later than the one it stored. The recording's own last-changed time is the
+                // honest answer: when TVHeadend changes the recording, the item is rewritten.
+                DateModified = item.DateLastUpdated,
                 Overview = item.Overview,
                 // People = item.People
                 Etag = item.Status.ToString(),
@@ -368,26 +333,28 @@ namespace TVHeadEnd
 
             source.RunTimeTicks = await GetRecordingRuntime(id, cancellationToken).ConfigureAwait(false);
 
-            // Only a successful analysis is kept. A finished recording never changes, so what was
-            // found holds for as long as the server runs.
-            _describedRecordings[id] = source;
+            // Kept only once the recording has finished. A recording still being written grows,
+            // and what a sample of its opening said about it is not yet the whole truth -- an
+            // audio track the broadcaster adds later would be missing from the description for
+            // as long as the server runs.
+            if (await IsFinishedAsync(id, cancellationToken).ConfigureAwait(false))
+            {
+                _describedRecordings[id] = source;
+            }
+
             return [source];
         }
 
         /// <summary>
-        /// Gets a value indicating whether this recording has to be re-encoded to be playable.
+        /// Reports whether TVHeadend has finished writing a recording, which is what makes its
+        /// description safe to keep.
         /// </summary>
-        /// <remarks>
-        /// Established during the analysis and remembered, so the endpoint serving the recording
-        /// asks rather than works it out again. Withholding direct play and the remux is not
-        /// enough on its own: Jellyfin still copies the video inside its transcoding job, because
-        /// the stream matches the target codec and that decision is made there rather than from
-        /// the media source. Only a re-encode creates the frames a decoder can start on.
-        /// </remarks>
-        /// <param name="recordingId">The TVHeadend recording identifier.</param>
-        /// <returns>Whether the recording carries no IDR frame.</returns>
-        public bool RequiresReencode(string recordingId)
-            => !string.IsNullOrEmpty(recordingId) && _recordingsWithoutIdr.ContainsKey(recordingId);
+        private async Task<bool> IsFinishedAsync(string id, CancellationToken cancellationToken)
+        {
+            var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
+            var recording = recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+            return recording is not null && recording.Status != MediaBrowser.Model.LiveTv.RecordingStatus.InProgress;
+        }
 
         /// <summary>
         /// Gets how long the recording runs, from the times TVHeadend scheduled it for. An
@@ -427,31 +394,15 @@ namespace TVHeadEnd
                 var upstream = endpoint.CreateApiUrl("dvrfile/" + id);
                 await FetchAnalysisSample(upstream, sample, cancellationToken).ConfigureAwait(false);
 
-                var described = await _describer
+                // What the sample says the recording contains, and nothing beyond that. An
+                // earlier version also scanned it for H.264 IDR frames and, finding none in the
+                // first few megabytes, withheld direct play and re-encoded the whole recording.
+                // A bounded sample cannot establish the absence of something: a recording that
+                // opens on a recovery point and carries IDR frames a minute later looks exactly
+                // the same. That inference is gone, along with the re-encode it forced.
+                return await _describer
                     .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
                     .ConfigureAwait(false);
-
-                if (described
-                    && Plugin.Instance.Configuration.EnableLegacyH264Fallback
-                    && RecordingDescriber.ScanRandomAccess(sample) == H264RandomAccessKind.RecoveryOpenGop)
-                {
-                    // A broadcast that signals random access with recovery points instead of IDR
-                    // frames -- the ARD network does -- offers a device decoder nothing to start
-                    // on. It consumes the samples without emitting a picture and the player waits
-                    // forever. Only re-encoding the video produces IDR frames, which is what the
-                    // live path does for the same broadcasts, so both of the cheaper routes have
-                    // to be withheld: refusing direct play alone leaves Jellyfin free to remux,
-                    // and a remux copies the video verbatim -- measured as "-codec:v:0 copy",
-                    // which carries the missing frames straight through to the client.
-                    source.SupportsDirectPlay = false;
-                    source.SupportsDirectStream = false;
-                    _recordingsWithoutIdr[id] = true;
-                    _logger.LogInformation(
-                        "TVHeadend recording {RecordingId} carries no IDR frame; it is not offered for direct play",
-                        id);
-                }
-
-                return described;
             }
             catch (OperationCanceledException)
             {

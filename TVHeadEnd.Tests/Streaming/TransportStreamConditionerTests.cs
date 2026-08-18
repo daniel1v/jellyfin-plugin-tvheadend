@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using TVHeadEnd.Streaming;
 using Xunit;
 
@@ -310,5 +311,56 @@ public class LiveTransportStreamConditionerTests
         }
 
         return pids;
+    }
+
+    [Fact]
+    public void APayloadUnitStartWithoutTheIndicatorIsNeverRecordedAsARandomAccessPoint()
+    {
+        // A payload unit start says a picture begins here. It does not say a decoder may begin
+        // here -- only the random access indicator says that. Recording one as an entry point
+        // hands every later reader a position its decoder cannot start on.
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+
+        Condition(conditioner, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
+
+        // Long enough that the search gives up and delivers from a bare payload unit start.
+        var stream = new List<byte[]>();
+        for (var index = 0; index < 40; index++)
+        {
+            stream.Add(VideoPacket(startsUnit: true, randomAccess: false));
+            stream.Add(AudioPacket());
+        }
+
+        Thread.Sleep(TimeSpan.FromSeconds(2.1));
+        Condition(conditioner, Concat([.. stream]), out var output);
+
+        Assert.True(conditioner.HasStarted);
+        Assert.False(conditioner.StartedOnRandomAccessPoint);
+        Assert.NotEmpty(output);
+
+        // Delivered, but not offered as a place to join.
+        Assert.Empty(conditioner.RandomAccessOffsets);
+    }
+
+    [Fact]
+    public void OnlyAnIndicatedPacketIsRecordedAsARandomAccessPoint()
+    {
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+
+        Condition(
+            conditioner,
+            Concat(ProgramAssociationTable(), ProgramMapTable(), VideoPacket(startsUnit: true, randomAccess: true)),
+            out _);
+
+        Assert.True(conditioner.StartedOnRandomAccessPoint);
+        Assert.Single(conditioner.RandomAccessOffsets);
+
+        // A later picture start without the indicator adds nothing.
+        Condition(conditioner, VideoPacket(startsUnit: true, randomAccess: false), out _);
+        Assert.Empty(conditioner.RandomAccessOffsets);
+
+        // A later indicated one does.
+        Condition(conditioner, VideoPacket(startsUnit: true, randomAccess: true), out _);
+        Assert.Single(conditioner.RandomAccessOffsets);
     }
 }

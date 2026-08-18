@@ -22,42 +22,37 @@ This plugin allows you to manage TVHeadend from Jellyfin.
 
 ## How live TV works
 
-TVHeadend already parses every broadcast it tunes. This plugin uses that analysis instead of making
-a second one of its own, which is why live TV needs no FFprobe at all.
+A live channel is one HTTP request. TVHeadend serves the broadcast through its `pass` profile —
+the original MPEG-TS, forwarded untouched — and that same stream is the only description of itself
+the plugin needs.
 
-A running channel has two halves, both on the same TVHeadend service:
-
-- **HTTP, `profile=pass`** is the media path. TVHeadend forwards the original MPEG-TS untouched,
-  with its own PCR, program tables and random access points intact. No TVHeadend transcoding and no
-  compatibility profile is ever requested.
-- **HTSP** is the description. The plugin subscribes to the same channel and immediately filters out
-  every stream index, so TVHeadend keeps parsing and keeps describing the stream but never puts a
-  frame of audio or video on that second socket. The subscription stays open for the life of the
-  stream, so a broadcast that changes shape is re-described and the media source corrected.
+The Program Map Table the broadcast carries is the table libavformat walks to decide what streams
+the file has and in what order, so reading it here is not a second opinion about the stream; it is
+the same source FFmpeg will use, read earlier. From it the plugin takes the stream order, what
+medium each stream carries, the codec, the language and the hearing-impaired flag.
 
 The plugin then:
 
-- conditions the transport stream only as far as safety requires — it drops the DVB EIT, waits for a
-  random access point so a decoder can start, and captures PAT/PMT so a viewer joining a channel
-  already running gets the tables it needs;
-- places each elementary stream at the index FFmpeg will give it, by going from HTSP's `es_index`
-  through the service's PID table to the position the delivered PMT puts it at;
+- conditions the transport stream only as far as safety requires — it drops the DVB EIT, waits for
+  a point a decoder can start at, and captures PAT/PMT so a viewer joining a channel already
+  running gets the tables it needs;
 - describes the result to Jellyfin as facts, leaving unknown fields unset.
+
+Resolution, frame rate, bit rate and codec profile are **not** established. None of them is in a
+PMT, none is needed for the playback decision, and an absent optional value is something Jellyfin
+handles — a wrong one is not.
 
 **Jellyfin** then decides — from the device profile the client sent — whether to direct play, remux
 or transcode. The plugin expresses no opinion about clients, and offers exactly one media source per
 channel.
 
+There is no FFprobe in the live path, no second subscription, and no service or PID lookup.
+
 ### TVHeadend permissions
 
-The account configured here should have **administrator** rights.
+An ordinary **streaming** account. Live TV touches no administrative API.
 
-Live TV plays without them, but the mapping from TVHeadend's `es_index` to a transport stream PID
-comes from TVHeadend's `service/streams` API, which is restricted to administrators. Without it the
-plugin cannot say which track sits at which index, so rather than guess it leaves the stream
-undescribed and lets Jellyfin inspect it — costing a probe on every tune and losing the correct
-track ordering. An account carrying TVHeadend's *anonymise* right is also unable to identify the
-service behind a channel that maps to more than one, with the same consequence.
+Recordings additionally need whatever DVR rights the operations you use require.
 
 ### Known Jellyfin issues
 
@@ -65,6 +60,8 @@ service behind a channel that maps to more than one, with the same consequence.
   service, in `LiveTvMediaSourceProvider.Normalize`, regardless of what the plugin reported. Device
   profiles that key on interlacing may therefore choose transcoding unnecessarily. This is a server
   bug and is deliberately **not** worked around here; a plugin-side hack would only hide it.
+
+For the details, see [docs/live-tv-architecture.md](docs/live-tv-architecture.md).
 
 ## Installation
 

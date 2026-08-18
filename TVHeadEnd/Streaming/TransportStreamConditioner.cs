@@ -87,10 +87,24 @@ public sealed class TransportStreamConditioner
     }
 
     /// <summary>
-    /// Gets a value indicating whether a random access point has been reached and the stream is
-    /// being passed through.
+    /// Gets a value indicating whether the stream is being passed through.
     /// </summary>
+    /// <remarks>
+    /// Says nothing about how it started. <see cref="StartedOnRandomAccessPoint"/> is the
+    /// question of whether the first packet delivered was one a decoder may begin at.
+    /// </remarks>
     public bool HasStarted => _started;
+
+    /// <summary>
+    /// Gets a value indicating whether delivery began at a packet the broadcast marked as a
+    /// random access point.
+    /// </summary>
+    /// <remarks>
+    /// False when the search gave up and started at a bare payload unit start instead. That is a
+    /// guess about where a picture begins, and while it is a reasonable one to deliver from, it
+    /// is never recorded as a place a later reader may join.
+    /// </remarks>
+    public bool StartedOnRandomAccessPoint { get; private set; }
 
     /// <summary>
     /// Gets the program map of the stream, or <see langword="null"/> until a complete one has
@@ -276,12 +290,24 @@ public sealed class TransportStreamConditioner
         }
 
         _started = true;
+        StartedOnRandomAccessPoint = isRandomAccessPoint;
 
         // The player needs the tables before it can make sense of the elementary streams, and
         // both were withheld along with everything else.
         var written = WriteProgramTables(destination);
         packet.CopyTo(destination[written..]);
-        _randomAccessOffsets.Add(destinationOffset + written);
+
+        // Recorded as a place a decoder may join only when the broadcast actually said so. The
+        // start may be a bare payload unit start accepted because the search ran out of
+        // patience, and that is a guess: a picture start is not a random access point unless
+        // the adaptation field says it is. Delivering from a guess is recoverable -- the first
+        // seconds may not decode -- but storing it would hand every later reader the same bad
+        // position for as long as it stays inside the window.
+        if (isRandomAccessPoint)
+        {
+            _randomAccessOffsets.Add(destinationOffset + written);
+        }
+
         return written + TransportStreamPacket.Length;
     }
 

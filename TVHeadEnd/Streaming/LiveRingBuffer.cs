@@ -132,25 +132,17 @@ namespace TVHeadEnd.Streaming
         }
 
         /// <summary>
-        /// Opens a reader positioned <paramref name="catchUpLength"/> bytes behind the live edge,
-        /// on a transport stream packet boundary.
-        /// </summary>
-        /// <param name="catchUpLength">How far behind the live edge to start.</param>
-        /// <returns>A stream over the buffer.</returns>
-        internal Stream OpenReader(long catchUpLength)
-        {
-            var start = Math.Max(OldestPosition, WritePosition - Math.Max(0, catchUpLength));
-            return new RingReader(_path, this, AlignToPacket(start));
-        }
-
-        /// <summary>
         /// Opens a reader at the very beginning of what the buffer still holds, for a consumer
         /// that has to see the program tables the stream opened with.
         /// </summary>
+        /// <param name="bootstrap">
+        /// What a reader that falls out of the window is re-joined with, or <see langword="null"/>
+        /// to move it to the oldest bytes still present.
+        /// </param>
         /// <returns>A stream over the buffer.</returns>
-        internal Stream OpenReaderFromStart()
+        internal Stream OpenReaderFromStart(StreamBootstrapIndex? bootstrap)
         {
-            return new RingReader(_path, this, AlignToPacket(OldestPosition));
+            return new RingReader(_path, this, AlignToPacket(OldestPosition), bootstrap);
         }
 
         /// <summary>
@@ -158,18 +150,16 @@ namespace TVHeadEnd.Streaming
         /// <see cref="StreamBootstrapIndex"/> established is a place a decoder may start.
         /// </summary>
         /// <param name="position">The logical position to start reading at.</param>
-        /// <param name="alignment">The byte boundary the position has to respect.</param>
+        /// <param name="bootstrap">
+        /// The index the reader re-joins through if the writer laps it.
+        /// </param>
         /// <returns>A stream over the buffer.</returns>
-        internal Stream OpenReaderAt(long position, int alignment)
+        internal Stream OpenReaderAt(long position, StreamBootstrapIndex bootstrap)
         {
-            ArgumentOutOfRangeException.ThrowIfLessThan(alignment, 1);
+            ArgumentNullException.ThrowIfNull(bootstrap);
 
-            // The alignment belongs to the container, not to the buffer. Rounding a Matroska
-            // position down to a transport stream packet boundary moves it up to 187 bytes into
-            // the middle of an element, which is how a correct join position still produced
-            // noise.
             var clamped = Math.Clamp(position, OldestPosition, WritePosition);
-            return new RingReader(_path, this, clamped - (clamped % alignment));
+            return new RingReader(_path, this, AlignToPacket(clamped), bootstrap);
         }
 
         private static long AlignToPacket(long position) => position - (position % TransportStreamPacketSize);
@@ -181,13 +171,17 @@ namespace TVHeadEnd.Streaming
         {
             private readonly LiveRingBuffer _buffer;
             private readonly FileStream _file;
+            private readonly StreamBootstrapIndex? _bootstrap;
 
             private long _position;
+            private byte[]? _pendingPrefix;
+            private int _pendingPrefixPosition;
 
-            internal RingReader(string path, LiveRingBuffer buffer, long start)
+            internal RingReader(string path, LiveRingBuffer buffer, long start, StreamBootstrapIndex? bootstrap)
             {
                 _buffer = buffer;
                 _position = start;
+                _bootstrap = bootstrap;
                 // Unbuffered: a read-ahead buffer would keep serving bytes the writer has
                 // already overwritten once it laps this reader.
                 _file = new FileStream(
@@ -218,6 +212,12 @@ namespace TVHeadEnd.Streaming
 
             public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
             {
+                // Whatever a re-join queued up goes out before buffer content resumes.
+                if (TryServePrefix(buffer.Span, out var served))
+                {
+                    return served;
+                }
+
                 var writePosition = _buffer.WritePosition;
 
                 // Caught up with the writer. Returning zero rather than blocking is what
@@ -227,13 +227,17 @@ namespace TVHeadEnd.Streaming
                     return 0;
                 }
 
-                // A reader that fell behind the window -- a client paused for longer than the
-                // buffer holds -- is moved to the oldest data still present instead of being
-                // served bytes that have since been overwritten by a later part of the stream.
                 var oldest = _buffer.OldestPosition;
                 if (_position < oldest)
                 {
-                    _position = AlignToPacket(oldest);
+                    ReJoin(oldest);
+
+                    // Checked again straight away, so the tables reach the decoder before the
+                    // bytes they describe rather than one read behind them.
+                    if (TryServePrefix(buffer.Span, out served))
+                    {
+                        return served;
+                    }
                 }
 
                 var available = writePosition - _position;
@@ -250,6 +254,70 @@ namespace TVHeadEnd.Streaming
 
             public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
                 => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+            /// <summary>
+            /// Puts a reader the writer has lapped back onto a place a decoder can continue from.
+            /// </summary>
+            /// <remarks>
+            /// The same treatment a reader gets when it first joins, and for the same reason: the
+            /// oldest surviving byte is wherever the ring happened to wrap, which is the middle of
+            /// a picture with no tables in front of it. Moving there and carrying on is how a
+            /// client that paused too long came back to a decoder that never recovered.
+            /// </remarks>
+            /// <summary>
+            /// Hands over as much of a queued prefix as fits.
+            /// </summary>
+            /// <param name="destination">The caller's buffer.</param>
+            /// <param name="served">How many bytes were written.</param>
+            /// <returns>Whether a prefix was being delivered.</returns>
+            private bool TryServePrefix(Span<byte> destination, out int served)
+            {
+                served = 0;
+                if (_pendingPrefix is not { } prefix || destination.IsEmpty)
+                {
+                    return false;
+                }
+
+                served = Math.Min(destination.Length, prefix.Length - _pendingPrefixPosition);
+                prefix.AsSpan(_pendingPrefixPosition, served).CopyTo(destination);
+                _pendingPrefixPosition += served;
+
+                if (_pendingPrefixPosition >= prefix.Length)
+                {
+                    _pendingPrefix = null;
+                    _pendingPrefixPosition = 0;
+                }
+
+                return true;
+            }
+
+            /// <param name="oldest">The oldest position the buffer still holds.</param>
+            private void ReJoin(long oldest)
+            {
+                if (_bootstrap is not null && _bootstrap.TryGetJoinPosition(oldest, out var joinPosition))
+                {
+                    _position = AlignToPacket(joinPosition);
+                    var prefix = _bootstrap.CreateBootstrapPrefix();
+                    if (prefix.Length > 0)
+                    {
+                        _pendingPrefix = prefix;
+                        _pendingPrefixPosition = 0;
+                    }
+
+                    return;
+                }
+
+                // No confirmed random access point survives in the window. Reading on from the
+                // oldest bytes is the only thing left; the tables at least let the decoder map
+                // the streams once it resynchronises.
+                _position = AlignToPacket(oldest);
+                var tables = _bootstrap?.CreateBootstrapPrefix() ?? [];
+                if (tables.Length > 0)
+                {
+                    _pendingPrefix = tables;
+                    _pendingPrefixPosition = 0;
+                }
+            }
 
             public override void Flush()
             {

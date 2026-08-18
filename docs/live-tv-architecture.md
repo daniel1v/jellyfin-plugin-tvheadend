@@ -1,139 +1,106 @@
 # How live TV works
 
-TVHeadend already parses every broadcast it tunes, in order to feed its own muxers. This plugin
-uses that analysis rather than making a second one, which is why nothing in the live path runs
-FFprobe.
+A live channel is one HTTP request.
 
-## The two halves
-
-A running channel is two connections to the same TVHeadend service.
-
-```
-                         TVHeadend
-                             |
-                      the same service
-                    /                  \
-        HTTP profile=pass          HTSP subscription
-               |                          |
-      original MPEG-TS           parser / tsfix / globalheaders
-               |                          |
-               |                  subscriptionStart
-               |                          |
-               |                  stream metadata
-               |                          |
-               |            A/V muxpkt filtered out entirely
-               |                          |
-               |            further start/stop/status events
-                    \                  /
-                     Jellyfin plugin
-                             |
-                      MediaSourceInfo
-                             |
-                          Jellyfin
-```
-
-**HTTP `pass`** is the media path and the only one. TVHeadend forwards the original transport
-stream untouched, with its own PCR, program tables and random access points intact. No TVHeadend
-transcoding and no compatibility profile is ever requested.
-
-**HTSP** is the description. The plugin subscribes to the same channel and immediately sends
-`subscriptionFilterStream` disabling indices 0–511. TVHeadend applies that filter at the point
-where it would serialise a packet, so its parser, timestamp fixer and global header collector all
-keep running and every `subscriptionStart`, status and stop message still arrives — only the audio
-and video payload never reaches the socket.
-
-The subscription lives as long as the stream. A broadcast that changes shape produces a fresh
-`subscriptionStart`, and the media source is corrected to match.
-
-## Making the two halves the same service
-
-The HTTP subscription is opened **first**, which is what makes TVHeadend choose and start a
-service; the HTSP subscription then attaches to what is already running.
-
-That ordering is not trusted on its own. A channel can map to several services, and combining one
-service's description with another's video would be wrong in a way nothing downstream could
-detect. So the agreement is proven:
-
-1. HTSP reports `sourceinfo`, carrying the multiplex UUID and the DVB service name.
-2. The channel's UUID (`channelIdStr`, sent with every `channelAdd`) resolves through
-   `api/idnode/load` to the services it maps to. One service is the whole answer; several are
-   narrowed by matching `multiplex_uuid` and `svcname` against `sourceinfo`.
-3. `api/service/streams` gives that service's components, each with its `es_index` **and** its PID.
-4. Every PID in the program map of the bytes actually arriving must be one that service carries.
-
-If step 4 fails, the HTSP description is discarded and Jellyfin is left to inspect the stream
-itself. Nothing is published that mixes the two.
-
-## Stream indices
-
-`es_index` in HTSP is TVHeadend's own per-service counter — assigned in discovery order, in
-`elementary_stream_create_parent`. It is **not** a PID, not a position, and not Jellyfin's
-`MediaStream.Index`. Assigning it directly is what once made FFmpeg's `-map` arguments land on the
-wrong tracks.
-
-The real chain:
+TVHeadend serves the broadcast through its `pass` profile — the original MPEG-TS, forwarded
+untouched, with its own PCR, program tables and random access points intact. That stream is also
+the only description of itself the plugin needs, because the Program Map Table it carries is the
+same table libavformat walks to decide what streams the file has and in what order.
 
 ```
-HTSP es_index
-    → api/service/streams          (es_index → PID)
-    → PMT of the delivered stream  (PID → position)
-    → Jellyfin MediaStream.Index
+TVHeadend  ──HTTP profile=pass──▶  conditioner ──▶ ring buffer ──▶ Jellyfin
+                                        │
+                                     PAT/PMT
+                                        │
+                                  MediaSourceInfo
 ```
 
-libavformat creates one stream per PMT entry as it walks the table, so an entry's position in the
-delivered PMT is the index every later `-map` argument means. The PMT is parsed from the bytes
-that arrive rather than from anything TVHeadend reports, because the `pass` muxer rewrites the
-table down to the subscription's components when configured to and leaves the broadcaster's own in
-place when not.
+Nothing else is consulted. No second subscription, no service lookup, no administrative API — so
+nothing else can be slow, be refused for want of a permission, or disagree with the bytes.
 
-A PMT entry that nothing describes still occupies its index. Leaving a gap would shift everything
-after it — the same failure mode as counting the EIT.
+## What the plugin establishes itself
 
-### Why the EIT is dropped
+From the program map of the stream being delivered:
+
+- **the number of elementary streams and their order**, which is what every later `-map`
+  argument means;
+- **what medium each one carries** — video, audio, subtitle or data;
+- **the codec**, where the table identifies one;
+- **the language** and the **hearing-impaired flag**, from the DVB descriptors.
+
+Stream type 0x06 is "private data in PES packets" and is where DVB puts AC-3, E-AC-3, subtitles
+and teletext; those are told apart by the descriptors that follow it (`0x6A`, `0x7A`, `0x59`,
+`0x56`, `0x7C`, and the registration descriptor `0x05`).
+
+### What it deliberately does not establish
+
+Resolution, frame rate, bit rate, codec profile and level. None of them is in a PMT, none is
+needed for the playback decision, and none is worth a second analysis of a stream that is already
+playing. They are left unset. Jellyfin treats an absent optional value as unknown and carries on;
+it is a *wrong* value that makes it choose badly.
+
+## Random access
+
+Two different things, kept apart:
+
+- **where delivery begins.** The conditioner withholds the stream until it has both program
+  tables and a video packet that starts a payload unit. If the broadcast has not signalled a
+  random access point within a couple of seconds, it starts anyway rather than stalling.
+- **where a decoder may join.** Only a packet whose adaptation field carries the random access
+  indicator is recorded in the bootstrap index.
+
+A payload unit start says a picture begins here; it does not say a decoder may begin here. Storing
+one as an entry point would hand every later reader a position its decoder cannot start on, for as
+long as it stayed inside the buffer window. `StartedOnConfirmedRandomAccessPoint` reports which of
+the two happened, for the log.
+
+## Joining and re-joining the ring buffer
+
+Both go through the same bootstrap index, because they are the same problem: the oldest surviving
+byte in a ring is wherever the write head happened to wrap, which is the middle of a picture with
+no tables in front of it.
+
+- A reader that **joins** is placed at the most recent confirmed random access point still in the
+  window, preceded by PAT and PMT.
+- A reader the writer has **lapped** — a client paused for longer than the buffer holds — is
+  re-joined the same way, and the tables are delivered before the bytes they describe.
+- If no confirmed access point survives, the stream is still delivered from the oldest bytes, with
+  the tables in front so the decoder can map the elementary streams once it resynchronises.
+
+## Why the EIT is dropped
 
 libavformat creates an `epg` stream the moment the first EIT packet turns up. Where that lands
 relative to the elementary streams depends on how the broadcast interleaves them, so every index
 after it shifts unpredictably. Dropping the EIT PID means what remains comes from the program map
 alone, and is numbered in program map order every time.
 
-## Fields worth being careful about
-
-Two HTSP fields are routinely misread, and both are named for what they are in the client library:
-
-- `rate` is `es_sri`, an **index** into the MPEG-4 sampling frequency table, not a frequency.
-  Reporting it directly gives an audio track claiming to be sampled at 4 Hz.
-- `duration` is the duration of one frame in the subscription's time base, which is 90 kHz because
-  the plugin always subscribes with `90khz=1`. The frame rate is `90000 / duration` — 3600 is
-  25 fps, 1800 is 50 fps. There is no halving rule; applying one is how a 50 fps broadcast was once
-  published as 100 fps.
-
-`meta` is deliberately **not** read. TVHeadend adds it to the outer message rather than to the
-stream it belongs to, from inside the loop over the streams, so it is the global header of
-whichever stream happened to be described last and there is no way to tell which. A field whose
-owner cannot be determined is worse than no field.
-
-## What the transport conditioner does
-
-Three things, and deliberately no fourth:
-
-- drops the DVB EIT PID;
-- withholds the stream until a random access point, so the first sample a decoder sees is one it
-  may begin at (bounded by time and by volume, so a broadcaster that never sets the indicator does
-  not stall for ever);
-- captures PAT and PMT — reassembling multi-packet sections properly — so a viewer joining a
-  channel already running is given the tables its decoder needs.
-
-It does not judge the video and does not describe the media. That comes from HTSP.
-
 ## Permissions
 
-The configured TVHeadend account should have **administrator** rights: `service/streams` is
-restricted to administrators, and it is the only source of the `es_index` → PID mapping. Without
-it live TV still plays, but the stream is published undescribed and Jellyfin probes it on every
-tune.
+An ordinary TVHeadend **streaming** account. Nothing in the live path calls an administrative API.
 
-An account carrying TVHeadend's *anonymise* right cannot identify the service behind a channel
-that maps to more than one, with the same consequence.
+The plugin also needs the rights its other features imply — reading the channel list and guide
+over HTSP, and the DVR rights for recordings.
+
+## When Jellyfin probes the stream itself
+
+Only when the plugin cannot honestly describe it: the program map named no video stream, or none
+arrived before the stream was published. In that case the media source is published with
+`SupportsProbing = true` and no streams, and Jellyfin establishes what is in it. A description
+that is merely missing optional fields is *not* such a case, and never suppresses a probe
+incorrectly, because a description is only offered as complete when it has a video stream.
+
+## Recordings
+
+A separate path, and deliberately less clever than it was.
+
+A recording is described from a sample of its opening, because analysing the whole file means
+reading gigabytes across the network. That sample establishes what the recording contains — and
+nothing else. It is explicitly **not** used to conclude that the recording lacks something: a
+bounded probe cannot establish an absence, and an earlier version used exactly that inference to
+withhold direct play and serve a re-encode for whole recordings.
+
+HEAD and GET therefore describe the same resource identically: one route, proxying TVHeadend,
+advertising the same length and the same range support to both.
 
 ## Known external issues
 

@@ -27,8 +27,6 @@ namespace TVHeadEnd.Recordings
     /// </remarks>
     public sealed class RecordingDescriber
     {
-        private const int ScanChunkLength = 65536;
-
         private readonly RecordingInspector _inspector;
 
         /// <summary>
@@ -39,96 +37,6 @@ namespace TVHeadEnd.Recordings
         public RecordingDescriber(IMediaEncoder mediaEncoder, ILogger logger)
         {
             _inspector = new RecordingInspector(mediaEncoder, logger);
-        }
-
-        /// <summary>
-        /// Reports how the video of a sample offers a decoder a place to start.
-        /// </summary>
-        /// <remarks>
-        /// The same question the live path asks, answered by the same scanner, because it is a
-        /// property of the broadcast and not of how it is delivered. The scan is bounded by the
-        /// sample, and the H.264 analysis only ever runs for H.264: an earlier version fed MPEG-2
-        /// into it, where the slice start code <c>00 00 01 05</c> satisfies the IDR pattern by
-        /// coincidence.
-        /// </remarks>
-        /// <param name="samplePath">A local file holding the opening of the stream.</param>
-        /// <returns>How the video offers random access.</returns>
-        public static H264RandomAccessKind ScanRandomAccess(string samplePath)
-        {
-            ArgumentException.ThrowIfNullOrEmpty(samplePath);
-
-            // The probe lives here rather than inside the conditioner: this is the only remaining
-            // caller, and it is a recording concern. The conditioner does the transport work and
-            // names the video PID; the video payload is handed on from the output it produces.
-            var probe = new VideoRandomAccessProbe();
-            var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
-            var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkLength);
-            var conditioned = ArrayPool<byte>.Shared.Rent(
-                TransportStreamConditioner.GetMaximumConditionedLength(ScanChunkLength));
-
-            try
-            {
-                using var sample = new FileStream(samplePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                var first = true;
-
-                int read;
-                while ((read = sample.Read(buffer, 0, ScanChunkLength)) > 0)
-                {
-                    if (first)
-                    {
-                        first = false;
-                        if (!SourceContainer.IsTransportStream(buffer.AsSpan(0, read)))
-                        {
-                            return H264RandomAccessKind.NotApplicable;
-                        }
-                    }
-
-                    var length = conditioner.Condition(buffer.AsSpan(0, read), conditioned);
-                    Inspect(conditioner, probe, conditioned.AsSpan(0, length));
-                    if (probe.Kind == H264RandomAccessKind.Idr)
-                    {
-                        return H264RandomAccessKind.Idr;
-                    }
-                }
-
-                // The sample ran out. For H.264 that is a real answer -- nothing in it offered an
-                // IDR -- and for anything else the question never applied.
-                return probe.VideoStreamType == H264RandomAccessAnalyzer.StreamType && probe.HasInspectedVideo
-                    ? H264RandomAccessKind.RecoveryOpenGop
-                    : H264RandomAccessKind.NotApplicable;
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-                ArrayPool<byte>.Shared.Return(conditioned);
-            }
-        }
-
-        /// <summary>
-        /// Hands the video payload of a conditioned run of packets to the probe.
-        /// </summary>
-        private static void Inspect(
-            TransportStreamConditioner conditioner,
-            VideoRandomAccessProbe probe,
-            ReadOnlySpan<byte> conditioned)
-        {
-            if (conditioner.VideoPid <= 0)
-            {
-                return;
-            }
-
-            probe.SetVideoStreamType(conditioner.VideoStreamType);
-
-            for (var offset = 0; offset + TransportStreamPacket.Length <= conditioned.Length; offset += TransportStreamPacket.Length)
-            {
-                var packet = conditioned.Slice(offset, TransportStreamPacket.Length);
-                if (TransportStreamPacket.ReadPid(packet) == conditioner.VideoPid)
-                {
-                    probe.Observe(TransportStreamPacket.ReadPayload(packet));
-                }
-            }
-
-            probe.Evaluate();
         }
 
         /// <summary>
