@@ -74,11 +74,6 @@ public sealed record TvheadendSettings
     public required int LiveBufferSizeMegabytes { get; init; }
 
     /// <summary>
-    /// Gets a value indicating whether subtitles and additional audio tracks are offered.
-    /// </summary>
-    public required bool EnableSubtitlesAndMultipleAudio { get; init; }
-
-    /// <summary>
     /// Reads and validates the stored configuration.
     /// </summary>
     /// <param name="configuration">The stored configuration.</param>
@@ -110,7 +105,6 @@ public sealed record TvheadendSettings
             DvrProfile = configuration.DvrProfile.Trim(),
             ChannelTypeForOther = configuration.ChannelType.Trim(),
             LiveBufferSizeMegabytes = configuration.LiveBufferSizeMegabytes,
-            EnableSubtitlesAndMultipleAudio = configuration.EnableSubsMaudios,
         };
     }
 }

@@ -35,12 +35,27 @@ public sealed record LiveStreamDescription
     /// Gets a value indicating whether the description may be published as complete.
     /// </summary>
     /// <remarks>
-    /// A television channel with no video stream has not been described; something in the table
-    /// was not understood. Publishing that as complete would suppress Jellyfin's own inspection
-    /// on the strength of a description that is missing the one stream it dereferences while
-    /// preparing playback.
+    /// <para>
+    /// Two conditions, and both are about not suppressing Jellyfin's own inspection on the
+    /// strength of something incomplete. There has to be a video stream, because Jellyfin
+    /// dereferences one while preparing playback and because a television channel without one
+    /// means the table was not understood. And nothing may be left unclassified: an entry this
+    /// plugin could not identify is a hole in the description, and Jellyfin finding out for
+    /// itself is better than being told a partial answer is the whole one.
+    /// </para>
+    /// <para>
+    /// A radio service is not published as complete either, for the same reason -- it has no
+    /// video, so there is nothing here to say about it that Jellyfin cannot establish better.
+    /// </para>
     /// </remarks>
-    public bool IsUsable => Streams.Any(stream => stream.Type == MediaStreamType.Video);
+    public bool IsUsable
+        => Streams.Any(stream => stream.Type == MediaStreamType.Video) && !HasUnclassifiedStream;
+
+    /// <summary>
+    /// Gets a value indicating whether the program map named something this plugin could not
+    /// identify.
+    /// </summary>
+    public required bool HasUnclassifiedStream { get; init; }
 
     /// <summary>
     /// Describes a stream from the program map of the bytes arriving.
@@ -67,7 +82,12 @@ public sealed record LiveStreamDescription
             streams.Add(Describe(programMap.Entries[index], index));
         }
 
-        return new LiveStreamDescription { Streams = streams };
+        return new LiveStreamDescription
+        {
+            Streams = streams,
+            HasUnclassifiedStream = programMap.Entries.Any(
+                entry => entry.Kind == ElementaryStreamKind.Unknown),
+        };
     }
 
     private static MediaStream Describe(ProgramMapEntry entry, int index) => entry.Kind switch

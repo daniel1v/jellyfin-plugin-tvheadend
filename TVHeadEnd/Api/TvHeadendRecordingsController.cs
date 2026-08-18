@@ -5,7 +5,6 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -41,21 +40,15 @@ namespace TVHeadEnd.Api
     {
         private readonly TvheadendConnection _connectionHandler;
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly RecordingsChannel _recordings;
-        private readonly IMediaEncoder _mediaEncoder;
         private readonly ILogger<TvHeadendRecordingsController> _logger;
 
         public TvHeadendRecordingsController(
             TvheadendConnection connectionHandler,
             IHttpClientFactory httpClientFactory,
-            RecordingsChannel recordings,
-            IMediaEncoder mediaEncoder,
             ILogger<TvHeadendRecordingsController> logger)
         {
             _connectionHandler = connectionHandler;
             _httpClientFactory = httpClientFactory;
-            _recordings = recordings;
-            _mediaEncoder = mediaEncoder;
             _logger = logger;
         }
 

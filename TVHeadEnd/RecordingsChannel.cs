@@ -37,6 +37,27 @@ namespace TVHeadEnd
         /// </summary>
         private const int AnalysisSampleLength = 8 * 1024 * 1024;
 
+        /// <summary>
+        /// When the shape of a recording's media sources last changed.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// ChannelManager rewrites a stored channel item only when the item is new or when
+        /// ChannelItemInfo.DateModified is later than the date it stored. It compares no part of
+        /// MediaSources, and DataVersion does not help either -- that only discards the cached
+        /// listing response, not the items already in the database. So an upgrade that changes
+        /// how a recording is described has no way to reach the recordings somebody already has,
+        /// and they keep whatever description the previous version gave them, for ever.
+        /// </para>
+        /// <para>
+        /// Raising this once per such change is what replaces them: it is later than the stored
+        /// date exactly once, so every existing item is rewritten once and then left alone. It is
+        /// a constant on purpose -- anything derived from the current time would rewrite every
+        /// recording on every listing.
+        /// </para>
+        /// </remarks>
+        private static readonly DateTime MediaSourceSchemaRevisionUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
+
         private readonly ILogger<LiveTvService> _logger;
         private readonly TvheadendConnection _connection;
         private readonly LiveTvService _liveTvService;
@@ -291,10 +312,13 @@ namespace TVHeadEnd
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
-                // Jellyfin re-saves a channel item only when the item is new or when this date
-                // is later than the one it stored. The recording's own last-changed time is the
-                // honest answer: when TVHeadend changes the recording, the item is rewritten.
-                DateModified = item.DateLastUpdated,
+                // Later of two dates, because there are two reasons the stored item can be out
+                // of date: the recording itself changed, and this plugin now describes it
+                // differently than the version that wrote the stored copy. Without the second,
+                // an upgrade never reaches recordings somebody already has.
+                DateModified = item.DateLastUpdated > MediaSourceSchemaRevisionUtc
+                    ? item.DateLastUpdated
+                    : MediaSourceSchemaRevisionUtc,
                 Overview = item.Overview,
                 // People = item.People
                 Etag = item.Status.ToString(),

@@ -43,8 +43,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     private readonly TvheadendGuide _guide;
     private readonly ChannelItemIds _itemIds;
 
-    // One open at a time per channel; see GetChannelStreamWithDirectStreamProvider.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _openGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<LiveTvService> _logger;
 
     /// <summary>
@@ -138,35 +136,26 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     {
         ArgumentNullException.ThrowIfNull(currentLiveStreams);
 
-        // One open at a time per channel. Two viewers starting the same channel together would
-        // otherwise both find nothing to reuse and both tune it, which costs a second TVHeadend
-        // subscription and a second tuner for a stream that is already being received. Jellyfin
-        // happens to serialise its own callers today; this does not depend on it continuing to.
-        var gate = _openGates.GetOrAdd(channelId, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var reusable = currentLiveStreams
-                .OfType<TvheadendLiveStream>()
-                .FirstOrDefault(stream => CanBeReusedFor(stream, channelId));
+        // Jellyfin serialises this: MediaSourceManager.OpenLiveStreamInternal holds its own lock
+        // across the whole call, so two viewers starting the same channel arrive here one after
+        // the other and the second finds the first stream to reuse. A lock of our own would only
+        // duplicate that.
+        var reusable = currentLiveStreams
+            .OfType<TvheadendLiveStream>()
+            .FirstOrDefault(stream => CanBeReusedFor(stream, channelId));
 
-            if (reusable is not null)
-            {
-                reusable.ConsumerCount++;
-                _logger.LogInformation(
-                    "Live TV: channel {ChannelId} is already running and now has {ConsumerCount} consumers",
-                    channelId,
-                    reusable.ConsumerCount);
-                return reusable;
-            }
-
-            return await _opener.OpenAsync(channelId, GetMediaSourceId(channelId), cancellationToken)
-                .ConfigureAwait(false);
-        }
-        finally
+        if (reusable is not null)
         {
-            gate.Release();
+            reusable.ConsumerCount++;
+            _logger.LogInformation(
+                "Live TV: channel {ChannelId} is already running and now has {ConsumerCount} consumers",
+                channelId,
+                reusable.ConsumerCount);
+            return reusable;
         }
+
+        return await _opener.OpenAsync(channelId, GetMediaSourceId(channelId), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

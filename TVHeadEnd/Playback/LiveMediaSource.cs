@@ -38,6 +38,26 @@ public static class LiveMediaSource
     public const string Container = "mpegts,ts";
 
     /// <summary>
+    /// How long FFmpeg may analyse the stream before it has to start producing output.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not a tuning knob -- without it live TV does not play at all. Jellyfin turns this into
+    /// <c>-analyzeduration</c>, and when it is unset it falls back to the server-wide setting,
+    /// which defaults to 200 seconds. On a file that is read as fast as the disk allows, that
+    /// costs nothing. On a live stream it means FFmpeg reads two hundred seconds of broadcast
+    /// before it writes its first HLS segment, so the client waits, Jellyfin gives up waiting for
+    /// the playlist, kills FFmpeg and starts again -- on every channel, for ever.
+    /// </para>
+    /// <para>
+    /// Two seconds is enough here because the source is a conditioned transport stream that
+    /// begins with its program tables and an access point, which is exactly what FFmpeg needs to
+    /// see.
+    /// </para>
+    /// </remarks>
+    private const int AnalyzeDurationMs = 2000;
+
+    /// <summary>
     /// Builds the source offered during playback negotiation, before anything is opened.
     /// </summary>
     /// <remarks>
@@ -62,6 +82,7 @@ public static class LiveMediaSource
             Protocol = MediaProtocol.Http,
             Container = Container,
             IsInfiniteStream = true,
+            AnalyzeDurationMs = AnalyzeDurationMs,
             RequiresOpening = true,
             RequiresClosing = true,
             SupportsDirectPlay = true,
@@ -105,6 +126,7 @@ public static class LiveMediaSource
             Name = name,
             Container = Container,
             IsInfiniteStream = true,
+            AnalyzeDurationMs = AnalyzeDurationMs,
             RequiresOpening = false,
             RequiresClosing = true,
             SupportsDirectPlay = true,

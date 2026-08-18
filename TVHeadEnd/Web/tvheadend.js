@@ -18,7 +18,6 @@ export default function (view, params) {
             page.querySelector('#txtPostPadding').value = config.Post_Padding || '0';
             page.querySelector('#selChannelType').value = config.ChannelType || 'Ignore';
             page.querySelector('#chkHideRecordingsChannel').checked = config.HideRecordingsChannel || false;
-            page.querySelector('#chkEnableSubsMaudios').checked = config.EnableSubsMaudios || false;
             page.querySelector('#txtLiveBufferSizeMegabytes').value = config.LiveBufferSizeMegabytes || '512';
             Dashboard.hideLoadingMsg();
         });
@@ -40,7 +39,6 @@ export default function (view, params) {
             config.Post_Padding = form.querySelector('#txtPostPadding').value;
             config.ChannelType = form.querySelector('#selChannelType').value;
             config.HideRecordingsChannel = form.querySelector('#chkHideRecordingsChannel').checked;
-            config.EnableSubsMaudios = form.querySelector('#chkEnableSubsMaudios').checked;
             config.LiveBufferSizeMegabytes = form.querySelector('#txtLiveBufferSizeMegabytes').value;
             ApiClient.updatePluginConfiguration(TVHclientConfigurationPageVar.pluginUniqueId, config).then(Dashboard.processPluginConfigurationUpdateResult);
         });

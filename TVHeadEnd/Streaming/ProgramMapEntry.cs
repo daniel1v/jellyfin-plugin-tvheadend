@@ -6,10 +6,21 @@ namespace TVHeadEnd.Streaming;
 public enum ElementaryStreamKind
 {
     /// <summary>
-    /// Nothing this plugin can classify: a table, a carousel, a private stream with no
-    /// descriptor that names it.
+    /// The table says what this is and it is not a medium a player renders: a carousel, a
+    /// private section, a splice information stream.
     /// </summary>
     Data,
+
+    /// <summary>
+    /// The table does not say what this is.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Data"/> on purpose. Data is an answer; this is the absence of
+    /// one, and a description containing it is incomplete rather than complete-with-a-data-track.
+    /// The usual cause is stream type 0x06 -- private data in PES packets -- with no descriptor
+    /// naming what is inside it.
+    /// </remarks>
+    Unknown,
 
     /// <summary>
     /// Video.

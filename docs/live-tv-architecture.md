@@ -25,7 +25,9 @@ From the program map of the stream being delivered:
 - **the number of elementary streams and their order**, which is what every later `-map`
   argument means;
 - **what medium each one carries** — video, audio, subtitle or data;
-- **the codec**, where the table identifies one;
+- **the codec**, where the table identifies one. MPEG audio (stream types 0x03 and 0x04) is left
+  without one on purpose: the table does not say which layer, and FFmpeg reports whichever it
+  finds. The medium is certain, so the track is described; the codec is not, so it is left unsaid.
 - **the language** and the **hearing-impaired flag**, from the DVB descriptors.
 
 Stream type 0x06 is "private data in PES packets" and is where DVB puts AC-3, E-AC-3, subtitles
@@ -39,13 +41,24 @@ needed for the playback decision, and none is worth a second analysis of a strea
 playing. They are left unset. Jellyfin treats an absent optional value as unknown and carries on;
 it is a *wrong* value that makes it choose badly.
 
+## What FFmpeg is told
+
+The opened media source carries `AnalyzeDurationMs`. Without it Jellyfin falls back to its
+server-wide default -- 200 seconds -- and passes that to FFmpeg as `-analyzeduration`. On a live
+stream that means FFmpeg reads two hundred seconds of broadcast before writing its first HLS
+segment, so the client waits, Jellyfin gives up waiting for the playlist, kills FFmpeg and starts
+again. Every channel, for ever. It is not a tuning knob; live TV does not play without it.
+
 ## Random access
 
 Two different things, kept apart:
 
 - **where delivery begins.** The conditioner withholds the stream until it has both program
   tables and a video packet that starts a payload unit. If the broadcast has not signalled a
-  random access point within a couple of seconds, it starts anyway rather than stalling.
+  random access point within a couple of seconds, it starts anyway rather than stalling. A
+  program with no video the plugin recognised -- a radio service, or a television service whose
+  video the table did not identify -- starts as soon as the tables are complete, because there is
+  nothing to wait for and withholding it would withhold it for ever.
 - **where a decoder may join.** Only a packet whose adaptation field carries the random access
   indicator is recorded in the bootstrap index.
 
@@ -67,6 +80,17 @@ no tables in front of it.
 - If no confirmed access point survives, the stream is still delivered from the oldest bytes, with
   the tables in front so the decoder can map the elementary streams once it resynchronises.
 
+## Trusting the table
+
+The program map is the only description there is, so it is checked rather than trusted: the
+MPEG-2 systems CRC-32 must match, and `current_next_indicator` must be set. A section announced
+for later describes the program as it *will* be, and acting on it would describe streams that are
+not there yet. A section failing either check is discarded and the table already in hand keeps
+describing the stream.
+
+When the broadcaster changes the layout mid-stream, every entry point found under the old table
+is discarded: a reader sent to one would be given the new tables and the old picture.
+
 ## Why the EIT is dropped
 
 libavformat creates an `epg` stream the moment the first EIT packet turns up. Where that lands
@@ -83,11 +107,16 @@ over HTSP, and the DVR rights for recordings.
 
 ## When Jellyfin probes the stream itself
 
-Only when the plugin cannot honestly describe it: the program map named no video stream, or none
-arrived before the stream was published. In that case the media source is published with
-`SupportsProbing = true` and no streams, and Jellyfin establishes what is in it. A description
-that is merely missing optional fields is *not* such a case, and never suppresses a probe
-incorrectly, because a description is only offered as complete when it has a video stream.
+Only when the plugin cannot honestly describe the stream:
+
+- the program map named no video stream (a radio service, or a television service whose video the
+  table did not identify), or none arrived before the stream was published;
+- the program map named a stream the plugin could not classify at all -- stream type 0x06 with no
+  descriptor saying what is inside it. A hole in the description is not a description.
+
+In those cases the media source is published with `SupportsProbing = true` and no streams, and
+Jellyfin establishes what is in it. A description that is merely missing *optional* fields is not
+such a case and never suppresses a probe incorrectly.
 
 ## Recordings
 

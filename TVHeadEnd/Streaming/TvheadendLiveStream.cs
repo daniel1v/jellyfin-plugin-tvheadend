@@ -36,12 +36,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     private const int StreamBufferSize = 131072;
 
     /// <summary>
-    /// Enough of the stream for a client to begin. The conditioner puts the program tables and an
-    /// access point at the very front, so this only has to cover the first few frames.
-    /// </summary>
-    private const int MinimumStartBufferSize = 65536;
-
-    /// <summary>
     /// How long a connected stream has to produce something playable before the open fails.
     /// </summary>
     /// <remarks>
@@ -366,6 +360,19 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                         continue;
                     }
 
+                    // A broadcaster that changes the program layout invalidates every entry point
+                    // found under the old one: a reader sent there would get the new tables and
+                    // the old picture. Discarded before this chunk's own access points are
+                    // recorded, so the first point under the new layout survives.
+                    if (conditioner.ProgramLayoutChanged)
+                    {
+                        conditioner.AcknowledgeProgramLayoutChange();
+                        _bootstrap.Reset();
+                        _logger.LogInformation(
+                            "Live TV: channel {ChannelId} changed its program layout; earlier join points discarded",
+                            ChannelId);
+                    }
+
                     await Buffer.Write(
                         conditionedBuffer.AsMemory(0, conditioned),
                         conditioner.RandomAccessOffsets,
@@ -373,7 +380,12 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
 
                     conditioner.PublishProgramTables(_bootstrap);
 
-                    if (!_ready.Task.IsCompleted && Buffer.WritePosition >= MinimumStartBufferSize)
+                    // Ready as soon as there is something a reader can actually start on: the
+                    // conditioner only forwards once it holds both program tables and has chosen
+                    // its entry point, so the first bytes in the buffer are already that. Waiting
+                    // for a fixed number of bytes on top would delay a radio service, whose whole
+                    // bitrate is a fraction of a television channel's, for no gain.
+                    if (!_ready.Task.IsCompleted && Buffer.WritePosition > 0)
                     {
                         _ready.TrySetResult();
                     }

@@ -98,6 +98,57 @@ public class RecordingDeliveryTests
         Assert.DoesNotContain("EnableLegacyH264Fallback", settings);
     }
 
+    [Fact]
+    public void StoredRecordingsAreRewrittenOnceWhenTheDescriptionShapeChanges()
+    {
+        // ChannelManager rewrites a stored item only when DateModified is later than the date it
+        // stored, and it compares no part of MediaSources. So an upgrade that changes how a
+        // recording is described reaches existing recordings only through this date -- raising it
+        // once makes every stored item stale exactly once.
+        var revision = SchemaRevision();
+
+        // A recording TVHeadend last touched before the change: the revision carries it.
+        var oldRecording = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(revision, Later(oldRecording, revision));
+
+        // One touched since: its own date is later and still wins, so a genuine change is not
+        // masked by the revision.
+        var recentRecording = revision.AddDays(1);
+        Assert.Equal(recentRecording, Later(recentRecording, revision));
+    }
+
+    [Fact]
+    public void TheSchemaRevisionIsAConstantRatherThanSomethingDerivedFromTheClock()
+    {
+        // Anything derived from the current time would be later than the stored date on every
+        // listing, so every recording would be rewritten for ever. It has to sit after every
+        // date already stored -- otherwise the recordings written last, by the very version being
+        // replaced, are the ones the migration misses -- and then never move again.
+        var first = SchemaRevision();
+        System.Threading.Thread.Sleep(20);
+        var second = SchemaRevision();
+
+        Assert.Equal(first, second);
+        Assert.NotEqual(default, first);
+        Assert.Equal(DateTimeKind.Utc, first.Kind);
+
+        // Far enough from "now" that it cannot have been read off the clock.
+        Assert.True(Math.Abs((first - DateTime.UtcNow).TotalMinutes) > 1);
+    }
+
+    private static DateTime SchemaRevision()
+    {
+        var field = typeof(RecordingsChannel).GetField(
+            "MediaSourceSchemaRevisionUtc",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(field);
+        return (DateTime)field!.GetValue(null)!;
+    }
+
+    private static DateTime Later(DateTime recordingChanged, DateTime revision)
+        => recordingChanged > revision ? recordingChanged : revision;
+
     private static MediaSourceInfo DescribedRecording()
         => new()
         {

@@ -41,7 +41,9 @@ public class StreamMappingTests
         Assert.Equal(
             [MediaStreamType.Video, MediaStreamType.Audio, MediaStreamType.Audio, MediaStreamType.Subtitle],
             description.Streams.Select(stream => stream.Type));
-        Assert.Equal(["h264", "mp2", "mp2", "dvb_subtitle"], description.Streams.Select(stream => stream.Codec));
+        // The MPEG audio tracks carry no codec: stream type 0x03 does not say which layer, and
+        // the plugin does not guess. Everything the table does state is stated.
+        Assert.Equal(["h264", null, null, "dvb_subtitle"], description.Streams.Select(stream => stream.Codec));
         Assert.Equal([null, "deu", "eng", "deu"], description.Streams.Select(stream => stream.Language));
     }
 
@@ -57,7 +59,7 @@ public class StreamMappingTests
 
         var description = LiveStreamDescription.FromProgramMap(map)!;
 
-        Assert.Equal(["mpeg2video", "mp2", "ac3"], description.Streams.Select(stream => stream.Codec));
+        Assert.Equal(["mpeg2video", null, "ac3"], description.Streams.Select(stream => stream.Codec));
         Assert.Equal(MediaStreamType.Audio, description.Streams[2].Type);
         Assert.Equal("deu", description.Streams[2].Language);
     }
@@ -223,12 +225,12 @@ public class StreamMappingTests
         };
 
         section.AddRange(body);
-        section.AddRange([0, 0, 0, 0]); // CRC32, not verified by the parser
 
-        var sectionLength = section.Count - 3;
+        // The length covers everything after it, including the CRC that is about to be appended.
+        var sectionLength = section.Count - 3 + 4;
         section[1] = (byte)(0xB0 | ((sectionLength >> 8) & 0x0F));
         section[2] = (byte)(sectionLength & 0xFF);
 
-        return [.. section];
+        return TVHeadEnd.Tests.Streaming.PsiSection.WithCrc(section);
     }
 }

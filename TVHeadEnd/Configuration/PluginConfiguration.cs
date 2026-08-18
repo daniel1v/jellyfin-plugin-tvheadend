@@ -34,7 +34,6 @@ public class PluginConfiguration : BasePluginConfiguration
         Post_Padding = 0;
         ChannelType = "Ignore";
         HideRecordingsChannel = false;
-        EnableSubsMaudios = false;
         LiveBufferSizeMegabytes = 512;
         RecordingAccessSecret = string.Empty;
     }
@@ -112,12 +111,6 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets a value indicating whether the recordings channel is hidden.
     /// </summary>
     public bool HideRecordingsChannel { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether live TV subtitles and multiple audio tracks are
-    /// offered.
-    /// </summary>
-    public bool EnableSubsMaudios { get; set; }
 
     /// <summary>
     /// Gets or sets the size of the buffer each running channel occupies on disk.

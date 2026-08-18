@@ -239,10 +239,9 @@ public class LiveTransportStreamConditionerTests
             0xC1, 0x00, 0x00, // version, section numbers
             0x00, 0x01, // program_number 1
             0xE0 | ((PmtPid >> 8) & 0x1F), PmtPid & 0xFF,
-            0x00, 0x00, 0x00, 0x00, // CRC
         };
 
-        return SectionPacket(0x00, section);
+        return SectionPacket(0x00, PsiSection.WithCrc(section));
     }
 
     private static byte[] ProgramMapTable()
@@ -257,10 +256,9 @@ public class LiveTransportStreamConditionerTests
             0xF0, 0x00, // program_info_length = 0
             0x1B, (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), VideoPid & 0xFF, 0xF0, 0x00, // H.264
             0x03, (byte)(0xE0 | ((AudioPid >> 8) & 0x1F)), AudioPid & 0xFF, 0xF0, 0x00, // MPEG audio
-            0x00, 0x00, 0x00, 0x00, // CRC
         };
 
-        return SectionPacket(PmtPid, section);
+        return SectionPacket(PmtPid, PsiSection.WithCrc(section));
     }
 
     private static byte[] ProgramMapTableWithSecondAudioTrack()
@@ -277,17 +275,20 @@ public class LiveTransportStreamConditionerTests
             0x1B, (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), VideoPid & 0xFF, 0xF0, 0x00, // H.264
             0x03, (byte)(0xE0 | ((AudioPid >> 8) & 0x1F)), AudioPid & 0xFF, 0xF0, 0x00, // MPEG audio
             0x03, (byte)(0xE0 | ((SecondAudioPid >> 8) & 0x1F)), SecondAudioPid & 0xFF, 0xF0, 0x00, // second audio
-            0x00, 0x00, 0x00, 0x00, // CRC
         };
 
-        return SectionPacket(PmtPid, section);
+        return SectionPacket(PmtPid, PsiSection.WithCrc(section));
     }
 
-    private static byte[] SectionPacket(int pid, byte[] section)
+    private static byte[] SectionPacket(int pid, IReadOnlyList<byte> section)
     {
         var packet = Packet(pid, startsUnit: true);
         packet[4] = 0x00; // pointer_field
-        section.CopyTo(packet, 5);
+        for (var index = 0; index < section.Count; index++)
+        {
+            packet[5 + index] = section[index];
+        }
+
         return packet;
     }
 

@@ -14,8 +14,7 @@ namespace TVHeadEnd.Streaming;
 /// Three jobs, and deliberately no fourth. It drops the DVB Event Information Table, it withholds
 /// the stream until a point a decoder may begin at, and it captures the program tables so a
 /// reader joining later can be given them. What the stream <em>contains</em> is not its business:
-/// that comes from the running HTSP subscription, and from the program map this parses on the
-/// way past.
+/// that is the program map, which this parses on the way past and hands on unchanged.
 /// </para>
 /// <para>
 /// The EIT has to go because it makes the stream order ambiguous. libavformat creates its "epg"
@@ -107,6 +106,12 @@ public sealed class TransportStreamConditioner
     public bool StartedOnRandomAccessPoint { get; private set; }
 
     /// <summary>
+    /// Gets a value indicating whether the broadcaster has changed the program layout since the
+    /// stream started. Cleared by <see cref="AcknowledgeProgramLayoutChange"/>.
+    /// </summary>
+    public bool ProgramLayoutChanged { get; private set; }
+
+    /// <summary>
     /// Gets the program map of the stream, or <see langword="null"/> until a complete one has
     /// been reassembled.
     /// </summary>
@@ -137,6 +142,11 @@ public sealed class TransportStreamConditioner
     /// Gets a value indicating whether both program tables have been captured whole.
     /// </summary>
     public bool HasProgramTables => _programAssociationPackets.Length > 0 && _programMapPackets.Length > 0;
+
+    /// <summary>
+    /// Clears <see cref="ProgramLayoutChanged"/>, for a caller that has acted on it.
+    /// </summary>
+    public void AcknowledgeProgramLayoutChange() => ProgramLayoutChanged = false;
 
     /// <summary>
     /// Gets the smallest destination size that can hold the conditioned form of a chunk.
@@ -313,7 +323,22 @@ public sealed class TransportStreamConditioner
 
     private bool ShouldStartAt(ReadOnlySpan<byte> packet, int pid)
     {
-        if (!HasProgramTables || pid != VideoPid)
+        if (!HasProgramTables)
+        {
+            return false;
+        }
+
+        // A program with no video to wait for. A radio service is the ordinary case; a television
+        // service whose video the program map did not identify is the other, and withholding that
+        // one until a video packet arrives would withhold it for ever -- the point of publishing
+        // it undescribed is to let Jellyfin inspect it, which it cannot do if nothing is
+        // delivered.
+        if (VideoPid < 0)
+        {
+            return true;
+        }
+
+        if (pid != VideoPid)
         {
             return false;
         }
@@ -374,11 +399,47 @@ public sealed class TransportStreamConditioner
         var table = ProgramMapTable.Parse(_programMapSection.Section);
         if (table is null)
         {
+            // Damaged, or announced for later. The table already in hand still describes the
+            // stream that is arriving, so it stays.
             return;
         }
 
+        // A broadcaster changing the program layout mid-stream -- adding an audio track, moving
+        // to a different video PID at the end of a programme -- makes every entry point found
+        // under the old table useless: a reader sent there would be given the new tables and the
+        // old picture. Which of them changed is not worth tracking; that any of them did is
+        // enough to start the index again.
+        var layoutChanged = ProgramMap is { } previous && !DescribesSameStreams(previous, table);
+
         ProgramMap = table;
         _programMapPackets = [.. _programMapCollecting];
+
+        if (layoutChanged)
+        {
+            ProgramLayoutChanged = true;
+        }
+    }
+
+    /// <summary>
+    /// Reports whether two program maps announce the same elementary streams in the same order.
+    /// </summary>
+    private static bool DescribesSameStreams(ProgramMapTable first, ProgramMapTable second)
+    {
+        if (first.Entries.Count != second.Entries.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < first.Entries.Count; index++)
+        {
+            if (first.Entries[index].Pid != second.Entries[index].Pid
+                || first.Entries[index].StreamType != second.Entries[index].StreamType)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static int ReadFirstProgramMapPid(ReadOnlySpan<byte> section)

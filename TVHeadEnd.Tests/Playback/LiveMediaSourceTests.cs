@@ -117,5 +117,6 @@ public class LiveMediaSourceTests
                 new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" },
                 new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "mp2" },
             ],
+            HasUnclassifiedStream = false,
         };
 }

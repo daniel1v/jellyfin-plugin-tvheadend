@@ -70,6 +70,23 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             return null;
         }
 
+        // A table announced for later must not be acted on now. current_next_indicator is the
+        // broadcaster saying "this describes the program as it will be", and applying it to the
+        // stream as it is would describe streams that are not there yet.
+        if ((section[5] & 0x01) == 0)
+        {
+            return null;
+        }
+
+        // The whole point of this table is that it is the only description of the stream. A
+        // section that arrived damaged would be believed as readily as a good one, so it is
+        // checked rather than trusted -- the four bytes after the body are exactly what the
+        // broadcaster computed over it.
+        if (!HasValidCrc(section[..(end + 4)]))
+        {
+            return null;
+        }
+
         var programNumber = (section[3] << 8) | section[4];
         var pcrPid = ((section[8] & 0x1F) << 8) | section[9];
         var programInfoLength = ((section[10] & 0x0F) << 8) | section[11];
@@ -208,7 +225,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         // The stream type decides wherever it is unambiguous; a descriptor only has the last
         // word for the private types, which state nothing on their own.
         var (kind, codec) = FromStreamType(streamType);
-        if (kind == ElementaryStreamKind.Data && descriptorKind is { } resolvedKind)
+        if (kind == ElementaryStreamKind.Unknown && descriptorKind is { } resolvedKind)
         {
             kind = resolvedKind;
             codec = descriptorCodec;
@@ -235,16 +252,54 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         0x10 => (ElementaryStreamKind.Video, "mpeg4"),
         0x1B => (ElementaryStreamKind.Video, "h264"),
         0x24 => (ElementaryStreamKind.Video, "hevc"),
-        0x03 or 0x04 => (ElementaryStreamKind.Audio, "mp2"),
+
+        // MPEG audio, and the table does not say which layer. It is Layer II in every DVB
+        // broadcast, but that is a property of the DVB profile rather than of this field, and
+        // FFmpeg reports whichever layer it finds. The medium is certain, so the stream is
+        // described; the codec is not, so it is left unsaid rather than guessed at.
+        0x03 or 0x04 => (ElementaryStreamKind.Audio, null),
+
         0x0F => (ElementaryStreamKind.Audio, "aac"),
         0x11 => (ElementaryStreamKind.Audio, "aac_latm"),
+
+        // The ATSC assignments for AC-3 and E-AC-3. DVB carries both under 0x06 with a
+        // descriptor instead, which is handled there.
         0x81 => (ElementaryStreamKind.Audio, "ac3"),
         0x87 => (ElementaryStreamKind.Audio, "eac3"),
 
+        // Types that are data, and say so.
+        0x05 or 0x0B or 0x0C or 0x0D or 0x86 => (ElementaryStreamKind.Data, null),
+
         // 0x06 is private data in PES packets, which is where DVB puts AC-3, E-AC-3, subtitles
-        // and teletext. It says nothing by itself; the descriptors decide.
-        _ => (ElementaryStreamKind.Data, null),
+        // and teletext. It says nothing by itself; if no descriptor named it, nothing here knows
+        // what it is.
+        _ => (ElementaryStreamKind.Unknown, null),
     };
+
+    /// <summary>
+    /// Checks the MPEG-2 systems CRC-32 that every PSI section ends with.
+    /// </summary>
+    /// <remarks>
+    /// Computed over the section including its own CRC, which leaves zero when the section is
+    /// intact. The polynomial is the one ISO 13818-1 specifies; it is not the same CRC-32 as
+    /// zlib's, so a general-purpose implementation cannot stand in for it.
+    /// </remarks>
+    /// <param name="section">The section, including its trailing CRC.</param>
+    /// <returns>Whether the section is intact.</returns>
+    private static bool HasValidCrc(ReadOnlySpan<byte> section)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var value in section)
+        {
+            crc ^= (uint)value << 24;
+            for (var bit = 0; bit < 8; bit++)
+            {
+                crc = (crc & 0x80000000u) != 0 ? (crc << 1) ^ 0x04C11DB7u : crc << 1;
+            }
+        }
+
+        return crc == 0;
+    }
 
     private static string? ReadLanguage(ReadOnlySpan<byte> code)
     {

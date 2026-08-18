@@ -49,13 +49,6 @@
                         <span>Hide TVHeadEnd Recordings channel</span>
                     </label>
                 </div>
-                <div class="checkboxContainer checkboxContainer-withDescription">
-                    <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkEnableSubsMaudios" />
-                        <span>Offer live TV subtitles and multiple audio tracks</span>
-                    </label>
-                    <div class="fieldDescription checkboxFieldDescription">Whether additional audio tracks and subtitle tracks are offered to clients.</div>
-                </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size (MB):" />
                     <div class="fieldDescription">Each channel being watched is written into a buffer of this size in a circle, so this is the whole disk cost of a channel however long it runs. It is also how far a client may fall behind the live edge, by pausing for instance, before it is moved forward. Around ten minutes of an HD broadcast fit into 512 MB. Note: Changing this requires a server restart.</div>

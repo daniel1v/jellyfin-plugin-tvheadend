@@ -176,32 +176,35 @@ public sealed class LateJoinTests : IDisposable
 
     private static byte[] ProgramAssociationTable()
     {
-        var section = new byte[13];
-        section[0] = 0x00;
-        section[1] = 0xB0;
-        section[2] = 0x0D;
-        section[9] = 0x01;
-        section[10] = (byte)(0xE0 | ((ProgramMapPid >> 8) & 0x1F));
-        section[11] = (byte)(ProgramMapPid & 0xFF);
-        return SectionPacket(0, section);
+        // 0xC1 sets current_next_indicator: the table describes the stream as it is, not as it
+        // will be. Without it the parser refuses the section, as it should.
+        byte[] section =
+        [
+            0x00, // table_id
+            0xB0, 0x0D, // section_length
+            0x00, 0x01, // transport_stream_id
+            0xC1, 0x00, 0x00, // version, current/next, section numbers
+            0x00, 0x01, // program_number
+            (byte)(0xE0 | ((ProgramMapPid >> 8) & 0x1F)), (byte)(ProgramMapPid & 0xFF),
+        ];
+
+        return SectionPacket(0, PsiSection.WithCrc(section));
     }
 
     private static byte[] ProgramMapTable()
     {
-        var section = new byte[18];
-        section[0] = 0x02;
-        section[1] = 0xB0;
-        section[2] = 0x12;
-        section[8] = (byte)(0xE0 | ((VideoPid >> 8) & 0x1F));
-        section[9] = (byte)(VideoPid & 0xFF);
-        section[10] = 0xF0;
-        section[11] = 0x00;
-        section[12] = 0x1B;
-        section[13] = (byte)(0xE0 | ((VideoPid >> 8) & 0x1F));
-        section[14] = (byte)(VideoPid & 0xFF);
-        section[15] = 0xF0;
-        section[16] = 0x00;
-        return SectionPacket(ProgramMapPid, section);
+        byte[] section =
+        [
+            0x02, // table_id
+            0xB0, 0x12, // section_length
+            0x00, 0x01, // program_number
+            0xC1, 0x00, 0x00, // version, current/next, section numbers
+            (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), (byte)(VideoPid & 0xFF), // PCR PID
+            0xF0, 0x00, // program_info_length
+            0x1B, (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), (byte)(VideoPid & 0xFF), 0xF0, 0x00,
+        ];
+
+        return SectionPacket(ProgramMapPid, PsiSection.WithCrc(section));
     }
 
     private static byte[] SectionPacket(int pid, byte[] section)

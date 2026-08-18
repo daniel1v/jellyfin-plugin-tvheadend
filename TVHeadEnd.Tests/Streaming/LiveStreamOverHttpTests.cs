@@ -67,7 +67,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         Assert.Equal(
             [MediaStreamType.Video, MediaStreamType.Audio, MediaStreamType.Audio, MediaStreamType.Subtitle],
             description.Streams.Select(media => media.Type));
-        Assert.Equal(["h264", "mp2", "mp2", "dvb_subtitle"], description.Streams.Select(media => media.Codec));
+        Assert.Equal(["h264", null, null, "dvb_subtitle"], description.Streams.Select(media => media.Codec));
         Assert.Equal([null, "deu", "eng", "deu"], description.Streams.Select(media => media.Language));
         Assert.Equal([0, 1, 2, 3], description.Streams.Select(media => media.Index));
 
@@ -92,6 +92,82 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         Assert.Equal(PmtPid, ReadPid(opening, PacketLength));
         Assert.Equal(VideoPid, ReadPid(opening, 2 * PacketLength));
         Assert.True(stream.StartedOnConfirmedRandomAccessPoint);
+    }
+
+    [Theory]
+    [InlineData(0x1B, "h264")]
+    [InlineData(0x02, "mpeg2video")]
+    public async Task AChannelIsOpenedAndKeepsDeliveringBytesToItsConsumer(byte videoStreamType, string codec)
+    {
+        // The whole path a viewer takes: open, then read from what IDirectStreamProvider hands
+        // back, the way Jellyfin's LiveStreamFiles endpoint does. A test that only proves an
+        // object was constructed would have passed while every channel loaded for ever.
+        await using var server = new TransportStreamServer(BuildBroadcast(videoStreamType: videoStreamType));
+
+        await using var stream = CreateStream(server.Url);
+        await stream.Open(CancellationToken.None);
+
+        Assert.Equal(codec, LiveStreamDescription.FromProgramMap(stream.ProgramMap!)!.Streams[0].Codec);
+
+        using var reader = stream.GetStream();
+
+        // Read well past the first chunk, so this covers the buffer being consumed as it is
+        // written rather than a single hand-off.
+        var delivered = await ReadUpTo(reader, 300 * PacketLength);
+
+        Assert.True(
+            delivered.Length >= 300 * PacketLength,
+            FormattableString.Invariant($"Only {delivered.Length} bytes reached the consumer."));
+
+        // Every packet of it is a transport stream packet, on a packet boundary.
+        for (var offset = 0; offset + PacketLength <= delivered.Length; offset += PacketLength)
+        {
+            Assert.Equal(0x47, delivered[offset]);
+        }
+    }
+
+    [Fact]
+    public async Task ARadioChannelIsOpenedAndDeliversBytes()
+    {
+        // No video to wait for. This is the case that used to be withheld until the startup
+        // limit expired, because the conditioner would only start on a video packet.
+        await using var server = new TransportStreamServer(BuildRadioBroadcast());
+
+        await using var stream = CreateStream(server.Url);
+        await stream.Open(CancellationToken.None);
+
+        using var reader = stream.GetStream();
+        var delivered = await ReadUpTo(reader, 60 * PacketLength);
+
+        Assert.True(delivered.Length >= 60 * PacketLength);
+        Assert.Equal(0x00, ReadPid(delivered, 0));
+        Assert.Equal(PmtPid, ReadPid(delivered, PacketLength));
+
+        // Audio only, so nothing claims to be a complete description of a video channel.
+        var description = LiveStreamDescription.FromProgramMap(stream.ProgramMap!)!;
+        Assert.False(description.IsUsable);
+        Assert.All(description.Streams, media => Assert.Equal(MediaStreamType.Audio, media.Type));
+    }
+
+    [Fact]
+    public async Task TheOpenedSourceTellsJellyfinHowLongItMayAnalyse()
+    {
+        // Without it Jellyfin falls back to its server-wide default, which is two hundred
+        // seconds. On a live stream that is two hundred seconds before FFmpeg writes anything,
+        // and the client waits the whole time.
+        await using var server = new TransportStreamServer(BuildBroadcast());
+
+        await using var stream = CreateStream(server.Url);
+        await stream.Open(CancellationToken.None);
+
+        var source = LiveMediaSource.CreateOpened(
+            "8f14e45fceea167a5a36dedd4bea2543",
+            "Das Erste HD",
+            stream.MediaPath,
+            "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
+            LiveStreamDescription.FromProgramMap(stream.ProgramMap!));
+
+        Assert.True(source.AnalyzeDurationMs is > 0 and <= 5000);
     }
 
     [Fact]
@@ -134,7 +210,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
     /// Builds a broadcast the way a DVB multiplex delivers one: tables first, then a run of
     /// packets with periodic access points.
     /// </summary>
-    private static byte[] BuildBroadcast(bool includeEventInformation = false)
+    private static byte[] BuildBroadcast(bool includeEventInformation = false, byte videoStreamType = 0x1B)
     {
         var packets = new List<byte[]>();
 
@@ -143,7 +219,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
             if (round % 8 == 0)
             {
                 packets.Add(SectionPacket(0x00, ProgramAssociationSection()));
-                packets.Add(SectionPacket(PmtPid, ProgramMapSection()));
+                packets.Add(SectionPacket(PmtPid, ProgramMapSection(videoStreamType)));
             }
 
             if (includeEventInformation)
@@ -161,6 +237,52 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         return [.. packets.SelectMany(packet => packet)];
     }
 
+    /// <summary>
+    /// Builds a radio multiplex: program tables and one audio track, and no video at all.
+    /// </summary>
+    private static byte[] BuildRadioBroadcast()
+    {
+        var packets = new List<byte[]>();
+
+        for (var round = 0; round < 40; round++)
+        {
+            if (round % 8 == 0)
+            {
+                packets.Add(SectionPacket(0x00, ProgramAssociationSection()));
+                packets.Add(SectionPacket(PmtPid, RadioProgramMapSection()));
+            }
+
+            packets.Add(Packet(GermanAudioPid, startsUnit: true));
+            packets.Add(Packet(GermanAudioPid));
+        }
+
+        return [.. packets.SelectMany(packet => packet)];
+    }
+
+    private static byte[] RadioProgramMapSection()
+    {
+        var body = new List<byte>();
+        AppendEntry(body, 0x03, GermanAudioPid, [0x0A, 0x04, (byte)'d', (byte)'e', (byte)'u', 0x00]);
+
+        var section = new List<byte>
+        {
+            0x02,
+            0, 0,
+            0x00, 0x01,
+            0xC1, 0x00, 0x00,
+            (byte)(0xE0 | ((GermanAudioPid >> 8) & 0x1F)), GermanAudioPid & 0xFF,
+            0xF0, 0x00,
+        };
+
+        section.AddRange(body);
+
+        var sectionLength = section.Count - 3 + 4;
+        section[1] = (byte)(0xB0 | ((sectionLength >> 8) & 0x0F));
+        section[2] = (byte)(sectionLength & 0xFF);
+
+        return PsiSection.WithCrc(section);
+    }
+
     private static byte[] ProgramAssociationSection()
     {
         var section = new List<byte>
@@ -171,16 +293,15 @@ public sealed class LiveStreamOverHttpTests : IDisposable
             0xC1, 0x00, 0x00,
             0x00, 0x01,
             (byte)(0xE0 | ((PmtPid >> 8) & 0x1F)), PmtPid & 0xFF,
-            0, 0, 0, 0,
         };
 
-        return [.. section];
+        return PsiSection.WithCrc(section);
     }
 
-    private static byte[] ProgramMapSection()
+    private static byte[] ProgramMapSection(byte videoStreamType = 0x1B)
     {
         var body = new List<byte>();
-        AppendEntry(body, 0x1B, VideoPid, []);
+        AppendEntry(body, videoStreamType, VideoPid, []);
         AppendEntry(body, 0x03, GermanAudioPid, [0x0A, 0x04, (byte)'d', (byte)'e', (byte)'u', 0x00]);
         AppendEntry(body, 0x03, EnglishAudioPid, [0x0A, 0x04, (byte)'e', (byte)'n', (byte)'g', 0x00]);
         AppendEntry(
@@ -200,13 +321,12 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         };
 
         section.AddRange(body);
-        section.AddRange([0, 0, 0, 0]);
 
-        var sectionLength = section.Count - 3;
+        var sectionLength = section.Count - 3 + 4;
         section[1] = (byte)(0xB0 | ((sectionLength >> 8) & 0x0F));
         section[2] = (byte)(sectionLength & 0xFF);
 
-        return [.. section];
+        return PsiSection.WithCrc(section);
     }
 
     private static void AppendEntry(List<byte> body, byte streamType, int pid, byte[] descriptors)
@@ -261,7 +381,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         var total = 0;
         var attempts = 0;
 
-        while (total < count && attempts < 200)
+        while (total < count && attempts < 600)
         {
             var read = await stream.ReadAsync(buffer.AsMemory(total, count - total));
             if (read == 0)
@@ -352,11 +472,15 @@ public sealed class LiveStreamOverHttpTests : IDisposable
 
                 try
                 {
-                    // Sent more than once so the stream keeps producing while the test reads.
-                    for (var round = 0; round < 8 && !cancellationToken.IsCancellationRequested; round++)
+                    // Keeps producing until the test is done with it. A finite payload would make
+                    // the reader's behaviour depend on whether it happened to join before or
+                    // after the last byte -- and a live viewer joins at the newest entry point,
+                    // so it would usually be after.
+                    while (!cancellationToken.IsCancellationRequested)
                     {
                         await context.Response.OutputStream.WriteAsync(_payload, cancellationToken);
                         await context.Response.OutputStream.FlushAsync(cancellationToken);
+                        await Task.Delay(15, cancellationToken);
                     }
                 }
                 catch (Exception exception) when (exception is HttpListenerException or IOException or OperationCanceledException)
