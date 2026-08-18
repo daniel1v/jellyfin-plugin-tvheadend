@@ -82,19 +82,26 @@ namespace TVHeadEnd.Playback
         /// <param name="channelId">The TVHeadend channel identifier.</param>
         /// <param name="offer">Which variant, and whether a client may play it directly.</param>
         /// <param name="descriptor">What the opened stream was observed to contain.</param>
-        /// <param name="bufferPath">The buffer file the stream is readable from.</param>
-        /// <param name="encoderUrl">The URL the buffer is also readable at.</param>
+        /// <param name="mediaPath">The file the stream is readable from.</param>
+        /// <param name="streamUrl">The URL Jellyfin serves the open stream at.</param>
+        /// <param name="container">
+        /// What the stream is delivered in, as a file extension. It has to be what actually
+        /// arrives: the URL ends in it, Jellyfin takes the content type from it, and a client
+        /// that believes the declaration and finds something else renders nothing.
+        /// </param>
         /// <returns>An opened media source.</returns>
         public static MediaSourceInfo CreateOpened(
             string channelId,
             VariantOffer offer,
             ChannelMediaDescriptor? descriptor,
-            string bufferPath,
-            string encoderUrl)
+            string mediaPath,
+            string streamUrl,
+            string container)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
-            ArgumentException.ThrowIfNullOrEmpty(bufferPath);
-            ArgumentException.ThrowIfNullOrEmpty(encoderUrl);
+            ArgumentException.ThrowIfNullOrEmpty(mediaPath);
+            ArgumentException.ThrowIfNullOrEmpty(streamUrl);
+            ArgumentException.ThrowIfNullOrEmpty(container);
 
             var source = CreateShell(channelId, offer);
             descriptor?.ApplyTo(source);
@@ -102,21 +109,36 @@ namespace TVHeadEnd.Playback
             source.Name = DescribeVariant(offer.Variant);
             source.RequiresOpening = false;
 
-            // The buffer is exposed as a local file rather than an HTTP source because Jellyfin's
-            // Android client treats every HTTP direct-play source as an HLS playlist. Its static
-            // request then receives the MPEG-TS stream directly. The HTTP form is still supplied
-            // as the encoder path, which is what a server-side transcode reads.
-            source.Path = bufferPath;
-            source.Protocol = MediaProtocol.File;
-            source.EncoderPath = encoderUrl;
-            source.EncoderProtocol = MediaProtocol.Http;
+            if (offer.Variant == PlaybackVariant.Native)
+            {
+                // The broadcast is exposed as a local file rather than an HTTP source because
+                // Jellyfin's Android client treats every HTTP direct-play source as an HLS
+                // playlist. Its static request then receives the transport stream directly.
+                source.Path = mediaPath;
+                source.Protocol = MediaProtocol.File;
+                source.EncoderPath = streamUrl;
+                source.EncoderProtocol = MediaProtocol.Http;
+            }
+            else
+            {
+                // A compatibility rendering is served through Jellyfin's live stream file
+                // endpoint, which takes its content type from the container in the URL. That is
+                // the one route by which something other than MPEG-TS can be announced correctly:
+                // the direct-play route declares every live stream video/mp2t regardless.
+                source.Path = streamUrl;
+                source.Protocol = MediaProtocol.Http;
+                source.EncoderPath = streamUrl;
+                source.EncoderProtocol = MediaProtocol.Http;
+            }
+
+            source.Container = container;
             source.RequiredHttpHeaders = new Dictionary<string, string>();
 
             // Now there is something to play, and the policy decides whether this variant may be
             // handed to a client unmodified.
             source.SupportsDirectPlay = offer.SupportsDirectPlay;
 
-            // A channel has no runtime, whatever the buffer happens to hold.
+            // A channel has no runtime, whatever has been received so far.
             source.RunTimeTicks = null;
             source.Size = null;
             source.DefaultSubtitleStreamIndex = null;
@@ -149,16 +171,13 @@ namespace TVHeadEnd.Playback
                 return false;
             }
 
-            // MPEG-TS, and nothing else. Jellyfin serves a direct-played live stream with a
-            // hardcoded content type of video/mp2t -- its own source says so, TODO and all:
-            //
-            //     return File(liveStream, MimeTypes.GetMimeType("file.ts"));
-            //
-            // A client that believes the declared type, as players reasonably do, finds no sync
-            // byte in a Matroska body and never renders a frame. The plugin cannot correct the
-            // declaration, so the content has to match it.
-            if (!observed.IsTransportStream
-                || observed.Container?.Contains("mpegts", StringComparison.OrdinalIgnoreCase) != true)
+            // Matroska, because that is what TVHeadend's transcoder produces -- its libav muxer
+            // cannot currently emit MPEG-TS -- and because a compatibility rendering is served
+            // through the live stream file endpoint, which announces whatever container it is
+            // asked for. The one thing that must not happen is a description that disagrees with
+            // the delivery.
+            if (observed.IsTransportStream
+                || observed.Container?.Contains("matroska", StringComparison.OrdinalIgnoreCase) != true)
             {
                 return false;
             }
@@ -168,13 +187,14 @@ namespace TVHeadEnd.Playback
                 return false;
             }
 
-            // The whole point of the normalizing role is that a decoder can cold-start on it, and
-            // an output that merely re-wraps the same recovery-point video does not qualify. Only
-            // a transport stream can be checked for that here; for any other container the claim
-            // rests on the role contract, because the NAL scanner needs PMT-declared stream types
-            // and there are none.
+            // The MPEG-2 role promises H.264 in a container the client can read, and that is now
+            // established. The normalizing role promises something stronger -- that a decoder can
+            // cold-start on it -- and nothing here can show that of a Matroska stream: the access
+            // point scanner reads PMT-declared stream types and Matroska has none. Claiming the
+            // role on a container check alone would stand the transitional encoder down on the
+            // strength of evidence that was never gathered, so the role stays unproven and the
+            // encoder keeps the affected clients working.
             return variant != PlaybackVariant.H264IdrNormalization
-                || !observed.IsTransportStream
                 || observed.RandomAccess == H264RandomAccessKind.Idr;
         }
 
@@ -303,20 +323,18 @@ namespace TVHeadEnd.Playback
                 },
             };
 
-            // Audio follows the configured TVHeadend profile and is not part of the contract, so
-            // the tracks are carried over as the best available statement and corrected the first
-            // time the variant is actually produced.
+            // Audio is not part of any role contract: a profile may copy the broadcast tracks or
+            // re-encode them, and which it does is not knowable from here. Only what survives
+            // either choice is stated -- that a track exists, and what it is called. Codec,
+            // channel count, layout and sample rate are left unset rather than copied from the
+            // broadcast, because a client would decide on them and they may not be true.
             foreach (var audio in native.Streams.Where(stream => stream.Type == MediaStreamType.Audio))
             {
                 streams.Add(new MediaStream
                 {
                     Type = MediaStreamType.Audio,
                     Index = streams.Count,
-                    Codec = audio.Codec,
                     Language = audio.Language,
-                    Channels = audio.Channels,
-                    ChannelLayout = audio.ChannelLayout,
-                    SampleRate = audio.SampleRate,
                     Title = audio.Title,
                 });
             }
@@ -327,12 +345,14 @@ namespace TVHeadEnd.Playback
                 VariantRole = variant.ToString(),
                 NativeProfile = native.NativeProfile,
                 ProgramSignature = native.ProgramSignature,
-                Container = SourceContainer.TransportStream,
+                Container = SourceContainer.Matroska,
                 Streams = streams,
-                IsTransportStream = true,
-                RandomAccess = variant == PlaybackVariant.H264IdrNormalization
-                    ? H264RandomAccessKind.Idr
-                    : H264RandomAccessKind.Unknown,
+                IsTransportStream = false,
+
+                // Unknown, not Idr. The normalizing role is meant to produce real access
+                // points, but until one of its streams has been opened and looked at, that is a
+                // statement of intent rather than an observation.
+                RandomAccess = H264RandomAccessKind.Unknown,
             };
         }
     }

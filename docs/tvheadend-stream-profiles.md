@@ -8,24 +8,27 @@ Profiles are configured by name in the plugin settings. Where the plugin has per
 `/api/profile/list`, the settings offer the existing profiles as a list; otherwise the name can be
 typed freely.
 
-## MPEG-TS is not negotiable for the compatibility roles
+## Compatibility roles produce Matroska
 
-Jellyfin serves a direct-played live stream with a hardcoded content type, in
-`VideosController.GetVideoStream`:
+TVHeadend's transcoder cannot currently emit MPEG-TS, so the compatibility profiles produce
+Matroska, and the plugin describes and serves them as Matroska.
+
+That works because a compatibility rendering is not delivered by the direct-play route. Jellyfin
+serves a direct-played live stream with a hardcoded content type:
 
 ```csharp
-var liveStream = new ProgressiveFileStream(liveStreamInfo.GetStream());
 // TODO (moved from MediaBrowser.Api): Don't hardcode contentType
 return File(liveStream, MimeTypes.GetMimeType("file.ts"));
 ```
 
-Every live stream is therefore announced as `video/mp2t`, whatever it actually is. A player that
-believes the declared type — which players reasonably do — finds no sync byte in a Matroska body
-and never renders a frame. Measured on a Pixel 10: the stream decoded perfectly with FFmpeg,
-began with a keyframe, and still produced nothing but a buffering spinner.
+Every such stream is announced as `video/mp2t` whatever it is, and a player that believes the
+declaration finds no sync byte in a Matroska body and renders nothing. Measured on a Pixel 10:
+the stream decoded perfectly with FFmpeg, began with a keyframe, and still produced only a
+spinner.
 
-The plugin cannot correct the declaration, so a compatibility profile that emits anything other
-than MPEG-TS is rejected and the role falls back to the native stream.
+Compatibility streams are served through Jellyfin's live stream file endpoint instead, which
+takes its content type from the container in the URL. The native role is unaffected — it is the
+broadcast as received, which is a transport stream.
 
 ## Roles
 
@@ -53,7 +56,7 @@ native stream, never instead of it: a client that can decode MPEG-2 keeps the br
 |---|---|
 | Suggested profile name | `jellyfin-h264` |
 | Use case | SD channels carrying MPEG-2 video |
-| Container | MPEG-TS |
+| Container | Matroska |
 | Video | H.264 |
 | Geometry | Preserve source resolution and frame rate |
 | Deinterlacing | Recommended — SD MPEG-2 broadcasts are usually interlaced |
@@ -71,7 +74,7 @@ be unable to cold-start such a stream.
 |---|---|
 | Suggested profile name | `jellyfin-idr` |
 | Use case | DVB broadcasts with recovery-point-only random access |
-| Container | MPEG-TS |
+| Container | Matroska |
 | Video | H.264, genuinely re-encoded — a remux does not help, because the source frames are the problem |
 | Geometry | Preserve source resolution and frame rate |
 | Deinterlacing | Only if the source is interlaced; do not deinterlace progressive HD |
@@ -80,8 +83,15 @@ be unable to cold-start such a stream.
 | TVHeadend permission | Streaming, plus transcoding enabled for the user |
 
 A stream that merely copies the video will not satisfy this role. The plugin validates the output
-of an opened compatibility stream and disables the role for that channel if the contract is
-violated, falling back to the native stream so Jellyfin can transcode normally.
+of an opened compatibility stream and disables the role if the contract is violated, falling back
+to the transitional encoder or to the native stream.
+
+### The container is the plugin's problem, not yours
+
+A compatibility profile is rewrapped as MPEG-TS on its way into the buffer, with every stream
+copied and nothing re-encoded. A profile that emits Matroska therefore works, which matters
+because some TVHeadend versions produce Matroska whatever the profile asks for. Configure the
+profile for MPEG-TS if your server honours it; if it does not, the profile is still usable.
 
 ## Recommended TVHeadend settings
 
@@ -109,11 +119,17 @@ For each role the settings report:
 | Compatibility role not configured | Only the native stream is offered |
 | Configured profile not found | Only the native stream is offered; the status shows *not found* |
 | Opened output violates the contract | The role is disabled for that channel and the native stream is used |
-| `H264IdrNormalization` not yet configured | The plugin's own transitional encoder is used instead |
+| `H264IdrNormalization` not configured, or configured but not yet validated | The plugin's own transitional encoder is used instead |
 
-The plugin-side encoder is a transitional measure. Once a TVHeadend `H264IdrNormalization`
-profile has been configured and validated, it can be removed without touching playback policy or
-the transport layer.
+The plugin-side encoder is a transitional measure. It stands down only once a stream of the
+configured `H264IdrNormalization` profile has actually been opened and observed to satisfy the
+role -- a configured name is a claim, not evidence, and switching the encoder off on the strength
+of one would leave an affected client with a broadcast its decoder cannot start. The outcome is
+remembered across restarts. Point the role at a different profile and it starts again as an
+unproven claim.
+
+Once validated, the encoder can be removed without touching playback policy or the transport
+layer.
 
 ## Minimal and recommended setups
 

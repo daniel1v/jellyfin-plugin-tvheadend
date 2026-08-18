@@ -73,12 +73,13 @@ public class PluginConfigurationMigrationTests
     {
         var configuration = new PluginConfiguration();
 
-        // The names the documentation tells an administrator to create. They are only defaults:
-        // a role whose profile TVHeadend does not report is reported as not found and not used,
-        // so naming them here costs nothing on a server that has none of them.
+        // Only the native role has a default, because only it is required. Naming the optional
+        // roles here would have every fresh installation claim two profiles that almost certainly
+        // do not exist, and the settings page would report both as missing before the
+        // administrator had decided whether to want them at all.
         Assert.Equal(TvheadendStreamProfiles.DefaultNativeProfile, configuration.NativeStreamProfile);
-        Assert.Equal("jellyfin-h264", configuration.Mpeg2H264CompatibilityProfile);
-        Assert.Equal("jellyfin-idr", configuration.H264IdrNormalizationProfile);
+        Assert.Equal(string.Empty, configuration.Mpeg2H264CompatibilityProfile);
+        Assert.Equal(string.Empty, configuration.H264IdrNormalizationProfile);
         Assert.False(configuration.AnalyzeChannelFormatsOnRefresh);
     }
 }

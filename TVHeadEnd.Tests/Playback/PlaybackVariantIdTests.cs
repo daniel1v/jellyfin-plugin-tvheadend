@@ -1,3 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Http;
+using MediaBrowser.Model.Dto;
+using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd;
+using TVHeadEnd.Streaming;
 using TVHeadEnd.Playback;
 using Xunit;
 
@@ -53,5 +61,73 @@ public class PlaybackVariantIdTests
     {
         Assert.Null(PlaybackVariantId.Resolve("42", "not-one-of-ours"));
         Assert.Null(PlaybackVariantId.Resolve("42", null));
+    }
+
+    [Fact]
+    public void ABroadcastIsNeverSharedWithARequestForARenderingOfIt()
+    {
+        // Reuse keyed by channel alone would hand an affected client the very broadcast the
+        // normalized variant exists to keep away from it, and it would look like a cache hit.
+        using var native = Stream("159026356", PlaybackVariant.Native);
+
+        Assert.False(LiveTvService.CanBeReusedFor(native, "159026356", PlaybackVariant.H264IdrNormalization));
+        Assert.False(LiveTvService.CanBeReusedFor(native, "159026356", PlaybackVariant.Mpeg2H264Compatibility));
+    }
+
+    [Fact]
+    public void AStreamWithNothingBufferedYetIsNotHandedOut()
+    {
+        // Sharing a stream that has not produced anything would give the second caller a reader
+        // over a buffer that does not exist.
+        using var native = Stream("159026356", PlaybackVariant.Native);
+
+        Assert.False(native.HasBuffer);
+        Assert.False(LiveTvService.CanBeReusedFor(native, "159026356", PlaybackVariant.Native));
+    }
+
+    [Fact]
+    public void ARenderingIsNeverSharedAcrossChannels()
+    {
+        using var normalized = Stream("159026356", PlaybackVariant.H264IdrNormalization);
+
+        Assert.False(LiveTvService.CanBeReusedFor(normalized, "1460599120", PlaybackVariant.H264IdrNormalization));
+    }
+
+    [Fact]
+    public void AStreamThatHasStoppedSharingIsNotHandedOut()
+    {
+        using var native = Stream("159026356", PlaybackVariant.Native);
+        native.Close().GetAwaiter().GetResult();
+
+        Assert.False(LiveTvService.CanBeReusedFor(native, "159026356", PlaybackVariant.Native));
+    }
+
+
+    [Fact]
+    public void TheBroadcastKeepsItsRingBufferAndItsSharing()
+    {
+        // The native path is the one that is shared, long running and joined mid-flight, so the
+        // ring buffer and the entry point hunting stay exactly where they were.
+        using var native = Stream("159026356", PlaybackVariant.Native);
+
+        Assert.True(native.EnableStreamSharing);
+        Assert.IsType<TvheadendLiveStream>(native);
+    }
+    private static TvheadendLiveStream Stream(string channelId, PlaybackVariant variant)
+        => new(
+            channelId,
+            variant.ToString(),
+            "http://tvheadend.invalid/stream",
+            new Dictionary<string, string>(),
+            new MediaSourceInfo(),
+            Path.Combine(Path.GetTempPath(), "tvheadend-test-" + Guid.NewGuid().ToString("N")),
+            1,
+            describedAlready: true,
+            new NeverUsedHttpClientFactory(),
+            NullLogger.Instance);
+
+    private sealed class NeverUsedHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => throw new NotSupportedException();
     }
 }

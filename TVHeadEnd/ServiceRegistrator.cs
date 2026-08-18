@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.Media;
 using TVHeadEnd.Playback;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd;
 
@@ -30,6 +31,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton(provider => new ChannelMediaDescriptorStore(
             provider.GetRequiredService<IApplicationPaths>(),
             provider.GetRequiredService<ILoggerFactory>().CreateLogger<ChannelMediaDescriptorStore>()));
+
+        // Which TVHeadend profile has been proven to keep its role's promise, across restarts.
+        serviceCollection.AddSingleton(provider => new StreamProfileValidationStore(
+            provider.GetRequiredService<IApplicationPaths>(),
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger<StreamProfileValidationStore>()));
 
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
 

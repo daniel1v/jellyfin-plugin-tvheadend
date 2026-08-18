@@ -60,21 +60,9 @@ namespace TVHeadEnd.Playback
                 Client: "Jellyfin for Android",
                 MinimumVersion: null,
                 MaximumVersion: null),
-            new QuirkEntry(
-                PlaybackQuirk.H264DvbRecoveryOpenGopColdStart,
-                Client: "Jellyfin Android",
-                MinimumVersion: null,
-                MaximumVersion: null),
-            new QuirkEntry(
-                PlaybackQuirk.H264DvbRecoveryOpenGopColdStart,
-                Client: "Android TV",
-                MinimumVersion: null,
-                MaximumVersion: null),
-            new QuirkEntry(
-                PlaybackQuirk.H264DvbRecoveryOpenGopColdStart,
-                Client: "AndroidTV",
-                MinimumVersion: null,
-                MaximumVersion: null),
+            // Deliberately nothing else. The Android TV application was never measured, and
+            // listing a client on the strength of sharing an operating system is how a
+            // workaround spreads to callers that never needed it.
         ];
 
         /// <summary>

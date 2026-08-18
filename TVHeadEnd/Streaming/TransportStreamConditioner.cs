@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 
@@ -43,10 +44,14 @@ namespace TVHeadEnd.Streaming
         /// </summary>
         public const int EventInformationTablePid = TransportStreamPacket.EventInformationTablePid;
 
-        // A stream that never signals a random access point would otherwise be withheld
-        // forever. Roughly two seconds of a high bitrate broadcast is long enough that a
-        // keyframe should have been seen, and short enough not to delay a channel change.
+        // A stream that never signals a random access point would otherwise be withheld forever.
+        // The wait is bounded by time rather than by volume: four megabytes is about two seconds
+        // of a high bitrate broadcast but sixteen of a standard definition one, which turned a
+        // safety net into the slowest thing about tuning such a channel. The byte limit is kept
+        // as a second bound so a very high bitrate stream cannot buffer without end.
         private const int RandomAccessSearchLimit = 4 * 1024 * 1024;
+
+        private static readonly TimeSpan RandomAccessSearchTimeLimit = TimeSpan.FromSeconds(2);
 
         private readonly int _droppedPid;
         private readonly VideoRandomAccessProbe? _probe;
@@ -61,6 +66,7 @@ namespace TVHeadEnd.Streaming
         private bool _hasProgramMapTable;
         private bool _started;
         private int _bytesInspected;
+        private long _firstInspectedTimestamp;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TransportStreamConditioner"/> class.
@@ -287,6 +293,11 @@ namespace TVHeadEnd.Streaming
                 return TransportStreamPacket.Length;
             }
 
+            if (_firstInspectedTimestamp == 0)
+            {
+                _firstInspectedTimestamp = Stopwatch.GetTimestamp();
+            }
+
             _bytesInspected += TransportStreamPacket.Length;
             if (!ShouldStartAt(packet, pid))
             {
@@ -317,7 +328,13 @@ namespace TVHeadEnd.Streaming
 
             // Fall back to any access unit boundary rather than withholding a stream whose
             // broadcaster does not set the random access indicator.
-            return _bytesInspected >= RandomAccessSearchLimit && TransportStreamPacket.StartsPayloadUnit(packet);
+            if (!TransportStreamPacket.StartsPayloadUnit(packet))
+            {
+                return false;
+            }
+
+            return _bytesInspected >= RandomAccessSearchLimit
+                || Stopwatch.GetElapsedTime(_firstInspectedTimestamp) >= RandomAccessSearchTimeLimit;
         }
 
         private void ReadProgramMapTablePid(ReadOnlySpan<byte> packet)

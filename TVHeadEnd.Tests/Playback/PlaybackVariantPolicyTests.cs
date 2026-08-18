@@ -8,7 +8,9 @@ namespace TVHeadEnd.Tests.Playback;
 
 public class PlaybackVariantPolicyTests
 {
-    private static readonly PlaybackClientContext AffectedClient = new("Jellyfin Android", "2.7.1", "Pixel", "device-1");
+    // The name the measured client actually sends. The registry lists this one and nothing
+    // else, so using any other spelling here would test a quirk that never fires.
+    private static readonly PlaybackClientContext AffectedClient = new("Jellyfin for Android", "2.7.1", "Pixel", "device-1");
     private static readonly PlaybackClientContext UnaffectedClient = new("Jellyfin Web", "10.9.0", "Firefox", "device-2");
 
     [Fact]

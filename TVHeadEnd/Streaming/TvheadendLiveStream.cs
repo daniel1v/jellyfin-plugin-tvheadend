@@ -32,7 +32,7 @@ namespace TVHeadEnd.Streaming
         "Naming",
         "CA1711:Identifiers should not have incorrect suffix",
         Justification = "This is a Jellyfin ILiveStream, and 'stream' is what both Jellyfin and the domain call it.")]
-    public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IAsyncDisposable
+    public sealed class TvheadendLiveStream : ILiveStream, ITvheadendStream, IDirectStreamProvider, IAsyncDisposable
     {
         private const int StreamBufferSize = 131072;
 
@@ -63,6 +63,18 @@ namespace TVHeadEnd.Streaming
         /// </summary>
         private static readonly TimeSpan AssessmentTimeLimit = TimeSpan.FromSeconds(3);
 
+        /// <summary>
+        /// How long a connected stream has to produce something playable before the open fails.
+        /// </summary>
+        /// <remarks>
+        /// Connecting proves only that TVHeadend accepted the subscription. A profile that emits
+        /// nothing usable -- a broken transcoder, a container the bootstrap cannot find an entry
+        /// point in -- would otherwise leave the caller waiting on a task that never completes,
+        /// which reaches the client as a spinner that never resolves. Failing is recoverable;
+        /// hanging is not.
+        /// </remarks>
+        private static readonly TimeSpan StartupTimeLimit = TimeSpan.FromSeconds(20);
+
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger _logger;
         private readonly CancellationTokenSource _lifetime = new();
@@ -74,9 +86,8 @@ namespace TVHeadEnd.Streaming
         private readonly StreamBootstrapIndex _transportBootstrap = new();
         private readonly string _bufferPath;
         private readonly int _bufferSizeMegabytes;
-        private readonly string? _legacyNormalizerFfmpegPath;
+        private readonly TimeSpan _startupTimeLimit;
 
-        private Legacy.LegacyH264LiveNormalizer? _legacyNormalizer;
         private TransportStreamConditioner? _conditioner;
         private VideoRandomAccessProbe? _probe;
         private Task? _feedTask;
@@ -101,10 +112,9 @@ namespace TVHeadEnd.Streaming
         /// </param>
         /// <param name="httpClientFactory">The HTTP client factory.</param>
         /// <param name="logger">The logger.</param>
-        /// <param name="legacyNormalizerFfmpegPath">
-        /// Set only while no TVHeadend profile fills the IDR normalization role, in which case
-        /// the broadcast is run through the plugin's own transitional encoder. Everything below
-        /// this point then sees an ordinary transport stream and does not know the difference.
+        /// <param name="startupTimeLimit">
+        /// How long a connected stream has to produce something playable. Defaults to the
+        /// production bound; a test sets it shorter.
         /// </param>
         public TvheadendLiveStream(
             string channelId,
@@ -117,7 +127,7 @@ namespace TVHeadEnd.Streaming
             bool describedAlready,
             IHttpClientFactory httpClientFactory,
             ILogger logger,
-            string? legacyNormalizerFfmpegPath = null)
+            TimeSpan? startupTimeLimit = null)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
             ArgumentException.ThrowIfNullOrEmpty(variantRole);
@@ -135,7 +145,7 @@ namespace TVHeadEnd.Streaming
             _httpClientFactory = httpClientFactory;
             _describedAlready = describedAlready;
             _logger = logger;
-            _legacyNormalizerFfmpegPath = legacyNormalizerFfmpegPath;
+            _startupTimeLimit = startupTimeLimit ?? StartupTimeLimit;
 
             UniqueId = Guid.NewGuid().ToString("N");
             _bufferPath = bufferPath;
@@ -172,6 +182,9 @@ namespace TVHeadEnd.Streaming
         /// <summary>
         /// Gets what the transport layer observed while receiving the stream.
         /// </summary>
+        public string MediaPath => Buffer?.Path ?? string.Empty;
+
+        /// <inheritdoc />
         public Media.TransportObservation Observation
             => Media.TransportObservation.From(_conditioner, _probe, _isTransportStream == true);
 
@@ -227,22 +240,17 @@ namespace TVHeadEnd.Streaming
             request.Dispose();
             var upstream = await response.Content.ReadAsStreamAsync(_lifetime.Token).ConfigureAwait(false);
 
-            if (!string.IsNullOrEmpty(_legacyNormalizerFfmpegPath))
-            {
-                _legacyNormalizer = Legacy.LegacyH264LiveNormalizer.Start(
-                    upstream,
-                    _legacyNormalizerFfmpegPath,
-                    _logger,
-                    $"channel {ChannelId} {VariantRole}",
-                    _lifetime.Token);
-                upstream = _legacyNormalizer.Output;
-            }
-
             _feedTask = Feed(upstream, [client, response], _lifetime.Token);
 
             try
             {
-                await _ready.Task.WaitAsync(openCancellationToken).ConfigureAwait(false);
+                await _ready.Task.WaitAsync(_startupTimeLimit, openCancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                await _lifetime.CancelAsync().ConfigureAwait(false);
+                throw new TimeoutException(FormattableString.Invariant(
+                    $"TVHeadend accepted the subscription for channel {ChannelId} as {VariantRole}, but produced nothing playable within {_startupTimeLimit.TotalSeconds:0} seconds."));
             }
             catch
             {
@@ -310,11 +318,6 @@ namespace TVHeadEnd.Streaming
                 {
                     _logger.LogDebug(exception, "TVHeadend live stream {UniqueId}: the feed ended with an error", UniqueId);
                 }
-            }
-
-            if (_legacyNormalizer is not null)
-            {
-                await _legacyNormalizer.DisposeAsync().ConfigureAwait(false);
             }
 
             if (Buffer is not null)
@@ -404,9 +407,12 @@ namespace TVHeadEnd.Streaming
                             }
                             else
                             {
-                                Buffer.Bootstrap = new MatroskaBootstrapIndex();
-                                _logger.LogInformation(
-                                    "TVHeadend live stream {UniqueId}: channel {ChannelId} is not an MPEG-TS stream, so it is passed through unconditioned",
+                                // The native role is the broadcast as received, which is a
+                                // transport stream. Anything else is passed through unchanged and
+                                // read from the start of the window, because there is nothing here
+                                // that knows where a safe entry point in it would be.
+                                _logger.LogWarning(
+                                    "TVHeadend live stream {UniqueId}: channel {ChannelId} did not arrive as MPEG-TS, so it is passed through unconditioned. Check that the native stream profile forwards the broadcast untouched",
                                     UniqueId,
                                     ChannelId);
                             }
@@ -498,28 +504,50 @@ namespace TVHeadEnd.Streaming
                 return;
             }
 
-            var buffered = Buffer.WritePosition;
-            var elapsed = Stopwatch.GetElapsedTime(_firstByteTimestamp);
-
-            // The verdict on how the video offers random access has to be in before anything is
-            // published, because it decides which variant a client is given -- and it is taken
-            // from this tune, never from what was stored, so that a broadcaster changing its GOP
-            // structure is noticed rather than served from a stale conclusion.
-            if (_isTransportStream == true
-                && probe.Kind == H264RandomAccessKind.Unknown
-                && elapsed < AssessmentTimeLimit)
-            {
-                return;
-            }
-
-            var enough = _describedAlready
-                ? buffered >= MinimumStartBufferSize
-                : buffered >= AnalysisBufferSize && elapsed >= AnalysisBufferDuration;
-
-            if (enough)
+            if (ShouldPublish(
+                _describedAlready,
+                _isTransportStream == true,
+                probe.Kind,
+                Buffer.WritePosition,
+                Stopwatch.GetElapsedTime(_firstByteTimestamp)))
             {
                 _ready.TrySetResult();
             }
+        }
+
+        /// <summary>
+        /// Decides whether enough is known and enough is buffered to hand the stream over.
+        /// </summary>
+        /// <param name="describedAlready">Whether a current description of this form is stored.</param>
+        /// <param name="isTransportStream">Whether the arriving stream is MPEG-TS.</param>
+        /// <param name="randomAccess">What the probe has concluded so far.</param>
+        /// <param name="buffered">How much has been written to the buffer.</param>
+        /// <param name="elapsed">How long since the first byte arrived.</param>
+        /// <returns>Whether the stream may be published.</returns>
+        internal static bool ShouldPublish(
+            bool describedAlready,
+            bool isTransportStream,
+            H264RandomAccessKind randomAccess,
+            long buffered,
+            TimeSpan elapsed)
+        {
+            // The verdict on how the video offers random access decides which variant a client is
+            // given, so a channel nothing is known about waits for it. A channel that has been
+            // described does not: the stored fact already chose the variant, and holding the
+            // picture back to re-derive the same conclusion costs seconds on every tune of every
+            // ordinary channel. The probe keeps running either way, and a broadcaster that
+            // changes its GOP structure is noticed when the description is updated after this.
+            if (!describedAlready
+                && isTransportStream
+                && randomAccess == H264RandomAccessKind.Unknown
+                && elapsed < AssessmentTimeLimit)
+            {
+                return false;
+            }
+
+            return describedAlready
+                ? buffered >= MinimumStartBufferSize
+                : buffered >= AnalysisBufferSize && elapsed >= AnalysisBufferDuration;
         }
     }
 }

@@ -35,8 +35,8 @@ namespace TVHeadEnd.Configuration
             HideRecordingsChannel = false;
             EnableSubsMaudios = false;
             NativeStreamProfile = TvheadendStreamProfiles.DefaultNativeProfile;
-            Mpeg2H264CompatibilityProfile = "jellyfin-h264";
-            H264IdrNormalizationProfile = "jellyfin-idr";
+            Mpeg2H264CompatibilityProfile = string.Empty;
+            H264IdrNormalizationProfile = string.Empty;
             AnalyzeChannelFormatsOnRefresh = false;
             EnableLegacyH264Fallback = true;
             LiveBufferSizeMegabytes = 512;

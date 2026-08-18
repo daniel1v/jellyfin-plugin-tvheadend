@@ -1,29 +1,31 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Legacy;
 
-namespace TVHeadEnd.Legacy
+namespace TVHeadEnd.Streaming
 {
     /// <summary>
-    /// Runs a live broadcast through the plugin's own encoder so it gains real IDR access points.
+    /// Runs a live stream through FFmpeg on its way into the buffer.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Transitional, and deliberately isolated: this exists only for as long as no TVHeadend
-    /// profile fills the <c>H264IdrNormalization</c> role. Everything above it -- the variant
-    /// policy, the media descriptors, the buffer -- sees an ordinary MPEG-TS source and cannot
-    /// tell which side produced it. Once TVHeadend does the job, deleting this class and the one
-    /// branch that constructs it is the whole removal.
+    /// Used for two jobs that differ only in their arguments: rewrapping a compatibility stream
+    /// TVHeadend produced in the wrong container, and -- transitionally -- encoding one
+    /// TVHeadend cannot produce at all.
     /// </para>
     /// <para>
-    /// The encoder is fed the native subscription that is already open rather than a second one,
-    /// which is what keeps this from costing a tuner.
+    /// Everything above it -- the variant policy, the media descriptors, the buffer -- sees an
+    /// ordinary MPEG-TS source and cannot tell that FFmpeg was involved. The stream it is fed is
+    /// the subscription that is already open rather than a second one, so this never costs a
+    /// tuner.
     /// </para>
     /// </remarks>
-    internal sealed class LegacyH264LiveNormalizer : IAsyncDisposable
+    internal sealed class FfmpegStreamPipe : IAsyncDisposable
     {
         private const int FeedBufferSize = 65536;
 
@@ -33,7 +35,7 @@ namespace TVHeadEnd.Legacy
         private readonly Stream _source;
         private bool _disposed;
 
-        private LegacyH264LiveNormalizer(
+        private FfmpegStreamPipe(
             TranscodeSession session,
             Stream source,
             ILogger logger,
@@ -50,29 +52,32 @@ namespace TVHeadEnd.Legacy
         public Stream Output { get; private set; } = null!;
 
         /// <summary>
-        /// Starts the encoder around a source stream.
+        /// Starts FFmpeg around a source stream.
         /// </summary>
-        /// <param name="source">The native broadcast, which this takes ownership of reading.</param>
+        /// <param name="source">The upstream body, which this takes ownership of reading.</param>
         /// <param name="ffmpegPath">The FFmpeg executable.</param>
+        /// <param name="arguments">What FFmpeg is asked to do, one argument per element.</param>
         /// <param name="logger">The logger.</param>
         /// <param name="label">What this session is for, for the log.</param>
         /// <param name="cancellationToken">Cancels the encoder and the feed.</param>
         /// <returns>The running normalizer.</returns>
-        public static LegacyH264LiveNormalizer Start(
+        public static FfmpegStreamPipe Start(
             Stream source,
             string ffmpegPath,
+            IReadOnlyList<string> arguments,
             ILogger logger,
             string label,
             CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(source);
             ArgumentException.ThrowIfNullOrEmpty(ffmpegPath);
+            ArgumentNullException.ThrowIfNull(arguments);
             ArgumentNullException.ThrowIfNull(logger);
 
             Pipe? output = null;
             var session = TranscodeSession.Start(
                 ffmpegPath,
-                LegacyH264Encoder.BuildArguments(),
+                arguments,
                 async (chunk, token) =>
                 {
                     await output!.Writer.WriteAsync(chunk, token).ConfigureAwait(false);
@@ -81,10 +86,10 @@ namespace TVHeadEnd.Legacy
                 label,
                 cancellationToken);
 
-            var normalizer = new LegacyH264LiveNormalizer(session, source, logger, cancellationToken);
-            output = normalizer._pipe;
-            normalizer.Output = normalizer._pipe.Reader.AsStream();
-            return normalizer;
+            var pipe = new FfmpegStreamPipe(session, source, logger, cancellationToken);
+            output = pipe._pipe;
+            pipe.Output = pipe._pipe.Reader.AsStream();
+            return pipe;
         }
 
         /// <inheritdoc />

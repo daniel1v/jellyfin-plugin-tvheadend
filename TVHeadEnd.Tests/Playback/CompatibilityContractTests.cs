@@ -47,15 +47,15 @@ public class CompatibilityContractTests
     }
 
     [Fact]
-    public void MatroskaSatisfiesNoRoleHoweverGoodTheVideoIs()
+    public void SomethingOtherThanWhatIsPublishedSatisfiesNoRole()
     {
-        // Jellyfin serves a direct-played live stream with a hardcoded content type of
-        // video/mp2t. A player that believes it finds no sync byte in a Matroska body and never
-        // renders a frame, and the plugin cannot correct the declaration.
-        var observed = Observed("h264", H264RandomAccessKind.NotApplicable) with
+        // The compatibility roles are published as Matroska because that is what TVHeadend can
+        // produce. A profile that emitted MPEG-TS instead would be described to clients as
+        // Matroska and decode as nothing, so it is rejected rather than quietly served.
+        var observed = Observed("h264", H264RandomAccessKind.Idr) with
         {
-            Container = "matroska,webm",
-            IsTransportStream = false,
+            Container = "mpegts,ts",
+            IsTransportStream = true,
         };
 
         Assert.False(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.Mpeg2H264Compatibility, observed));
@@ -63,13 +63,21 @@ public class CompatibilityContractTests
     }
 
     [Fact]
-    public void ATransportStreamWithoutH264SatisfiesNothing()
+    public void MatroskaWithoutProvenAccessPointsDoesNotSatisfyTheNormalizingRole()
     {
-        var observed = Observed("mpeg2video", H264RandomAccessKind.NotApplicable) with
-        {
-            Container = "matroska,webm",
-            IsTransportStream = false,
-        };
+        // Nothing here can show that a Matroska stream carries real IDR frames -- the scanner
+        // reads PMT-declared stream types and Matroska has none. Marking the role proven anyway
+        // would stand the transitional encoder down on evidence that was never gathered.
+        var observed = Observed("h264", H264RandomAccessKind.Unknown);
+
+        Assert.True(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.Mpeg2H264Compatibility, observed));
+        Assert.False(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.H264IdrNormalization, observed));
+    }
+
+    [Fact]
+    public void AContainerWithoutH264SatisfiesNothing()
+    {
+        var observed = Observed("mpeg2video", H264RandomAccessKind.NotApplicable);
 
         Assert.False(JellyfinMediaSourceMapper.SatisfiesContract(PlaybackVariant.Mpeg2H264Compatibility, observed));
     }
@@ -129,14 +137,60 @@ public class CompatibilityContractTests
         Assert.Null(video.BitRate);
     }
 
+
+    [Fact]
+    public void AnUnprovenCompatibilityVariantClaimsNoAudioFactsAProfileCouldChange()
+    {
+        // A compatibility profile may copy the broadcast audio or re-encode it, and which it
+        // does is not knowable before one has been produced. Codec, channel count, layout and
+        // sample rate are exactly the facts a client decides on, so stating the broadcast's
+        // values would be stating something that may not be true of this output.
+        var native = Observed("mpeg2video", H264RandomAccessKind.NotApplicable) with
+        {
+            Streams =
+            [
+                new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "mpeg2video", Width = 720, Height = 576 },
+                new MediaStream
+                {
+                    Type = MediaStreamType.Audio,
+                    Index = 1,
+                    Codec = "mp2",
+                    Language = "deu",
+                    Title = "Deutsch",
+                    Channels = 2,
+                    ChannelLayout = "stereo",
+                    SampleRate = 48000,
+                },
+            ],
+        };
+
+        var source = JellyfinMediaSourceMapper.CreatePending(
+            "42",
+            new VariantOffer(PlaybackVariant.Mpeg2H264Compatibility, true),
+            native,
+            observedVariant: null,
+            itemId: null,
+            describeStreams: true);
+
+        var audio = System.Linq.Enumerable.Single(source.MediaStreams, stream => stream.Type == MediaStreamType.Audio);
+
+        // The track exists and is still recognisable to a viewer choosing between languages.
+        Assert.Equal("deu", audio.Language);
+        Assert.Equal("Deutsch", audio.Title);
+
+        Assert.Null(audio.Codec);
+        Assert.Null(audio.Channels);
+        Assert.Null(audio.ChannelLayout);
+        Assert.Null(audio.SampleRate);
+    }
     private static ChannelMediaDescriptor Observed(string codec, H264RandomAccessKind randomAccess)
         => new()
         {
             ChannelId = "42",
             VariantRole = "Mpeg2H264Compatibility",
-            Container = "mpegts,ts",
+            Container = "matroska,webm",
             RandomAccess = randomAccess,
-            IsTransportStream = true,
+            IsTransportStream = false,
             Streams = [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = codec }],
         };
 }

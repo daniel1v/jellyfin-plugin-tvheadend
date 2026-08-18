@@ -28,6 +28,12 @@ namespace TVHeadEnd.Streaming
         /// </remarks>
         public const string TransportStream = "mpegts,ts";
 
+        /// <summary>
+        /// What FFmpeg reports for a Matroska stream, which is what the TVHeadend compatibility
+        /// profiles produce.
+        /// </summary>
+        public const string Matroska = "matroska,webm";
+
         private const int TransportStreamPacketLength = 188;
         private const byte SyncByte = 0x47;
 

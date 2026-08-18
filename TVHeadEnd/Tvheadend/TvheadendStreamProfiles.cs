@@ -78,6 +78,47 @@ namespace TVHeadEnd.Tvheadend
         }
 
         /// <summary>
+        /// Reports whether an opened stream of a role was proven to keep the role's promise.
+        /// </summary>
+        /// <remarks>
+        /// Stricter than <see cref="IsUsable"/>, and the question to ask before standing down
+        /// something that already works: a configured, discovered profile is only a claim until a
+        /// stream of it has been opened and inspected.
+        /// </remarks>
+        /// <param name="role">The role.</param>
+        /// <returns>Whether the role has been proven.</returns>
+        public bool IsValidated(StreamProfileRole role)
+        {
+            lock (_gate)
+            {
+                return _status.TryGetValue(role, out var status) && status.State == StreamProfileState.Validated;
+            }
+        }
+
+        /// <summary>
+        /// Marks a role as proven from what an earlier run recorded.
+        /// </summary>
+        /// <remarks>
+        /// Only honoured while the configured profile is still the one that was proven. Point a
+        /// role at a different profile and it starts again as an unproven claim.
+        /// </remarks>
+        /// <param name="role">The role.</param>
+        /// <param name="profileName">The profile the earlier run proved.</param>
+        public void RestoreValidation(StreamProfileRole role, string profileName)
+        {
+            lock (_gate)
+            {
+                if (!_status.TryGetValue(role, out var status)
+                    || !string.Equals(status.ProfileName, profileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                _status[role] = status with { State = StreamProfileState.Validated, Detail = null };
+            }
+        }
+
+        /// <summary>
         /// Records which profiles TVHeadend reports, so the settings page can say whether a
         /// configured name exists.
         /// </summary>
