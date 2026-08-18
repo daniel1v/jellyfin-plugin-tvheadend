@@ -160,7 +160,6 @@ public sealed class ChannelFormatPreAnalyzerTests : IDisposable
             NativeProfile = nativeProfile,
             Container = "mpegts,ts",
             VideoStreamType = 0x1B,
-            RandomAccess = H264RandomAccessKind.Idr,
             IsTransportStream = true,
             Streams = [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" }],
         };

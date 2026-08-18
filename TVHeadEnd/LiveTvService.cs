@@ -13,6 +13,8 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.DataHelper;
 using TVHeadEnd.Helper;
@@ -57,7 +59,6 @@ namespace TVHeadEnd
         private readonly ChannelMediaDescriptorStore _descriptors;
         private readonly ChannelMediaAnalyzer _analyzer;
         private readonly ChannelFormatPreAnalyzer _preAnalyzer;
-        private readonly IPlaybackClientContextAccessor _clientContext;
         private readonly string _bufferDirectory;
 
         private readonly ILogger<LiveTvService> _logger;
@@ -73,8 +74,7 @@ namespace TVHeadEnd
             IConfigurationManager configurationManager,
             IServerApplicationHost applicationHost,
             ChannelMediaDescriptorStore descriptors,
-            StreamProfileValidationStore profileValidation,
-            IPlaybackClientContextAccessor clientContext)
+            StreamProfileValidationStore profileValidation)
         {
             // System.Diagnostics.StackTrace t = new System.Diagnostics.StackTrace();
             _logger = loggerFactory.CreateLogger<LiveTvService>();
@@ -94,7 +94,6 @@ namespace TVHeadEnd
             }
 
             _mediaEncoder = mediaEncoder;
-            _clientContext = clientContext;
             _analyzer = new ChannelMediaAnalyzer(new MediaInspector(mediaEncoder, _logger), _logger);
             _descriptors = descriptors;
             _profileValidation = profileValidation;
@@ -483,7 +482,7 @@ namespace TVHeadEnd
                 {
                     // Deliberately the native profile only: a compatibility profile would start a
                     // transcoder on the TVHeadend server for a channel nobody is watching.
-                    var stream = await OpenVariant(channelId, PlaybackVariant.Native, nativeProfile, token)
+                    var stream = await OpenRole(channelId, StreamProfileRole.Native, nativeProfile, token)
                         .ConfigureAwait(false);
                     try
                     {
@@ -522,54 +521,54 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Offers the variants of a channel, without opening anything.
+        /// Lists what forms of a channel Jellyfin may choose between.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// This must never cost a TVHeadend subscription: Jellyfin calls it during playback
         /// negotiation, and for every channel in a list. Everything it needs comes from what
         /// earlier tunes stored and from which stream profiles are configured.
+        /// </para>
+        /// <para>
+        /// The broadcast is always offered, and always first. A compatibility rendering is added
+        /// only where it could actually help -- an MPEG-2 broadcast, and a configured profile to
+        /// render it with. Which of them a client ends up with is Jellyfin's decision, made
+        /// against the device profile the client sent; nothing here inspects the caller.
+        /// </para>
         /// </remarks>
         /// <param name="channelId">The channel.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The variants on offer, native first.</returns>
+        /// <returns>The sources on offer, the broadcast first.</returns>
         public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
         {
             var profiles = _htsConnectionHandler.GetStreamProfiles();
             var nativeProfile = profiles.GetProfileName(StreamProfileRole.Native);
             var native = _descriptors.Get(channelId, nativeProfile);
 
-            var offers = PlaybackVariantPolicy.SelectVariants(
-                native,
-                GetVariantAvailability(profiles),
-                _clientContext.Current);
+            var sources = new List<MediaSourceInfo>
+            {
+                JellyfinMediaSourceMapper.CreatePending(channelId, StreamProfileRole.Native, native),
+            };
 
-            // The variant offered first answers to the channel's own item identifier as well.
-            // Clients that do not pick a source send that identifier back, and if nothing carries
-            // it the stream is never opened -- which is exactly what stopped every Android
-            // playback once the variants were given identifiers of their own.
-            var itemId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
-            var sources = offers
-                .Select((offer, index) => JellyfinMediaSourceMapper.CreatePending(
+            if (native is { IsMpeg2Video: true } && profiles.IsUsable(StreamProfileRole.Mpeg2H264Compatibility))
+            {
+                sources.Add(JellyfinMediaSourceMapper.CreatePending(
                     channelId,
-                    offer,
-                    native,
-                    _descriptors.Get(channelId, nativeProfile, offer.Variant.ToString()),
-                    index == 0 ? itemId : null,
-                    offers.Count > 1))
-                .ToList();
+                    StreamProfileRole.Mpeg2H264Compatibility,
+                    JellyfinMediaSourceMapper.ProjectCompatibility(native)));
+            }
 
             _logger.LogInformation(
-                "Live TV playback negotiation: channel {ChannelId} ({ChannelName}) offers {Offers} to {Client}",
+                "Live TV playback negotiation: channel {ChannelId} ({ChannelName}) offers {Offers}",
                 channelId,
                 _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>",
-                string.Join(", ", offers.Select(offer => offer.Variant.ToString())),
-                _clientContext.Current.Describe());
+                string.Join(", ", sources.Select(source => source.Name)));
 
             return Task.FromResult(sources);
         }
 
         /// <summary>
-        /// Opens a channel in the variant Jellyfin selected against the client's device profile.
+        /// Opens the form of a channel Jellyfin selected against the client's device profile.
         /// </summary>
         /// <param name="channelId">The channel to open.</param>
         /// <param name="streamId">The media source identifier Jellyfin selected.</param>
@@ -587,105 +586,75 @@ namespace TVHeadEnd
             var profiles = _htsConnectionHandler.GetStreamProfiles();
             var nativeProfile = profiles.GetProfileName(StreamProfileRole.Native);
 
-            // A client that chose a variant sends its identifier back. One that did not sends the
-            // channel's item identifier -- which Jellyfin strips to null before it reaches here
-            // -- and then it gets whatever was offered first.
-            var requested = PlaybackVariantId.Resolve(channelId, streamId)
-                ?? FirstOfferedVariant(channelId, nativeProfile, profiles);
+            // A client that chose a source sends its identifier back. Anything else -- including
+            // a client that names the channel's own item identifier, which no source carries --
+            // gets the broadcast.
+            var role = ChannelSourceId.Resolve(channelId, streamId) ?? StreamProfileRole.Native;
 
-            // The opened source has to answer to the same identifier the negotiation listed it
-            // under, because the client asks for it again by that identifier and Jellyfin matches
-            // the two by exact string comparison. Handing back a different one is answered with a
-            // null dereference deep inside the streaming helper.
-            var publishedId = string.IsNullOrEmpty(streamId)
-                ? _liveTvItemIdResolver.GetInternalChannelId(Name, channelId)
-                : streamId;
-
-            // Reuse is keyed by channel and role together, so a broadcast and a rendering of it
-            // can never be handed out for one another.
             var reusable = currentLiveStreams
-                .OfType<TvheadendLiveStream>()
-                .FirstOrDefault(stream => CanBeReusedFor(stream, channelId, requested));
+                .OfType<ITvheadendStream>()
+                .FirstOrDefault(stream => CanBeReusedFor(stream, channelId, role));
             if (reusable is not null)
             {
                 reusable.ConsumerCount++;
                 _logger.LogInformation(
                     "Live TV stream reuse: {Role} of channel {ChannelId} now has {ConsumerCount} consumers",
-                    reusable.VariantRole,
+                    reusable.Role,
                     channelId,
                     reusable.ConsumerCount);
+
+                // Rebuilt for every request. Jellyfin writes its verdict back onto the source it
+                // evaluated, and a shared stream hands the same object to the next caller.
+                PublishOpenedStream(channelId, role, reusable, _descriptors.Get(channelId, nativeProfile), streamId);
                 return reusable;
             }
 
             var stopwatch = Stopwatch.StartNew();
-            ITvheadendStream stream;
-            try
-            {
-                stream = await OpenVariant(channelId, requested, nativeProfile, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (requested != PlaybackVariant.Native
-                && exception is not OperationCanceledException)
-            {
-                // A compatibility profile that cannot be opened is a profile that does not work,
-                // whatever the settings say. Marking it so lets the policy pick again from what
-                // is left -- which for the normalization role means the transitional encoder, and
-                // otherwise the broadcast -- instead of failing the tune outright.
-                _logger.LogWarning(
-                    exception,
-                    "Live TV stream start: channel {ChannelId} could not be opened as {Role}, so the role is dropped and another form is used",
-                    channelId,
-                    requested);
-
-                profiles.RecordValidation(ToRole(requested), false, "the stream could not be opened");
-                _profileValidation.Record(ToRole(requested), profiles.GetProfileName(ToRole(requested)), false);
-
-                requested = FirstOfferedVariant(channelId, nativeProfile, profiles);
-                stream = await OpenVariant(channelId, requested, nativeProfile, cancellationToken).ConfigureAwait(false);
-            }
-
+            var stream = await OpenRole(channelId, role, nativeProfile, cancellationToken).ConfigureAwait(false);
             var openedAt = stopwatch.ElapsedMilliseconds;
 
             try
             {
-                var observation = stream.Observation;
                 var descriptor = await DescribeOpenedStream(
                     channelId,
-                    requested,
+                    role,
                     nativeProfile,
                     stream,
-                    observation,
                     cancellationToken).ConfigureAwait(false);
 
-                // Only one thing forces a change of variant mid-open, and only towards safety: a
-                // broadcast that turns out to offer no place an affected client's decoder can
-                // start. The corrected description is stored either way.
-                var reconciled = PlaybackVariantPolicy.ReconcileAfterOpen(
-                    requested,
-                    observation.RandomAccess,
-                    GetVariantAvailability(profiles),
-                    _clientContext.Current);
-
-                if (reconciled != requested)
+                // A compatibility profile that does not keep its promise is never published: the
+                // client would be handed something no better than the broadcast, described as
+                // something else. It is marked broken so the role stops being offered, and the
+                // failure surfaces as an ordinary open failure for Jellyfin to fall back from.
+                if (role != StreamProfileRole.Native
+                    && !JellyfinMediaSourceMapper.SatisfiesContract(role, descriptor))
                 {
-                    _logger.LogInformation(
-                        "Live TV stream start: channel {ChannelId} signals random access without IDR frames and {Client} cannot start on that, so {Role} is used instead",
-                        channelId,
-                        _clientContext.Current.Describe(),
-                        reconciled);
+                    _logger.LogWarning(
+                        "Live TV stream start: the TVHeadend profile for {Role} produced {Container}/{Codec}, which does not satisfy the role. It will not be offered again until the profile is corrected",
+                        role,
+                        descriptor?.Container ?? "<unknown>",
+                        descriptor?.VideoCodec ?? "<unknown>");
 
+                    RecordProfileValidation(profiles, role, false, "the output did not satisfy the role");
                     await stream.DisposeAsync().ConfigureAwait(false);
-                    return await OpenReconciled(channelId, reconciled, nativeProfile, publishedId, cancellationToken)
-                        .ConfigureAwait(false);
+
+                    throw new InvalidOperationException(FormattableString.Invariant(
+                        $"The TVHeadend profile for {role} did not produce what the role promises."));
                 }
 
-                PublishOpenedStream(channelId, requested, stream, descriptor, publishedId);
+                if (role != StreamProfileRole.Native)
+                {
+                    RecordProfileValidation(profiles, role, true, null);
+                }
+
+                PublishOpenedStream(channelId, role, stream, descriptor, streamId);
                 stream.OriginalStreamId = streamId;
 
                 _logger.LogInformation(
                     "Live TV stream start: channel {ChannelId} handed to Jellyfin after {ElapsedMilliseconds} ms as {Role} (opening took {OpenMilliseconds} ms)",
                     channelId,
                     stopwatch.ElapsedMilliseconds,
-                    requested,
+                    role,
                     openedAt);
 
                 return stream;
@@ -698,7 +667,7 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Opens one variant of a channel, reading the TVHeadend profile its role names.
+        /// Opens one form of a channel, reading the TVHeadend profile its role names.
         /// </summary>
         /// <remarks>
         /// The two roles are served by different machinery on purpose. The broadcast is shared,
@@ -707,9 +676,9 @@ namespace TVHeadEnd
         /// first byte of a transcoder started for that session, so it is spooled and served as it
         /// arrives.
         /// </remarks>
-        private async Task<ITvheadendStream> OpenVariant(
+        private async Task<ITvheadendStream> OpenRole(
             string channelId,
-            PlaybackVariant variant,
+            StreamProfileRole role,
             string? nativeProfile,
             CancellationToken cancellationToken)
         {
@@ -728,17 +697,20 @@ namespace TVHeadEnd
             var profiles = _htsConnectionHandler.GetStreamProfiles();
             await EnsureProfilesDiscovered(endpoint, profiles, cancellationToken).ConfigureAwait(false);
 
-            if (variant == PlaybackVariant.Native)
+            var upstreamUrl = endpoint.CreateTicketedStreamUrl(ticket.Url, profiles.GetProfileName(role));
+            var spoolPath = Path.Combine(_bufferDirectory, $"tvheadend-{Guid.NewGuid():N}");
+
+            if (role == StreamProfileRole.Native)
             {
                 var broadcast = new TvheadendLiveStream(
                     channelId,
-                    variant.ToString(),
-                    endpoint.CreateTicketedStreamUrl(ticket.Url, profiles.GetProfileName(StreamProfileRole.Native)),
+                    role,
+                    upstreamUrl,
                     endpoint.CreateHeaders(),
-                    JellyfinMediaSourceMapper.CreatePending(channelId, new VariantOffer(variant, true), null),
-                    Path.Combine(_bufferDirectory, $"tvheadend-{Guid.NewGuid():N}"),
+                    JellyfinMediaSourceMapper.CreatePending(channelId, role, null),
+                    spoolPath,
                     _htsConnectionHandler.GetLiveBufferSizeMegabytes(),
-                    _descriptors.Get(channelId, nativeProfile, VariantRoleName(variant)) is not null,
+                    _descriptors.Get(channelId, nativeProfile) is not null,
                     _httpClientFactory,
                     _logger);
 
@@ -746,94 +718,56 @@ namespace TVHeadEnd
                 return broadcast;
             }
 
-            // Where the normalization role is asked for and no TVHeadend profile has been proven
-            // to fill it, the broadcast is fetched natively and re-encoded here instead.
-            var normalizeHere = variant == PlaybackVariant.H264IdrNormalization
-                && LegacyNormalizationAvailable(profiles);
-
-            var profile = profiles.GetProfileName(normalizeHere ? StreamProfileRole.Native : ToRole(variant));
-
-            if (normalizeHere)
-            {
-                _logger.LogInformation(
-                    "Live TV stream start: channel {ChannelId} is normalized by the plugin's transitional encoder, because no TVHeadend profile has been proven to fill the {Role} role",
-                    channelId,
-                    StreamProfileRole.H264IdrNormalization);
-            }
-
             var rendering = new CompatibilityLiveStream(
                 channelId,
-                variant.ToString(),
-                normalizeHere ? CompatibilityContainer.TransportStream : CompatibilityContainer.Matroska,
-                endpoint.CreateTicketedStreamUrl(ticket.Url, profile),
+                role,
+                CompatibilityContainer.Matroska,
+                upstreamUrl,
                 endpoint.CreateHeaders(),
-                JellyfinMediaSourceMapper.CreatePending(channelId, new VariantOffer(variant, true), null),
-                Path.Combine(_bufferDirectory, $"tvheadend-{Guid.NewGuid():N}"),
+                JellyfinMediaSourceMapper.CreatePending(channelId, role, null),
+                spoolPath,
                 _httpClientFactory,
-                _logger,
-                normalizeHere ? _mediaEncoder.EncoderPath : null,
-                normalizeHere ? Legacy.LegacyH264Encoder.BuildArguments() : null);
+                _logger);
 
             await rendering.Open(cancellationToken).ConfigureAwait(false);
             return rendering;
         }
 
-        private async Task<ILiveStream> OpenReconciled(
-            string channelId,
-            PlaybackVariant variant,
-            string? nativeProfile,
-            string publishedId,
-            CancellationToken cancellationToken)
-        {
-            var stream = await OpenVariant(channelId, variant, nativeProfile, cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var descriptor = await DescribeOpenedStream(
-                    channelId,
-                    variant,
-                    nativeProfile,
-                    stream,
-                    stream.Observation,
-                    cancellationToken).ConfigureAwait(false);
-
-                PublishOpenedStream(channelId, variant, stream, descriptor, publishedId);
-                stream.OriginalStreamId = publishedId;
-                return stream;
-            }
-            catch
-            {
-                await stream.DisposeAsync().ConfigureAwait(false);
-                throw;
-            }
-        }
-
         /// <summary>
-        /// Analyses what an opened stream actually contains and stores it.
+        /// Establishes what an opened stream contains.
         /// </summary>
         /// <remarks>
-        /// The analysis reads the local buffer, never the upstream channel. For a compatibility
-        /// role the result is also checked against what the role promises, and the role is marked
-        /// invalid if the configured TVHeadend profile does not deliver it.
+        /// The broadcast is described once and the description kept: an unchanged PMT means the
+        /// same elementary streams, and re-deriving that on every tune costs seconds for nothing.
+        /// A compatibility rendering is inspected every time, because what it is depends on a
+        /// TVHeadend profile this plugin does not control and cannot see.
         /// </remarks>
         private async Task<ChannelMediaDescriptor?> DescribeOpenedStream(
             string channelId,
-            PlaybackVariant variant,
+            StreamProfileRole role,
             string? nativeProfile,
             ITvheadendStream stream,
-            TransportObservation observation,
             CancellationToken cancellationToken)
         {
-            var role = VariantRoleName(variant);
-            var stored = _descriptors.Get(channelId, nativeProfile, role);
+            if (role != StreamProfileRole.Native)
+            {
+                return await _analyzer.Analyze(
+                    channelId,
+                    nativeProfile,
+                    stream.MediaPath,
+                    stream.Observation,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            var observation = stream.Observation;
+            var stored = _descriptors.Get(channelId, nativeProfile);
             if (stored is not null && stored.MatchesProgram(observation.ProgramSignature))
             {
                 _logger.LogInformation(
                     "Live TV stream start: reused the stored description of channel {ChannelId}; the broadcast still announces the same elementary streams",
                     channelId);
 
-                // The random access verdict always comes from this tune, even when everything
-                // else is reused: an identical PMT proves nothing about the GOP structure.
-                return stored with { RandomAccess = observation.RandomAccess };
+                return stored;
             }
 
             var descriptor = await _analyzer.Analyze(
@@ -842,80 +776,36 @@ namespace TVHeadEnd
                 stream.MediaPath,
                 observation,
                 cancellationToken).ConfigureAwait(false);
-            if (descriptor is null)
+            if (descriptor is not null)
             {
-                return null;
-            }
-
-            descriptor = descriptor with { VariantRole = role };
-            _descriptors.Record(descriptor);
-
-            // What the plugin's own transitional encoder produces says nothing about the
-            // TVHeadend profile of that role, and recording it as validation would report a
-            // profile as proven that was never used.
-            var profiles = _htsConnectionHandler.GetStreamProfiles();
-            if (variant != PlaybackVariant.Native
-                && !(variant == PlaybackVariant.H264IdrNormalization && LegacyNormalizationAvailable(profiles)))
-            {
-                var satisfies = JellyfinMediaSourceMapper.SatisfiesContract(variant, descriptor);
-                profiles.RecordValidation(
-                    ToRole(variant),
-                    satisfies,
-                    satisfies ? null : $"produced {descriptor.VideoCodec} with {descriptor.RandomAccess} random access");
-                _profileValidation.Record(ToRole(variant), profiles.GetProfileName(ToRole(variant)), satisfies);
-
-                if (!satisfies)
-                {
-                    _logger.LogWarning(
-                        "Live TV stream start: the TVHeadend profile for {Role} produced {Codec} with {RandomAccess} random access, which does not satisfy the role. It will not be offered again until the profile is corrected",
-                        variant,
-                        descriptor.VideoCodec,
-                        descriptor.RandomAccess);
-                }
+                _descriptors.Record(descriptor);
             }
 
             return descriptor;
         }
 
         /// <summary>
-        /// Points the opened stream's media source at its buffer.
+        /// Points the opened stream's media source at what serves it.
         /// </summary>
         /// <remarks>
-        /// <para>
         /// The source keeps the identifier the caller opened it with. Handing back a different
         /// one leaves the client asking for a source that no later negotiation lists, and
         /// Jellyfin answers that by dereferencing null while preparing the stream.
-        /// </para>
-        /// <para>
-        /// A recovery-point broadcast served natively to a client that cannot cold-start one is
-        /// not offered for direct play. Jellyfin then transcodes it, which is no cure -- it
-        /// copies the video -- but handing the client a source it cannot start is not one
-        /// either. The cure is the normalized variant; this only keeps the broken pairing from
-        /// winning by default.
-        /// </para>
         /// </remarks>
         private void PublishOpenedStream(
             string channelId,
-            PlaybackVariant variant,
+            StreamProfileRole role,
             ITvheadendStream stream,
             ChannelMediaDescriptor? descriptor,
             string requestedId)
         {
-            var supportsDirectPlay = variant != PlaybackVariant.Native
-                || descriptor?.RandomAccess != H264RandomAccessKind.RecoveryOpenGop
-                || !PlaybackQuirkPolicy.Applies(_clientContext.Current, PlaybackQuirk.H264DvbRecoveryOpenGopColdStart);
-
-            // The container has to be what the stream actually delivers: the broadcast is MPEG-TS,
-            // and a compatibility rendering is whatever produced it -- Matroska from TVHeadend,
-            // MPEG-TS from the transitional encoder. Jellyfin reads the content type off the end
-            // of this URL, so a wrong answer here is a client that decodes nothing.
             var container = stream is CompatibilityLiveStream compatibility
                 ? compatibility.Container
                 : CompatibilityContainer.TransportStream;
 
             stream.MediaSource = JellyfinMediaSourceMapper.CreateOpened(
                 channelId,
-                new VariantOffer(variant, supportsDirectPlay),
+                role,
                 descriptor,
                 stream.MediaPath,
                 _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
@@ -929,6 +819,110 @@ namespace TVHeadEnd
             {
                 stream.MediaSource.Id = requestedId;
             }
+
+            LogPublishedSource(channelId, role, stream.MediaSource);
+        }
+
+        private void RecordProfileValidation(
+            TvheadendStreamProfiles profiles,
+            StreamProfileRole role,
+            bool satisfies,
+            string? detail)
+        {
+            profiles.RecordValidation(role, satisfies, detail);
+            _profileValidation.Record(role, profiles.GetProfileName(role), satisfies);
+        }
+
+        /// <summary>
+        /// Writes down the finished media source, exactly as Jellyfin will evaluate it.
+        /// </summary>
+        /// <remarks>
+        /// Every wrong playback decision so far has come from a field that was not what it was
+        /// believed to be. This prints the finished thing once, so the next disagreement between
+        /// what was intended and what was published is a line in the log rather than an
+        /// investigation. TVHeadend URLs and credentials are not part of it.
+        /// </remarks>
+        private void LogPublishedSource(string channelId, StreamProfileRole role, MediaSourceInfo source)
+        {
+            if (!_logger.IsEnabled(LogLevel.Debug))
+            {
+                return;
+            }
+
+            var video = source.MediaStreams?.FirstOrDefault(stream => stream.Type == MediaStreamType.Video);
+            var audio = source.MediaStreams?.Where(stream => stream.Type == MediaStreamType.Audio).ToList() ?? [];
+            var subtitles = source.MediaStreams?.Where(stream => stream.Type == MediaStreamType.Subtitle).ToList() ?? [];
+
+            _logger.LogDebug(
+                "Live TV published source: channel {ChannelId} {Role} id={SourceId} container={Container} "
+                + "protocol={Protocol} path={Path} infinite={IsInfiniteStream} requiresOpening={RequiresOpening} "
+                + "directPlay={SupportsDirectPlay} directStream={SupportsDirectStream} transcode={SupportsTranscoding} "
+                + "video={VideoCodec} {VideoProfile}@{VideoLevel} {Width}x{Height} {FrameRate}fps interlaced={Interlaced} "
+                + "audio=[{AudioCodecs}] defaultAudio={DefaultAudio} subtitles=[{SubtitleCodecs}]",
+                channelId,
+                role,
+                source.Id,
+                source.Container ?? "<none>",
+                source.Protocol,
+                DescribePath(source),
+                source.IsInfiniteStream,
+                source.RequiresOpening,
+                source.SupportsDirectPlay,
+                source.SupportsDirectStream,
+                source.SupportsTranscoding,
+                video?.Codec ?? "<none>",
+                video?.Profile ?? "<none>",
+                video?.Level?.ToString(CultureInfo.InvariantCulture) ?? "<none>",
+                video?.Width?.ToString(CultureInfo.InvariantCulture) ?? "?",
+                video?.Height?.ToString(CultureInfo.InvariantCulture) ?? "?",
+                video?.RealFrameRate?.ToString("0.###", CultureInfo.InvariantCulture) ?? "?",
+                video?.IsInterlaced,
+                string.Join(", ", audio.Select(stream => $"{stream.Index}:{stream.Codec}/{stream.Language}")),
+                source.DefaultAudioStreamIndex?.ToString(CultureInfo.InvariantCulture) ?? "<none>",
+                string.Join(", ", subtitles.Select(stream => $"{stream.Index}:{stream.Codec}")));
+        }
+
+        /// <summary>
+        /// Describes where a source reads from without disclosing how to reach TVHeadend.
+        /// </summary>
+        private static string DescribePath(MediaSourceInfo source)
+        {
+            if (source.Protocol == MediaProtocol.File)
+            {
+                return Path.GetFileName(source.Path) ?? "<none>";
+            }
+
+            var path = source.Path;
+            if (string.IsNullOrEmpty(path))
+            {
+                return "<none>";
+            }
+
+            var route = path.IndexOf("/LiveTv/", StringComparison.OrdinalIgnoreCase);
+            return route >= 0 ? path[route..] : "<withheld>";
+        }
+
+        /// <summary>
+        /// Reports whether an open stream can serve a request for a channel in a given form.
+        /// </summary>
+        /// <remarks>
+        /// Only the broadcast is ever shared, and only with a request for the broadcast of the
+        /// same channel. A compatibility rendering answers no, whoever asks: it was made for one
+        /// session, a second one would arrive in the middle of a container whose header it never
+        /// saw, and closing either would take the stream away from both.
+        /// </remarks>
+        /// <param name="stream">The open stream.</param>
+        /// <param name="channelId">The channel being requested.</param>
+        /// <param name="role">The form being requested.</param>
+        /// <returns>Whether the stream may be shared.</returns>
+        internal static bool CanBeReusedFor(ITvheadendStream stream, string channelId, StreamProfileRole role)
+        {
+            ArgumentNullException.ThrowIfNull(stream);
+
+            return stream is TvheadendLiveStream { EnableStreamSharing: true, HasBuffer: true }
+                && role == StreamProfileRole.Native
+                && string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase)
+                && stream.Role == role;
         }
 
         /// <summary>
@@ -975,115 +969,6 @@ namespace TVHeadEnd
                     string.IsNullOrEmpty(status.Detail) ? string.Empty : " -- " + status.Detail);
             }
         }
-
-        /// <summary>
-        /// Returns the variant a caller receives when it did not pick one.
-        /// </summary>
-        /// <remarks>
-        /// Decided the same way the offer was, from the same facts and the same request context,
-        /// so the source that answers to the channel's item identifier is the one the client was
-        /// shown first.
-        /// </remarks>
-        private PlaybackVariant FirstOfferedVariant(
-            string channelId,
-            string? nativeProfile,
-            TvheadendStreamProfiles profiles)
-        {
-            var offers = PlaybackVariantPolicy.SelectVariants(
-                _descriptors.Get(channelId, nativeProfile),
-                GetVariantAvailability(profiles),
-                _clientContext.Current);
-
-            return offers.Count > 0 ? offers[0].Variant : PlaybackVariant.Native;
-        }
-
-        /// <summary>
-        /// Reports whether an open stream can serve a request for a channel in a given form.
-        /// </summary>
-        /// <remarks>
-        /// Only the broadcast is ever shared, and only with a request for the broadcast of the
-        /// same channel. A compatibility rendering answers no, whoever asks: it was made for one
-        /// session, a second one would arrive in the middle of a container whose header it never
-        /// saw, and closing either would take the stream away from both.
-        /// </remarks>
-        /// <param name="stream">The open stream.</param>
-        /// <param name="channelId">The channel being requested.</param>
-        /// <param name="variant">The form being requested.</param>
-        /// <returns>Whether the stream may be shared.</returns>
-        internal static bool CanBeReusedFor(ITvheadendStream stream, string channelId, PlaybackVariant variant)
-        {
-            ArgumentNullException.ThrowIfNull(stream);
-
-            return stream is TvheadendLiveStream { EnableStreamSharing: true, HasBuffer: true }
-                && variant == PlaybackVariant.Native
-                && string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(stream.VariantRole, variant.ToString(), StringComparison.Ordinal);
-        }
-
-        /// <summary>
-        /// Reports whether the IDR normalization role falls to the transitional plugin-side
-        /// encoder rather than to TVHeadend.
-        /// </summary>
-        /// <remarks>
-        /// Being configured is not enough to take the work away from something that already
-        /// works. Only a profile whose output has been opened and checked stands the encoder
-        /// down, so a name typed into the settings cannot leave an affected client with a stream
-        /// its decoder refuses to start.
-        /// </remarks>
-        /// <param name="profiles">The configured roles.</param>
-        /// <param name="transitionalEncoderEnabled">Whether the transitional encoder is allowed.</param>
-        /// <returns>Whether the plugin normalizes this role itself.</returns>
-        internal static bool UsesTransitionalNormalizer(
-            TvheadendStreamProfiles profiles,
-            bool transitionalEncoderEnabled)
-        {
-            ArgumentNullException.ThrowIfNull(profiles);
-
-            return !profiles.IsValidated(StreamProfileRole.H264IdrNormalization) && transitionalEncoderEnabled;
-        }
-
-        /// <summary>
-        /// Reports whether the normalization role is produced here rather than by TVHeadend.
-        /// </summary>
-        /// <remarks>
-        /// The transitional encoder is the last resort, not the first. Where the server has a
-        /// profile of that name at all, it does the encoding and the plugin only rewraps the
-        /// result -- which is also the only way the profile ever gets tried and proven. The
-        /// encoder is what answers when the server has nothing, or when what it has turned out
-        /// not to work.
-        /// </remarks>
-        /// <param name="profiles">The configured roles.</param>
-        /// <param name="transitionalEncoderEnabled">Whether the transitional encoder is allowed.</param>
-        /// <returns>Whether the plugin encodes this role itself.</returns>
-        internal static bool NormalizesLocally(
-            TvheadendStreamProfiles profiles,
-            bool transitionalEncoderEnabled)
-        {
-            ArgumentNullException.ThrowIfNull(profiles);
-
-            return UsesTransitionalNormalizer(profiles, transitionalEncoderEnabled)
-                && !profiles.IsUsable(StreamProfileRole.H264IdrNormalization);
-        }
-
-        private static bool LegacyNormalizationAvailable(TvheadendStreamProfiles profiles)
-            => UsesTransitionalNormalizer(profiles, Plugin.Instance.Configuration.EnableLegacyH264Fallback);
-
-        private PlaybackVariantAvailability GetVariantAvailability(TvheadendStreamProfiles profiles)
-            => new(
-                profiles.IsUsable(StreamProfileRole.Mpeg2H264Compatibility),
-                profiles.IsUsable(StreamProfileRole.H264IdrNormalization)
-                    || LegacyNormalizationAvailable(profiles));
-
-        private static StreamProfileRole ToRole(PlaybackVariant variant)
-            => variant switch
-            {
-                PlaybackVariant.Mpeg2H264Compatibility => StreamProfileRole.Mpeg2H264Compatibility,
-                PlaybackVariant.H264IdrNormalization => StreamProfileRole.H264IdrNormalization,
-                _ => StreamProfileRole.Native,
-            };
-
-        private static string? VariantRoleName(PlaybackVariant variant)
-            => variant == PlaybackVariant.Native ? null : variant.ToString();
 
         public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
         {

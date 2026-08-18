@@ -10,6 +10,7 @@ using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging.Abstractions;
 using TVHeadEnd;
 using TVHeadEnd.Playback;
+using TVHeadEnd.Tvheadend;
 using TVHeadEnd.Streaming;
 using Xunit;
 
@@ -31,9 +32,9 @@ public class CompatibilitySessionTests
         await session.Open(CancellationToken.None);
 
         Assert.False(session.EnableStreamSharing);
-        Assert.False(LiveTvService.CanBeReusedFor(session, "42", PlaybackVariant.H264IdrNormalization));
-        Assert.False(LiveTvService.CanBeReusedFor(session, "42", PlaybackVariant.Mpeg2H264Compatibility));
-        Assert.False(LiveTvService.CanBeReusedFor(session, "42", PlaybackVariant.Native));
+        Assert.False(LiveTvService.CanBeReusedFor(session, "42", StreamProfileRole.Mpeg2H264Compatibility));
+        Assert.False(LiveTvService.CanBeReusedFor(session, "42", StreamProfileRole.Mpeg2H264Compatibility));
+        Assert.False(LiveTvService.CanBeReusedFor(session, "42", StreamProfileRole.Native));
     }
 
     [Fact]
@@ -145,7 +146,7 @@ public class CompatibilitySessionTests
     private static CompatibilityLiveStream Create(Stream body, TimeSpan? startupTimeLimit = null)
         => new(
             "42",
-            PlaybackVariant.H264IdrNormalization.ToString(),
+            StreamProfileRole.Mpeg2H264Compatibility,
             CompatibilityContainer.Matroska,
             "http://tvheadend.invalid/stream",
             new Dictionary<string, string>(),

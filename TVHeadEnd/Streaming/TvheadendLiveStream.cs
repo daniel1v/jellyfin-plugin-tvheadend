@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Streaming
 {
@@ -57,13 +58,6 @@ namespace TVHeadEnd.Streaming
         private static readonly TimeSpan AnalysisBufferDuration = TimeSpan.FromSeconds(2);
 
         /// <summary>
-        /// How long to wait for the random access verdict before starting anyway. It resolves as
-        /// soon as an IDR is seen -- measured at 219 to 503 ms on services that send them -- so
-        /// this is a bound, not a cost.
-        /// </summary>
-        private static readonly TimeSpan AssessmentTimeLimit = TimeSpan.FromSeconds(3);
-
-        /// <summary>
         /// How long a connected stream has to produce something playable before the open fails.
         /// </summary>
         /// <remarks>
@@ -89,7 +83,6 @@ namespace TVHeadEnd.Streaming
         private readonly TimeSpan _startupTimeLimit;
 
         private TransportStreamConditioner? _conditioner;
-        private VideoRandomAccessProbe? _probe;
         private Task? _feedTask;
         private bool? _isTransportStream;
         private long _firstByteTimestamp;
@@ -100,7 +93,7 @@ namespace TVHeadEnd.Streaming
         /// Initializes a new instance of the <see cref="TvheadendLiveStream"/> class.
         /// </summary>
         /// <param name="channelId">The TVHeadend channel identifier.</param>
-        /// <param name="variantRole">Which delivery role this serves, for logging and reuse.</param>
+        /// <param name="role">Which form of the channel this serves.</param>
         /// <param name="upstreamUrl">The TVHeadend stream URL, including its profile.</param>
         /// <param name="upstreamHeaders">The headers the request needs.</param>
         /// <param name="mediaSource">The media source this stream backs.</param>
@@ -118,7 +111,7 @@ namespace TVHeadEnd.Streaming
         /// </param>
         public TvheadendLiveStream(
             string channelId,
-            string variantRole,
+            StreamProfileRole role,
             string upstreamUrl,
             IReadOnlyDictionary<string, string> upstreamHeaders,
             MediaSourceInfo mediaSource,
@@ -130,7 +123,6 @@ namespace TVHeadEnd.Streaming
             TimeSpan? startupTimeLimit = null)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
-            ArgumentException.ThrowIfNullOrEmpty(variantRole);
             ArgumentException.ThrowIfNullOrEmpty(upstreamUrl);
             ArgumentNullException.ThrowIfNull(upstreamHeaders);
             ArgumentNullException.ThrowIfNull(mediaSource);
@@ -139,7 +131,7 @@ namespace TVHeadEnd.Streaming
             ArgumentNullException.ThrowIfNull(logger);
 
             ChannelId = channelId;
-            VariantRole = variantRole;
+            Role = role;
             _upstreamUrl = upstreamUrl;
             _upstreamHeaders = upstreamHeaders;
             _httpClientFactory = httpClientFactory;
@@ -167,7 +159,7 @@ namespace TVHeadEnd.Streaming
         /// Gets which delivery role this serves. Part of what makes a stream reusable, so that a
         /// broadcast and a rendering of it can never be mistaken for one another.
         /// </summary>
-        public string VariantRole { get; }
+        public StreamProfileRole Role { get; }
 
         /// <summary>
         /// Gets the buffer this stream fills.
@@ -186,7 +178,7 @@ namespace TVHeadEnd.Streaming
 
         /// <inheritdoc />
         public Media.TransportObservation Observation
-            => Media.TransportObservation.From(_conditioner, _probe, _isTransportStream == true);
+            => Media.TransportObservation.From(_conditioner, _isTransportStream == true);
 
         /// <inheritdoc />
         public int ConsumerCount { get; set; }
@@ -250,7 +242,7 @@ namespace TVHeadEnd.Streaming
             {
                 await _lifetime.CancelAsync().ConfigureAwait(false);
                 throw new TimeoutException(FormattableString.Invariant(
-                    $"TVHeadend accepted the subscription for channel {ChannelId} as {VariantRole}, but produced nothing playable within {_startupTimeLimit.TotalSeconds:0} seconds."));
+                    $"TVHeadend accepted the subscription for channel {ChannelId} as {Role}, but produced nothing playable within {_startupTimeLimit.TotalSeconds:0} seconds."));
             }
             catch
             {
@@ -263,7 +255,7 @@ namespace TVHeadEnd.Streaming
                 UniqueId,
                 stopwatch.ElapsedMilliseconds,
                 ChannelId,
-                VariantRole);
+                Role);
         }
 
         /// <inheritdoc />
@@ -352,11 +344,8 @@ namespace TVHeadEnd.Streaming
                     conditionedBuffer = ArrayPool<byte>.Shared.Rent(
                         TransportStreamConditioner.GetMaximumConditionedLength(carry.Length));
 
-                    var probe = new VideoRandomAccessProbe();
                     var conditioner = new TransportStreamConditioner(
-                        TransportStreamConditioner.EventInformationTablePid,
-                        probe);
-                    _probe = probe;
+                        TransportStreamConditioner.EventInformationTablePid);
                     _conditioner = conditioner;
 
                     while (true)
@@ -444,7 +433,6 @@ namespace TVHeadEnd.Streaming
                             payload = conditionedBuffer.AsMemory(0, conditioned);
                             accessPoints = conditioner.RandomAccessOffsets;
                             conditioner.PublishProgramTables(_transportBootstrap);
-                            probe.Evaluate();
                         }
                         else
                         {
@@ -452,7 +440,7 @@ namespace TVHeadEnd.Streaming
                         }
 
                         await Buffer.Write(payload, accessPoints, cancellationToken).ConfigureAwait(false);
-                        SignalReadyIfPossible(probe);
+                        SignalReadyIfPossible();
                     }
 
                     if (!_ready.Task.IsCompleted)
@@ -497,7 +485,7 @@ namespace TVHeadEnd.Streaming
             }
         }
 
-        private void SignalReadyIfPossible(VideoRandomAccessProbe probe)
+        private void SignalReadyIfPossible()
         {
             if (_ready.Task.IsCompleted)
             {
@@ -506,8 +494,6 @@ namespace TVHeadEnd.Streaming
 
             if (ShouldPublish(
                 _describedAlready,
-                _isTransportStream == true,
-                probe.Kind,
                 Buffer.WritePosition,
                 Stopwatch.GetElapsedTime(_firstByteTimestamp)))
             {
@@ -516,38 +502,21 @@ namespace TVHeadEnd.Streaming
         }
 
         /// <summary>
-        /// Decides whether enough is known and enough is buffered to hand the stream over.
+        /// Decides whether enough is buffered to hand the stream over.
         /// </summary>
-        /// <param name="describedAlready">Whether a current description of this form is stored.</param>
-        /// <param name="isTransportStream">Whether the arriving stream is MPEG-TS.</param>
-        /// <param name="randomAccess">What the probe has concluded so far.</param>
+        /// <remarks>
+        /// A channel that has been described needs only a safe entry point in the buffer, which
+        /// the conditioner has already found. One that has not is held a little longer, because
+        /// what it contains is established by inspecting the buffer and that needs something to
+        /// inspect. Nothing here waits on the bitstream itself.
+        /// </remarks>
+        /// <param name="describedAlready">Whether a current description is stored.</param>
         /// <param name="buffered">How much has been written to the buffer.</param>
         /// <param name="elapsed">How long since the first byte arrived.</param>
         /// <returns>Whether the stream may be published.</returns>
-        internal static bool ShouldPublish(
-            bool describedAlready,
-            bool isTransportStream,
-            H264RandomAccessKind randomAccess,
-            long buffered,
-            TimeSpan elapsed)
-        {
-            // The verdict on how the video offers random access decides which variant a client is
-            // given, so a channel nothing is known about waits for it. A channel that has been
-            // described does not: the stored fact already chose the variant, and holding the
-            // picture back to re-derive the same conclusion costs seconds on every tune of every
-            // ordinary channel. The probe keeps running either way, and a broadcaster that
-            // changes its GOP structure is noticed when the description is updated after this.
-            if (!describedAlready
-                && isTransportStream
-                && randomAccess == H264RandomAccessKind.Unknown
-                && elapsed < AssessmentTimeLimit)
-            {
-                return false;
-            }
-
-            return describedAlready
+        internal static bool ShouldPublish(bool describedAlready, long buffered, TimeSpan elapsed)
+            => describedAlready
                 ? buffered >= MinimumStartBufferSize
                 : buffered >= AnalysisBufferSize && elapsed >= AnalysisBufferDuration;
-        }
     }
 }

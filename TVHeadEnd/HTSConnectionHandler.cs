@@ -154,8 +154,7 @@ namespace TVHeadEnd
             _liveBufferSizeMegabytes = config.LiveBufferSizeMegabytes;
             _streamProfiles = new TvheadendStreamProfiles(
                 config.NativeStreamProfile,
-                config.Mpeg2H264CompatibilityProfile,
-                config.H264IdrNormalizationProfile);
+                config.Mpeg2H264CompatibilityProfile);
 
             if (_priority < DvrPriorityImportant || _priority > DvrPriorityNotSet)
             {
@@ -421,7 +420,6 @@ namespace TVHeadEnd
             Init();
             return _streamProfiles ??= new TvheadendStreamProfiles(
                 TvheadendStreamProfiles.DefaultNativeProfile,
-                null,
                 null);
         }
 

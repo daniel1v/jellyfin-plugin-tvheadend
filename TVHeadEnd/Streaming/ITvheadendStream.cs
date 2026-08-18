@@ -1,6 +1,7 @@
 using System;
 using MediaBrowser.Controller.Library;
 using TVHeadEnd.Media;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Streaming
 {
@@ -24,9 +25,9 @@ namespace TVHeadEnd.Streaming
         string ChannelId { get; }
 
         /// <summary>
-        /// Gets which delivery role this serves.
+        /// Gets which form of the channel this serves.
         /// </summary>
-        string VariantRole { get; }
+        StreamProfileRole Role { get; }
 
         /// <summary>
         /// Gets the file the stream can be inspected as.

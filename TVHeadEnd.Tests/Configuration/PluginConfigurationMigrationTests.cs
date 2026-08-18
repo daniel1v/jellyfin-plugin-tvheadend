@@ -56,19 +56,6 @@ public class PluginConfigurationMigrationTests
     }
 
     [Fact]
-    public void LearnedChannelStateIsHandedOverOnceAndThenCleared()
-    {
-        // Learned state does not belong in the configuration; it moves to the descriptor store.
-        var configuration = new PluginConfiguration();
-#pragma warning disable CS0618
-        configuration.ChannelsWithoutIdr = ["1460599120", "1460599121"];
-#pragma warning restore CS0618
-
-        Assert.Equal(2, configuration.TakeChannelsWithoutIdr().Length);
-        Assert.Empty(configuration.TakeChannelsWithoutIdr());
-    }
-
-    [Fact]
     public void ANewConfigurationCarriesTheDocumentedDefaults()
     {
         var configuration = new PluginConfiguration();
@@ -79,7 +66,6 @@ public class PluginConfigurationMigrationTests
         // administrator had decided whether to want them at all.
         Assert.Equal(TvheadendStreamProfiles.DefaultNativeProfile, configuration.NativeStreamProfile);
         Assert.Equal(string.Empty, configuration.Mpeg2H264CompatibilityProfile);
-        Assert.Equal(string.Empty, configuration.H264IdrNormalizationProfile);
         Assert.False(configuration.AnalyzeChannelFormatsOnRefresh);
     }
 }

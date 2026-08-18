@@ -24,8 +24,6 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // The one place client information enters the plugin. Registered here so that the
         // playback layer can depend on the abstraction and never on Jellyfin's request pipeline.
         serviceCollection.AddHttpContextAccessor();
-        serviceCollection.AddSingleton<IPlaybackClientContextAccessor, JellyfinPlaybackClientContextAccessor>();
-
         // What the plugin has observed about each channel. One instance: the live path writes it,
         // the settings page discards it, and both have to see the same thing.
         serviceCollection.AddSingleton(provider => new ChannelMediaDescriptorStore(

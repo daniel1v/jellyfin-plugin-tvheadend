@@ -43,7 +43,6 @@ export default function (view, params) {
             page.querySelector('#chkAnalyzeChannelFormatsOnRefresh').checked = config.AnalyzeChannelFormatsOnRefresh || false;
             page.querySelector('#txtNativeStreamProfile').value = config.NativeStreamProfile || 'pass';
             page.querySelector('#txtMpeg2H264CompatibilityProfile').value = config.Mpeg2H264CompatibilityProfile || '';
-            page.querySelector('#txtH264IdrNormalizationProfile').value = config.H264IdrNormalizationProfile || '';
             page.querySelector('#txtLiveBufferSizeMegabytes').value = config.LiveBufferSizeMegabytes || '512';
             Dashboard.hideLoadingMsg();
         });
@@ -81,7 +80,6 @@ export default function (view, params) {
             config.AnalyzeChannelFormatsOnRefresh = form.querySelector('#chkAnalyzeChannelFormatsOnRefresh').checked;
             config.NativeStreamProfile = form.querySelector('#txtNativeStreamProfile').value;
             config.Mpeg2H264CompatibilityProfile = form.querySelector('#txtMpeg2H264CompatibilityProfile').value;
-            config.H264IdrNormalizationProfile = form.querySelector('#txtH264IdrNormalizationProfile').value;
             config.LiveBufferSizeMegabytes = form.querySelector('#txtLiveBufferSizeMegabytes').value;
             ApiClient.updatePluginConfiguration(TVHclientConfigurationPageVar.pluginUniqueId, config).then(Dashboard.processPluginConfigurationUpdateResult);
         });

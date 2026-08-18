@@ -3,21 +3,17 @@ using System.Collections.Generic;
 namespace TVHeadEnd.Legacy
 {
     /// <summary>
-    /// The plugin's own H.264 encoder, kept only until TVHeadend can do this itself.
+    /// Re-encodes a recording whose video offers no place a decoder can start.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Transitional, and deliberately isolated. Producing a compatible rendering of a broadcast
-    /// is TVHeadend's job -- it already has the transcoding machinery, it can use the host's
-    /// hardware, and it does not require this plugin to run a process per stream. This exists
-    /// because a broadcast that signals random access without IDR frames does not cold-start on
-    /// some device decoders, and that could not wait for an administrator to configure a
-    /// profile for it.
+    /// Recordings only. Live TV serves the broadcast as received and lets Jellyfin decide what a
+    /// client can play with it; a recording is different, because a viewer seeks into it and a
+    /// decoder that cannot start on a recovery point has no second chance further along.
     /// </para>
     /// <para>
-    /// Once a TVHeadend <c>H264IdrNormalization</c> profile has been configured and validated,
-    /// this file and its callers can be deleted without touching playback policy, the transport
-    /// layer or the live stream implementation.
+    /// Deliberately isolated: one argument list and the two callers that use it. Nothing in the
+    /// live path knows this exists.
     /// </para>
     /// </remarks>
     public static class LegacyH264Encoder

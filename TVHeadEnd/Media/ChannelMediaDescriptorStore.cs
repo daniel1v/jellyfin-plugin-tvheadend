@@ -64,18 +64,15 @@ namespace TVHeadEnd.Media
         /// </summary>
         /// <param name="channelId">The TVHeadend channel identifier.</param>
         /// <param name="nativeProfile">The stream profile now configured for native playback.</param>
-        /// <param name="variantRole">
-        /// Which delivery form to look up, or <see langword="null"/> for the broadcast itself.
-        /// </param>
         /// <returns>The descriptor, or <see langword="null"/> when none applies.</returns>
-        public ChannelMediaDescriptor? Get(string channelId, string? nativeProfile, string? variantRole = null)
+        public ChannelMediaDescriptor? Get(string channelId, string? nativeProfile)
         {
             if (string.IsNullOrEmpty(channelId))
             {
                 return null;
             }
 
-            if (!_descriptors.TryGetValue(ChannelMediaDescriptor.Key(channelId, variantRole), out var descriptor))
+            if (!_descriptors.TryGetValue(channelId, out var descriptor))
             {
                 return null;
             }
@@ -106,13 +103,12 @@ namespace TVHeadEnd.Media
                 return;
             }
 
-            _descriptors[descriptor.StorageKey] = descriptor;
+            _descriptors[descriptor.ChannelId] = descriptor;
             _logger.LogDebug(
-                "TVHeadend channel descriptor: {ChannelId} is {Container}/{Codec}, random access {RandomAccess}",
+                "TVHeadend channel descriptor: {ChannelId} is {Container}/{Codec}",
                 descriptor.ChannelId,
                 descriptor.Container,
-                descriptor.VideoCodec ?? "<unknown>",
-                descriptor.RandomAccess);
+                descriptor.VideoCodec ?? "<unknown>");
 
             Save();
         }
@@ -181,48 +177,6 @@ namespace TVHeadEnd.Media
             }
         }
 
-        /// <summary>
-        /// Takes over the channels an earlier version recorded as carrying no IDR frames.
-        /// </summary>
-        /// <remarks>
-        /// They become a <see cref="Streaming.H264RandomAccessKind.RecoveryOpenGop"/> observation
-        /// with no streams, which is exactly what was known about them -- and, because a
-        /// descriptor without streams is not usable, it is deliberately not enough to skip the
-        /// analysis. It only stops the first tune from handing out a stream already known not to
-        /// start on affected clients.
-        /// </remarks>
-        /// <param name="channelIds">The channels the old configuration lists.</param>
-        public void SeedFromKnownChannelsWithoutIdr(IEnumerable<string> channelIds)
-        {
-            ArgumentNullException.ThrowIfNull(channelIds);
-
-            var seeded = 0;
-            foreach (var channelId in channelIds.Where(id => !string.IsNullOrEmpty(id)))
-            {
-                if (_descriptors.ContainsKey(channelId))
-                {
-                    continue;
-                }
-
-                _descriptors[channelId] = new ChannelMediaDescriptor
-                {
-                    ChannelId = channelId,
-                    RandomAccess = Streaming.H264RandomAccessKind.RecoveryOpenGop,
-                    VideoStreamType = 0x1B,
-                    IsTransportStream = true,
-                };
-                seeded++;
-            }
-
-            if (seeded > 0)
-            {
-                _logger.LogInformation(
-                    "TVHeadend channel descriptors: carried over {Count} channel(s) previously found to send no IDR frames",
-                    seeded);
-                Save();
-            }
-        }
-
         private void Load()
         {
             try
@@ -249,7 +203,7 @@ namespace TVHeadEnd.Media
                         continue;
                     }
 
-                    _descriptors[descriptor.StorageKey] = descriptor;
+                    _descriptors[descriptor.ChannelId] = descriptor;
                 }
 
                 _logger.LogInformation(

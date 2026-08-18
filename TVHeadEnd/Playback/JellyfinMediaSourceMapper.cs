@@ -6,6 +6,7 @@ using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using TVHeadEnd.Media;
 using TVHeadEnd.Streaming;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Playback
 {
@@ -13,86 +14,62 @@ namespace TVHeadEnd.Playback
     /// Builds the <see cref="MediaSourceInfo"/> objects Jellyfin negotiates and plays with.
     /// </summary>
     /// <remarks>
-    /// The one place that turns this plugin's vocabulary -- a channel, a variant, what a source
-    /// was observed to contain -- into Jellyfin's, which is what makes it possible to state and
-    /// check that a description matches what is actually delivered.
+    /// The one place that turns this plugin's vocabulary -- a channel, a profile role, what a
+    /// source was observed to contain -- into Jellyfin's. It states facts and stops there: which
+    /// of the offered sources a client can actually play is Jellyfin's decision, made against the
+    /// device profile the client itself sent.
     /// </remarks>
     public static class JellyfinMediaSourceMapper
     {
         private const int AnalyzeDurationMs = 2000;
 
         /// <summary>
-        /// Builds the source offered during playback negotiation, before anything is opened.
+        /// Builds a source offered during playback negotiation, before anything is opened.
         /// </summary>
+        /// <remarks>
+        /// <see cref="MediaSourceInfo.SupportsDirectPlay"/> is set on every candidate. It does not
+        /// claim the client can play it -- it says Jellyfin may evaluate it against the device
+        /// profile, which is the only way a compatibility source can ever be chosen. Jellyfin
+        /// overwrites the flag with its own verdict before the client sees it.
+        /// </remarks>
         /// <param name="channelId">The TVHeadend channel identifier.</param>
-        /// <param name="offer">Which variant, and whether a client may play it directly.</param>
-        /// <param name="native">What the broadcast was observed to be, or <see langword="null"/>.</param>
-        /// <param name="observedVariant">
-        /// What this variant's output was observed to be on an earlier open, or
-        /// <see langword="null"/> if it has never been produced.
-        /// </param>
-        /// <param name="itemId">
-        /// The channel's own item identifier, to be used for the variant offered first. Clients
-        /// that do not choose a source send this back as the media source identifier, and a
-        /// source has to answer to it or nothing opens at all.
-        /// </param>
-        /// <param name="describeStreams">
-        /// Whether to attach what the source contains. Only worth doing when more than one variant
-        /// is offered and Jellyfin has to choose between them.
+        /// <param name="role">Which form of the channel this offers.</param>
+        /// <param name="descriptor">
+        /// What the source is expected to contain, or <see langword="null"/> when nothing is
+        /// known and there is nothing honest to say.
         /// </param>
         /// <returns>An unopened media source.</returns>
         public static MediaSourceInfo CreatePending(
             string channelId,
-            VariantOffer offer,
-            ChannelMediaDescriptor? native,
-            ChannelMediaDescriptor? observedVariant = null,
-            string? itemId = null,
-            bool describeStreams = false)
+            StreamProfileRole role,
+            ChannelMediaDescriptor? descriptor)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
 
-            var source = CreateShell(channelId, offer);
-            if (!string.IsNullOrEmpty(itemId))
-            {
-                source.Id = itemId;
-            }
-
-            // Streams are attached only when there is a choice to make. Jellyfin evaluates the
-            // device profile as soon as it has something to evaluate, and an unopened source has
-            // no path yet -- it reports the bare server address -- so that evaluation can only
-            // end in a direct play error and a decision to transcode. With nothing to go on,
-            // Jellyfin opens the source first and judges the real thing.
-            if (describeStreams)
-            {
-                var descriptor = offer.Variant == PlaybackVariant.Native
-                    ? native
-                    : observedVariant ?? ProjectFromContract(offer.Variant, native);
-
-                descriptor?.ApplyTo(source);
-                PreferWidelyDecodableAudio(source);
-            }
-
-            source.Name = DescribeVariant(offer.Variant);
+            var source = CreateShell(channelId, role);
+            descriptor?.ApplyTo(source);
+            source.Container = NormalizeContainer(ContainerOf(role, descriptor));
+            source.Name = DescribeRole(role);
             return source;
         }
 
         /// <summary>
-        /// Builds the source handed back once a variant has been opened.
+        /// Builds the source handed back once a role has been opened.
         /// </summary>
         /// <param name="channelId">The TVHeadend channel identifier.</param>
-        /// <param name="offer">Which variant, and whether a client may play it directly.</param>
+        /// <param name="role">Which form of the channel was opened.</param>
         /// <param name="descriptor">What the opened stream was observed to contain.</param>
         /// <param name="mediaPath">The file the stream is readable from.</param>
         /// <param name="streamUrl">The URL Jellyfin serves the open stream at.</param>
         /// <param name="container">
         /// What the stream is delivered in, as a file extension. It has to be what actually
-        /// arrives: the URL ends in it, Jellyfin takes the content type from it, and a client
-        /// that believes the declaration and finds something else renders nothing.
+        /// arrives: the URL ends in it, and a client that believes the declaration and finds
+        /// something else renders nothing.
         /// </param>
         /// <returns>An opened media source.</returns>
         public static MediaSourceInfo CreateOpened(
             string channelId,
-            VariantOffer offer,
+            StreamProfileRole role,
             ChannelMediaDescriptor? descriptor,
             string mediaPath,
             string streamUrl,
@@ -103,17 +80,13 @@ namespace TVHeadEnd.Playback
             ArgumentException.ThrowIfNullOrEmpty(streamUrl);
             ArgumentException.ThrowIfNullOrEmpty(container);
 
-            var source = CreateShell(channelId, offer);
+            var source = CreateShell(channelId, role);
             descriptor?.ApplyTo(source);
-            PreferWidelyDecodableAudio(source);
-            source.Name = DescribeVariant(offer.Variant);
+            source.Name = DescribeRole(role);
             source.RequiresOpening = false;
 
-            if (offer.Variant == PlaybackVariant.Native)
+            if (role == StreamProfileRole.Native)
             {
-                // The broadcast is exposed as a local file rather than an HTTP source because
-                // Jellyfin's Android client treats every HTTP direct-play source as an HLS
-                // playlist. Its static request then receives the transport stream directly.
                 source.Path = mediaPath;
                 source.Protocol = MediaProtocol.File;
                 source.EncoderPath = streamUrl;
@@ -122,21 +95,19 @@ namespace TVHeadEnd.Playback
             else
             {
                 // A compatibility rendering is served through Jellyfin's live stream file
-                // endpoint, which takes its content type from the container in the URL. That is
-                // the one route by which something other than MPEG-TS can be announced correctly:
-                // the direct-play route declares every live stream video/mp2t regardless.
+                // endpoint, which takes its content type from the container in the URL. The
+                // direct-play route declares every live stream video/mp2t regardless, which a
+                // Matroska body cannot survive.
                 source.Path = streamUrl;
                 source.Protocol = MediaProtocol.Http;
                 source.EncoderPath = streamUrl;
                 source.EncoderProtocol = MediaProtocol.Http;
             }
 
-            source.Container = container;
+            // The last word on the container, after any descriptor has been applied: what is
+            // published has to be what the client will receive.
+            source.Container = NormalizeContainer(container);
             source.RequiredHttpHeaders = new Dictionary<string, string>();
-
-            // Now there is something to play, and the policy decides whether this variant may be
-            // handed to a client unmodified.
-            source.SupportsDirectPlay = offer.SupportsDirectPlay;
 
             // A channel has no runtime, whatever has been received so far.
             source.RunTimeTicks = null;
@@ -147,21 +118,19 @@ namespace TVHeadEnd.Playback
         }
 
         /// <summary>
-        /// Reports whether an observed compatibility output satisfies the contract of its role.
+        /// Reports whether an observed compatibility output keeps the promise of its role.
         /// </summary>
         /// <remarks>
-        /// Both roles promise MPEG-TS with H.264 video. A profile that copies the video, or that
-        /// produces a different container, silently defeats the purpose of the variant, and a
-        /// client would be handed something no better than the broadcast. Rather than trust the
-        /// configuration, the output is checked once and the role is dropped for that channel if
-        /// it does not hold.
+        /// Rather than trust the configuration, the output is checked once. A profile that copies
+        /// the video, or produces a different container, silently defeats the purpose of the role
+        /// and would hand a client something no better than the broadcast.
         /// </remarks>
-        /// <param name="variant">The role the output was produced for.</param>
+        /// <param name="role">The role the output was produced for.</param>
         /// <param name="observed">What the output turned out to be.</param>
-        /// <returns>Whether the output may be offered as that role.</returns>
-        public static bool SatisfiesContract(PlaybackVariant variant, ChannelMediaDescriptor? observed)
+        /// <returns>Whether the output may be served as that role.</returns>
+        public static bool SatisfiesContract(StreamProfileRole role, ChannelMediaDescriptor? observed)
         {
-            if (variant == PlaybackVariant.Native)
+            if (role == StreamProfileRole.Native)
             {
                 return true;
             }
@@ -172,131 +141,72 @@ namespace TVHeadEnd.Playback
             }
 
             // Matroska, because that is what TVHeadend's transcoder produces -- its libav muxer
-            // cannot currently emit MPEG-TS -- and because a compatibility rendering is served
-            // through the live stream file endpoint, which announces whatever container it is
-            // asked for. The one thing that must not happen is a description that disagrees with
-            // the delivery.
+            // cannot currently emit MPEG-TS -- and because the role is published as Matroska.
             if (observed.IsTransportStream
                 || observed.Container?.Contains("matroska", StringComparison.OrdinalIgnoreCase) != true)
             {
                 return false;
             }
 
-            if (!string.Equals(observed.VideoCodec, "h264", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            // The MPEG-2 role promises H.264 in a container the client can read, and that is now
-            // established. The normalizing role promises something stronger -- that a decoder can
-            // cold-start on it -- and nothing here can show that of a Matroska stream: the access
-            // point scanner reads PMT-declared stream types and Matroska has none. Claiming the
-            // role on a container check alone would stand the transitional encoder down on the
-            // strength of evidence that was never gathered, so the role stays unproven and the
-            // encoder keeps the affected clients working.
-            return variant != PlaybackVariant.H264IdrNormalization
-                || observed.RandomAccess == H264RandomAccessKind.Idr;
+            return string.Equals(observed.VideoCodec, "h264", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
-        /// Marks the audio track the widest range of clients can decode.
+        /// Names a container the way a Jellyfin device profile names it.
         /// </summary>
         /// <remarks>
-        /// <para>
-        /// A preference, which is why it lives in the mapping and not in the analysis: the
-        /// descriptor keeps every track exactly as the broadcast carries them, and this only
-        /// says which one a client should reach for first.
-        /// </para>
-        /// <para>
-        /// It matters more than it looks. A German broadcast typically carries MPEG audio first
-        /// and a Dolby track after it, and devices without an MP2 decoder are common -- so
-        /// without this, Jellyfin selects the first track, finds the client cannot decode it, and
-        /// transcodes a stream whose video it was perfectly happy to pass through.
-        /// </para>
-        /// <para>
-        /// The order of the list is deliberately left alone. Jellyfin's
-        /// <c>EncodingHelper.GetMapArgs</c> addresses the track it wants FFmpeg to copy by its
-        /// position, so reordering makes <c>-map</c> point at something other than the track the
-        /// manifest describes.
-        /// </para>
+        /// The one place Jellyfin's container vocabulary is allowed to exist. A descriptor records
+        /// what FFmpeg reported -- mpegts,ts or matroska,webm -- because that is the fact; a
+        /// device profile advertises mpegts and mkv. Jellyfin splits both lists on commas and
+        /// compares the parts literally, with no alias resolution, so a source that names only
+        /// what FFmpeg said is refused with ContainerNotSupported however well the client could
+        /// have played it. Matroska is published as mkv alone: webm is a separate profile entry
+        /// and does not stand for an H.264 Matroska stream.
         /// </remarks>
-        /// <param name="source">The media source to mark up.</param>
-        public static void PreferWidelyDecodableAudio(MediaSourceInfo source)
+        /// <param name="observed">What the container was observed or declared to be.</param>
+        /// <returns>The container to publish, or <see langword="null"/> if it is unrecognised.</returns>
+        public static string? NormalizeContainer(string? observed)
         {
-            ArgumentNullException.ThrowIfNull(source);
-
-            var audio = source.MediaStreams.Where(stream => stream.Type == MediaStreamType.Audio).ToList();
-            if (audio.Count == 0)
+            if (string.IsNullOrWhiteSpace(observed))
             {
-                return;
+                return null;
             }
 
-            string[] preferred = ["aac", "ac3", "eac3", "mp3"];
-            var chosen = preferred
-                .Select(codec => audio.FirstOrDefault(stream => string.Equals(stream.Codec, codec, StringComparison.OrdinalIgnoreCase)))
-                .FirstOrDefault(stream => stream is not null)
-                ?? audio.FirstOrDefault(stream => stream.IsDefault)
-                ?? audio[0];
-
-            foreach (var stream in audio)
+            foreach (var part in observed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                stream.IsDefault = ReferenceEquals(stream, chosen);
+                // "MPEG-TS" turns up in hand written configuration and in some server responses.
+                var name = part.Replace("-", string.Empty, StringComparison.Ordinal);
+
+                if (name.Equals("mpegts", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("ts", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "mpegts,ts";
+                }
+
+                if (name.Equals("matroska", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("mkv", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "mkv";
+                }
             }
 
-            source.DefaultAudioStreamIndex = chosen.Index;
+            // Something neither role produces. Passed through rather than guessed at, so the
+            // mismatch shows up as itself instead of as a container that was quietly invented.
+            return observed;
         }
 
         /// <summary>
-        /// Names a variant for the source list a client shows.
-        /// </summary>
-        /// <param name="variant">The variant.</param>
-        /// <returns>The display name, or <see langword="null"/> for the broadcast.</returns>
-        public static string? DescribeVariant(PlaybackVariant variant)
-            => variant switch
-            {
-                PlaybackVariant.Mpeg2H264Compatibility => "H.264 compatibility",
-                PlaybackVariant.H264IdrNormalization => "H.264 (IDR normalized)",
-                _ => null,
-            };
-
-        private static MediaSourceInfo CreateShell(string channelId, VariantOffer offer)
-            => new()
-            {
-                Id = PlaybackVariantId.Create(channelId, offer.Variant),
-                Path = null,
-                Protocol = MediaProtocol.Http,
-                AnalyzeDurationMs = AnalyzeDurationMs,
-                Container = SourceContainer.TransportStream,
-                IsInfiniteStream = true,
-                RequiresOpening = true,
-                RequiresClosing = true,
-
-                // Never on an unopened source. It has no path yet, only the promise of one, and
-                // Jellyfin's Android client answers direct play on an HTTP source by parsing the
-                // URL as an HLS playlist -- which is why the opened source is published as a
-                // local file. Whether this variant may be played directly at all is decided when
-                // it is opened, where there is something real to play.
-                SupportsDirectPlay = false,
-                SupportsDirectStream = true,
-                SupportsTranscoding = true,
-                SupportsProbing = true,
-                MediaStreams = [],
-            };
-
-        /// <summary>
-        /// Derives what a compatibility role guarantees, for a variant that has never been
-        /// produced for this channel.
+        /// Describes what a compatibility role guarantees, for an output never yet produced.
         /// </summary>
         /// <remarks>
-        /// Only what the contract in the documentation actually promises: MPEG-TS, H.264 video,
-        /// and the source geometry. Profile, level, bitrate and interlace flags are deliberately
-        /// left unset rather than guessed -- a client makes decisions on those, and a wrong claim
-        /// here is worse than an absent one. The real values replace these once the variant has
-        /// been opened and observed.
+        /// Only what the role contract promises: Matroska, H.264 video, and the source geometry.
+        /// Profile, level, bitrate, frame rate and every audio fact are deliberately left unset
+        /// rather than guessed -- a client decides on those, and a wrong claim is worse than an
+        /// absent one. The real values replace these once the role has been opened and observed.
         /// </remarks>
-        private static ChannelMediaDescriptor? ProjectFromContract(
-            PlaybackVariant variant,
-            ChannelMediaDescriptor? native)
+        /// <param name="native">What the broadcast was observed to be.</param>
+        /// <returns>The projected description, or <see langword="null"/> when there is no basis.</returns>
+        public static ChannelMediaDescriptor? ProjectCompatibility(ChannelMediaDescriptor? native)
         {
             if (native is not { IsUsable: true } || native.Video is not { } video)
             {
@@ -315,19 +225,12 @@ namespace TVHeadEnd.Playback
                     Width = video.Width,
                     Height = video.Height,
                     AspectRatio = video.AspectRatio,
-
-                    // Guaranteed for the normalizing role, which must preserve the frame rate.
-                    // The MPEG-2 role only promises geometry, so nothing is claimed there.
-                    RealFrameRate = variant == PlaybackVariant.H264IdrNormalization ? video.RealFrameRate : null,
-                    AverageFrameRate = variant == PlaybackVariant.H264IdrNormalization ? video.AverageFrameRate : null,
                 },
             };
 
-            // Audio is not part of any role contract: a profile may copy the broadcast tracks or
+            // Audio is not part of the contract: a profile may copy the broadcast tracks or
             // re-encode them, and which it does is not knowable from here. Only what survives
-            // either choice is stated -- that a track exists, and what it is called. Codec,
-            // channel count, layout and sample rate are left unset rather than copied from the
-            // broadcast, because a client would decide on them and they may not be true.
+            // either choice is stated -- that a track exists, and what it is called.
             foreach (var audio in native.Streams.Where(stream => stream.Type == MediaStreamType.Audio))
             {
                 streams.Add(new MediaStream
@@ -342,18 +245,43 @@ namespace TVHeadEnd.Playback
             return new ChannelMediaDescriptor
             {
                 ChannelId = native.ChannelId,
-                VariantRole = variant.ToString(),
                 NativeProfile = native.NativeProfile,
                 ProgramSignature = native.ProgramSignature,
                 Container = SourceContainer.Matroska,
                 Streams = streams,
                 IsTransportStream = false,
-
-                // Unknown, not Idr. The normalizing role is meant to produce real access
-                // points, but until one of its streams has been opened and looked at, that is a
-                // statement of intent rather than an observation.
-                RandomAccess = H264RandomAccessKind.Unknown,
             };
         }
+
+        private static string? ContainerOf(StreamProfileRole role, ChannelMediaDescriptor? descriptor)
+            => role == StreamProfileRole.Native
+                ? descriptor?.Container
+                : SourceContainer.Matroska;
+
+        private static string DescribeRole(StreamProfileRole role)
+            => role == StreamProfileRole.Native ? "Original" : "H.264 (TVHeadend)";
+
+        private static MediaSourceInfo CreateShell(string channelId, StreamProfileRole role)
+            => new()
+            {
+                Id = ChannelSourceId.Create(channelId, role),
+                Path = null,
+                Protocol = MediaProtocol.Http,
+                AnalyzeDurationMs = AnalyzeDurationMs,
+                IsInfiniteStream = true,
+                RequiresOpening = true,
+                RequiresClosing = true,
+
+                // Set on every candidate, opened or not. This is not a claim that the client can
+                // play it; it is what lets Jellyfin evaluate it against the device profile at
+                // all, and Jellyfin replaces the flag with its own verdict afterwards. Withheld,
+                // a compatibility source could never be chosen and the broadcast would be
+                // transcoded instead.
+                SupportsDirectPlay = true,
+                SupportsDirectStream = true,
+                SupportsTranscoding = true,
+                SupportsProbing = true,
+                MediaStreams = [],
+            };
     }
 }

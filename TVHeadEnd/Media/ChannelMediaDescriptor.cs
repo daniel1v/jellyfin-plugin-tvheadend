@@ -39,22 +39,6 @@ namespace TVHeadEnd.Media
         public required string ChannelId { get; init; }
 
         /// <summary>
-        /// Gets which delivery form this describes, as a role name, or <see langword="null"/>
-        /// for the native broadcast.
-        /// </summary>
-        /// <remarks>
-        /// A string rather than the playback enumeration, so that observing what a compatibility
-        /// stream actually turned out to be does not make this factual record depend on playback
-        /// policy.
-        /// </remarks>
-        public string? VariantRole { get; init; }
-
-        /// <summary>
-        /// Gets the key this descriptor is stored under.
-        /// </summary>
-        public string StorageKey => Key(ChannelId, VariantRole);
-
-        /// <summary>
         /// Gets the layout this record was written in.
         /// </summary>
         public int SchemaVersion { get; init; } = CurrentSchemaVersion;
@@ -91,11 +75,6 @@ namespace TVHeadEnd.Media
         /// Gets the PMT stream type of the video, or zero when none was established.
         /// </summary>
         public byte VideoStreamType { get; init; }
-
-        /// <summary>
-        /// Gets how the video offers a decoder a place to start.
-        /// </summary>
-        public H264RandomAccessKind RandomAccess { get; init; } = H264RandomAccessKind.Unknown;
 
         /// <summary>
         /// Gets a value indicating whether the source arrived as an MPEG transport stream.
@@ -200,15 +179,6 @@ namespace TVHeadEnd.Media
             // on the wrong tracks.
             target.SupportsProbing = false;
         }
-
-        /// <summary>
-        /// Builds the key a descriptor is stored under.
-        /// </summary>
-        /// <param name="channelId">The TVHeadend channel identifier.</param>
-        /// <param name="variantRole">The role name, or <see langword="null"/> for the broadcast.</param>
-        /// <returns>The key.</returns>
-        public static string Key(string channelId, string? variantRole)
-            => string.IsNullOrEmpty(variantRole) ? channelId : channelId + "|" + variantRole;
 
         /// <summary>
         /// Summarises the streams for a log line.

@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.Media;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Streaming
 {
@@ -51,13 +52,10 @@ namespace TVHeadEnd.Streaming
         private readonly string _upstreamUrl;
         private readonly IReadOnlyDictionary<string, string> _upstreamHeaders;
         private readonly string _spoolPath;
-        private readonly string? _ffmpegPath;
-        private readonly IReadOnlyList<string>? _ffmpegArguments;
         private readonly TimeSpan _startupTimeLimit;
         private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private SessionSpool? _spool;
-        private FfmpegStreamPipe? _ffmpeg;
         private Task? _feedTask;
         private bool _closed;
         private bool _disposed;
@@ -66,7 +64,7 @@ namespace TVHeadEnd.Streaming
         /// Initializes a new instance of the <see cref="CompatibilityLiveStream"/> class.
         /// </summary>
         /// <param name="channelId">The TVHeadend channel identifier.</param>
-        /// <param name="variantRole">Which delivery role this serves.</param>
+        /// <param name="role">Which form of the channel this serves.</param>
         /// <param name="container">The container the source delivers, as a file extension.</param>
         /// <param name="upstreamUrl">The TVHeadend stream URL, including its profile.</param>
         /// <param name="upstreamHeaders">The headers the request needs.</param>
@@ -74,15 +72,13 @@ namespace TVHeadEnd.Streaming
         /// <param name="spoolPath">Where to spool the session, without an extension.</param>
         /// <param name="httpClientFactory">The HTTP client factory.</param>
         /// <param name="logger">The logger.</param>
-        /// <param name="ffmpegPath">The FFmpeg executable, when the body has to pass through it.</param>
-        /// <param name="ffmpegArguments">What FFmpeg is asked to do, when it is involved.</param>
         /// <param name="startupTimeLimit">
         /// How long a connected source has to produce something. Defaults to the production
         /// bound; a test sets it shorter.
         /// </param>
         public CompatibilityLiveStream(
             string channelId,
-            string variantRole,
+            StreamProfileRole role,
             string container,
             string upstreamUrl,
             IReadOnlyDictionary<string, string> upstreamHeaders,
@@ -90,12 +86,9 @@ namespace TVHeadEnd.Streaming
             string spoolPath,
             IHttpClientFactory httpClientFactory,
             ILogger logger,
-            string? ffmpegPath = null,
-            IReadOnlyList<string>? ffmpegArguments = null,
             TimeSpan? startupTimeLimit = null)
         {
             ArgumentException.ThrowIfNullOrEmpty(channelId);
-            ArgumentException.ThrowIfNullOrEmpty(variantRole);
             ArgumentException.ThrowIfNullOrEmpty(container);
             ArgumentException.ThrowIfNullOrEmpty(upstreamUrl);
             ArgumentNullException.ThrowIfNull(upstreamHeaders);
@@ -105,15 +98,13 @@ namespace TVHeadEnd.Streaming
             ArgumentNullException.ThrowIfNull(logger);
 
             ChannelId = channelId;
-            VariantRole = variantRole;
+            Role = role;
             Container = container;
             _upstreamUrl = upstreamUrl;
             _upstreamHeaders = upstreamHeaders;
             _spoolPath = spoolPath + "." + container;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
-            _ffmpegPath = ffmpegPath;
-            _ffmpegArguments = ffmpegArguments;
             _startupTimeLimit = startupTimeLimit ?? TimeSpan.FromSeconds(20);
 
             UniqueId = Guid.NewGuid().ToString("N");
@@ -127,7 +118,7 @@ namespace TVHeadEnd.Streaming
         public string ChannelId { get; }
 
         /// <inheritdoc />
-        public string VariantRole { get; }
+        public StreamProfileRole Role { get; }
 
         /// <summary>
         /// Gets the container this session delivers, as a file extension.
@@ -144,7 +135,7 @@ namespace TVHeadEnd.Streaming
         /// way a recording is.
         /// </remarks>
         public TransportObservation Observation
-            => new(false, null, 0, H264RandomAccessKind.Unknown);
+            => new(false, null, 0);
 
         /// <inheritdoc />
         public int ConsumerCount { get; set; }
@@ -202,18 +193,6 @@ namespace TVHeadEnd.Streaming
             request.Dispose();
             var upstream = await response.Content.ReadAsStreamAsync(_lifetime.Token).ConfigureAwait(false);
 
-            if (!string.IsNullOrEmpty(_ffmpegPath) && _ffmpegArguments is not null)
-            {
-                _ffmpeg = FfmpegStreamPipe.Start(
-                    upstream,
-                    _ffmpegPath,
-                    _ffmpegArguments,
-                    _logger,
-                    FormattableString.Invariant($"channel {ChannelId} {VariantRole}"),
-                    _lifetime.Token);
-                upstream = _ffmpeg.Output;
-            }
-
             _spool = new SessionSpool(_spoolPath);
             _feedTask = Feed(upstream, [client, response], _lifetime.Token);
 
@@ -225,7 +204,7 @@ namespace TVHeadEnd.Streaming
             {
                 await _lifetime.CancelAsync().ConfigureAwait(false);
                 throw new TimeoutException(FormattableString.Invariant(
-                    $"TVHeadend accepted the {VariantRole} subscription for channel {ChannelId}, but produced nothing within {_startupTimeLimit.TotalSeconds:0} seconds."));
+                    $"TVHeadend accepted the {Role} subscription for channel {ChannelId}, but produced nothing within {_startupTimeLimit.TotalSeconds:0} seconds."));
             }
             catch
             {
@@ -238,7 +217,7 @@ namespace TVHeadEnd.Streaming
                 UniqueId,
                 stopwatch.ElapsedMilliseconds,
                 ChannelId,
-                VariantRole,
+                Role,
                 Container);
         }
 
@@ -299,11 +278,6 @@ namespace TVHeadEnd.Streaming
                 {
                     _logger.LogDebug(exception, "TVHeadend compatibility stream {UniqueId}: the feed ended with an error", UniqueId);
                 }
-            }
-
-            if (_ffmpeg is not null)
-            {
-                await _ffmpeg.DisposeAsync().ConfigureAwait(false);
             }
 
             if (_spool is not null)

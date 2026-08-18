@@ -68,10 +68,6 @@
                     <input is="emby-input" type="text" id="txtMpeg2H264CompatibilityProfile" label="TVHeadend stream profile: MPEG-2 to H.264 (optional)" />
                     <div class="fieldDescription">Offered alongside the broadcast for channels carrying MPEG-2 video, so clients that cannot decode it play H.264 without a Jellyfin transcode. A client that can decode MPEG-2 still receives the broadcast. Leave empty to offer none.</div>
                 </div>
-                <div class="inputContainer">
-                    <input is="emby-input" type="text" id="txtH264IdrNormalizationProfile" label="TVHeadend stream profile: H.264 IDR normalization (optional)" />
-                    <div class="fieldDescription">For broadcasts that signal random access only through recovery points and never send an IDR frame. Used only for clients known to be unable to start on such a stream; every other client still receives the broadcast. Must genuinely re-encode and produce real IDR frames. Leave empty to offer none.</div>
-                </div>
                 <div class="inputContainer" id="streamProfileStatus" style="margin-top:0.6em;"></div>
                 <div class="inputContainer">
                     <button is="emby-button" type="button" id="btnReanalyze" class="raised block">Re-analyze channel formats</button>

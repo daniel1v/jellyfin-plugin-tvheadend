@@ -28,15 +28,12 @@ namespace TVHeadEnd.Tvheadend
         /// </summary>
         /// <param name="nativeProfile">The profile serving the native role.</param>
         /// <param name="mpeg2CompatibilityProfile">The profile serving the MPEG-2 compatibility role.</param>
-        /// <param name="idrNormalizationProfile">The profile serving the IDR normalization role.</param>
         public TvheadendStreamProfiles(
             string? nativeProfile,
-            string? mpeg2CompatibilityProfile,
-            string? idrNormalizationProfile)
+            string? mpeg2CompatibilityProfile)
         {
             Set(StreamProfileRole.Native, string.IsNullOrWhiteSpace(nativeProfile) ? DefaultNativeProfile : nativeProfile.Trim());
             Set(StreamProfileRole.Mpeg2H264Compatibility, mpeg2CompatibilityProfile?.Trim());
-            Set(StreamProfileRole.H264IdrNormalization, idrNormalizationProfile?.Trim());
         }
 
         /// <summary>

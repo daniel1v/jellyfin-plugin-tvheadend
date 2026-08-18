@@ -9,6 +9,7 @@ using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging.Abstractions;
 using TVHeadEnd.Media;
 using TVHeadEnd.Streaming;
+using TVHeadEnd.Tvheadend;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Streaming;
@@ -49,7 +50,7 @@ public class LiveStreamStartupTests
     private static TvheadendLiveStream Create(Stream body, TimeSpan startupTimeLimit)
         => new(
             "42",
-            "Native",
+            StreamProfileRole.Native,
             "http://tvheadend.invalid/stream",
             new Dictionary<string, string>(),
             new MediaSourceInfo(),

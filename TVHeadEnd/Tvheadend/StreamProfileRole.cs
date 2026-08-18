@@ -14,11 +14,6 @@ namespace TVHeadEnd.Tvheadend
         /// An H.264 rendering of broadcasts whose codec many clients cannot decode.
         /// </summary>
         Mpeg2H264Compatibility = 1,
-
-        /// <summary>
-        /// An H.264 re-encode with genuine IDR access points.
-        /// </summary>
-        H264IdrNormalization = 2,
     }
 
     /// <summary>

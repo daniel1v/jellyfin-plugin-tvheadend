@@ -18,7 +18,7 @@ namespace TVHeadEnd.Streaming
     /// <para>
     /// The EIT PID makes the stream order ambiguous. Jellyfin addresses the stream it wants
     /// FFmpeg to copy by the position of the entry in
-    /// <see cref="MediaBrowser.Model.Dto.MediaSourceInfo.MediaStreams"/>, so the probe and the
+    /// <see cref="MediaBrowser.Model.Dto.MediaSourceInfo.MediaStreams"/>, so the
     /// later transcode have to agree on that order. They do not while the EIT PID is present:
     /// libavformat creates its "epg" stream when the first EIT packet turns up, which lands
     /// either side of the elementary streams announced by the PMT depending on how the
@@ -33,7 +33,7 @@ namespace TVHeadEnd.Streaming
     /// </para>
     /// <para>
     /// What this class deliberately does not do is judge the video. It reports the codec the
-    /// PMT announces and hands the video payload to <see cref="VideoRandomAccessProbe"/>;
+    /// PMT announces;
     /// deciding what that codec implies is not a transport stream question.
     /// </para>
     /// </remarks>
@@ -54,7 +54,6 @@ namespace TVHeadEnd.Streaming
         private static readonly TimeSpan RandomAccessSearchTimeLimit = TimeSpan.FromSeconds(2);
 
         private readonly int _droppedPid;
-        private readonly VideoRandomAccessProbe? _probe;
         private readonly byte[] _partialPacket = new byte[TransportStreamPacket.Length];
         private readonly byte[] _programAssociationTable = new byte[TransportStreamPacket.Length];
         private readonly byte[] _programMapTable = new byte[TransportStreamPacket.Length];
@@ -72,15 +71,12 @@ namespace TVHeadEnd.Streaming
         /// Initializes a new instance of the <see cref="TransportStreamConditioner"/> class.
         /// </summary>
         /// <param name="droppedPid">The PID whose packets are removed.</param>
-        /// <param name="probe">Receives the video payload, or <see langword="null"/> to inspect nothing.</param>
         /// <param name="startImmediately">
         /// Whether to forward from the first packet instead of withholding until a random access
-        /// point. Set for input that has already been conditioned -- the output of the plugin's
-        /// own encoder, which begins with a keyframe by construction.
+        /// point.
         /// </param>
         public TransportStreamConditioner(
             int droppedPid,
-            VideoRandomAccessProbe? probe = null,
             bool startImmediately = false)
         {
             if (droppedPid is < -1 or > 0x1FFF)
@@ -89,7 +85,6 @@ namespace TVHeadEnd.Streaming
             }
 
             _droppedPid = droppedPid;
-            _probe = probe;
             _started = startImmediately;
         }
 
@@ -273,10 +268,6 @@ namespace TVHeadEnd.Streaming
                 _hasProgramMapTable = true;
                 ReadVideoStream(packet);
             }
-            else if (pid == VideoPid && _probe is not null)
-            {
-                _probe.Observe(TransportStreamPacket.ReadPayload(packet));
-            }
 
             var isRandomAccessPoint = pid == VideoPid
                 && TransportStreamPacket.StartsPayloadUnit(packet)
@@ -403,7 +394,6 @@ namespace TVHeadEnd.Streaming
             {
                 VideoPid = videoPid;
                 VideoStreamType = videoStreamType;
-                _probe?.SetVideoStreamType(videoStreamType);
             }
 
             if (layout.Length > 0)

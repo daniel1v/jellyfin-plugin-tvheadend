@@ -183,7 +183,7 @@ public class LiveTransportStreamConditionerTests
     {
         // What an already-conditioned stream is indexed with: nothing has to be filtered out of
         // the plugin's own output, only its access points recorded.
-        var conditioner = new TransportStreamConditioner(-1, probe: null, startImmediately: true);
+        var conditioner = new TransportStreamConditioner(-1, startImmediately: true);
         var packet = Packet(TransportStreamConditioner.EventInformationTablePid);
 
         Assert.Equal(packet.Length, Condition(conditioner, packet, out _));

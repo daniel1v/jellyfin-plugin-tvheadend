@@ -72,7 +72,6 @@ namespace TVHeadEnd.Media
                 Container = inspected.Container,
                 Streams = inspected.Streams,
                 VideoStreamType = observation.VideoStreamType,
-                RandomAccess = observation.RandomAccess,
                 IsTransportStream = observation.IsTransportStream,
                 Bitrate = inspected.Bitrate,
                 Timestamp = inspected.Timestamp,
@@ -81,13 +80,12 @@ namespace TVHeadEnd.Media
             };
 
             _logger.LogInformation(
-                "TVHeadend channel analysis: {ChannelId} via profile {Profile} -- {Container}, video {Codec} (stream_type 0x{StreamType:x2}), random access {RandomAccess}",
+                "TVHeadend channel analysis: {ChannelId} via profile {Profile} -- {Container}, video {Codec} (stream_type 0x{StreamType:x2})",
                 channelId,
                 nativeProfile ?? "<default>",
                 descriptor.Container,
                 descriptor.VideoCodec ?? "<none>",
-                descriptor.VideoStreamType,
-                descriptor.RandomAccess);
+                descriptor.VideoStreamType);
 
             return descriptor.IsUsable ? descriptor : null;
         }

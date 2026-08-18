@@ -36,7 +36,6 @@ namespace TVHeadEnd.Configuration
             EnableSubsMaudios = false;
             NativeStreamProfile = TvheadendStreamProfiles.DefaultNativeProfile;
             Mpeg2H264CompatibilityProfile = string.Empty;
-            H264IdrNormalizationProfile = string.Empty;
             AnalyzeChannelFormatsOnRefresh = false;
             EnableLegacyH264Fallback = true;
             LiveBufferSizeMegabytes = 512;
@@ -113,26 +112,19 @@ namespace TVHeadEnd.Configuration
         public string Mpeg2H264CompatibilityProfile { get; set; }
 
         /// <summary>
-        /// Gets or sets the TVHeadend stream profile that re-encodes H.264 with genuine IDR
-        /// access points, or empty to offer no such variant.
-        /// </summary>
-        public string H264IdrNormalizationProfile { get; set; }
-
-        /// <summary>
         /// Gets or sets a value indicating whether channels with no current description are
         /// analysed while the channel list is refreshed, rather than on first playback.
         /// </summary>
         public bool AnalyzeChannelFormatsOnRefresh { get; set; }
 
         /// <summary>
-        /// Gets or sets a value indicating whether the plugin's own H.264 encoder may stand in
-        /// while no <see cref="H264IdrNormalizationProfile"/> is configured and validated.
+        /// Gets or sets a value indicating whether a recording whose video offers no IDR frames
+        /// may be re-encoded on the way to the client.
         /// </summary>
         /// <remarks>
-        /// Transitional. It exists because broadcasts that signal random access without IDR
-        /// frames do not cold-start on some device decoders, and TVHeadend cannot be asked to fix
-        /// that until a profile has been set up for it. Once one has, this can be switched off
-        /// and the encoder removed.
+        /// Recordings only. Live TV serves the broadcast as received and lets Jellyfin decide
+        /// what a client can play; a recording is seekable, and a client that cannot start on a
+        /// recovery point has no second chance at it.
         /// </remarks>
         public bool EnableLegacyH264Fallback { get; set; }
 
@@ -152,20 +144,6 @@ namespace TVHeadEnd.Configuration
         /// server, and never shown.
         /// </summary>
         public string RecordingAccessSecret { get; set; }
-
-        /// <summary>
-        /// Gets or sets the channels an earlier version found to carry no IDR frames.
-        /// </summary>
-        /// <remarks>
-        /// Retired. Learned state does not belong in the configuration, and this is now kept in
-        /// the descriptor store; the list is read once to seed it and then cleared.
-        /// </remarks>
-        [Obsolete("Migrated to the channel media descriptor store.")]
-        [SuppressMessage(
-            "Performance",
-            "CA1819:Properties should not return arrays",
-            Justification = "Jellyfin serialises the plugin configuration with XmlSerializer, which does not handle read-only collections.")]
-        public string[]? ChannelsWithoutIdr { get; set; }
 
         /// <summary>
         /// Moves settings that have changed meaning or location into their new form.
@@ -200,25 +178,6 @@ namespace TVHeadEnd.Configuration
             }
 
             return changed;
-        }
-
-        /// <summary>
-        /// Returns the channels an earlier version recorded as carrying no IDR frames, and clears
-        /// the list so it is only ever taken over once.
-        /// </summary>
-        /// <returns>The channel identifiers, empty when there are none left to take over.</returns>
-        public string[] TakeChannelsWithoutIdr()
-        {
-#pragma warning disable CS0618 // Migration is the only permitted use of the obsolete members.
-            var channels = ChannelsWithoutIdr;
-            if (channels is null || channels.Length == 0)
-            {
-                return [];
-            }
-
-            ChannelsWithoutIdr = null;
-            return channels;
-#pragma warning restore CS0618
         }
     }
 }

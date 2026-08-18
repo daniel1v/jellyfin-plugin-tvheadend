@@ -57,10 +57,11 @@ namespace TVHeadEnd.Streaming
         {
             ArgumentException.ThrowIfNullOrEmpty(samplePath);
 
+            // The probe lives here rather than inside the conditioner: this is the only remaining
+            // caller, and it is a recording concern. The conditioner does the transport work and
+            // names the video PID; the video payload is handed on from the output it produces.
             var probe = new VideoRandomAccessProbe();
-            var conditioner = new TransportStreamConditioner(
-                TransportStreamConditioner.EventInformationTablePid,
-                probe);
+            var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
             var buffer = ArrayPool<byte>.Shared.Rent(ScanChunkLength);
             var conditioned = ArrayPool<byte>.Shared.Rent(
                 TransportStreamConditioner.GetMaximumConditionedLength(ScanChunkLength));
@@ -82,7 +83,8 @@ namespace TVHeadEnd.Streaming
                         }
                     }
 
-                    conditioner.Condition(buffer.AsSpan(0, read), conditioned);
+                    var length = conditioner.Condition(buffer.AsSpan(0, read), conditioned);
+                    Inspect(conditioner, probe, conditioned.AsSpan(0, length));
                     if (probe.Kind == H264RandomAccessKind.Idr)
                     {
                         return H264RandomAccessKind.Idr;
@@ -100,6 +102,33 @@ namespace TVHeadEnd.Streaming
                 ArrayPool<byte>.Shared.Return(buffer);
                 ArrayPool<byte>.Shared.Return(conditioned);
             }
+        }
+
+        /// <summary>
+        /// Hands the video payload of a conditioned run of packets to the probe.
+        /// </summary>
+        private static void Inspect(
+            TransportStreamConditioner conditioner,
+            VideoRandomAccessProbe probe,
+            ReadOnlySpan<byte> conditioned)
+        {
+            if (conditioner.VideoPid <= 0)
+            {
+                return;
+            }
+
+            probe.SetVideoStreamType(conditioner.VideoStreamType);
+
+            for (var offset = 0; offset + TransportStreamPacket.Length <= conditioned.Length; offset += TransportStreamPacket.Length)
+            {
+                var packet = conditioned.Slice(offset, TransportStreamPacket.Length);
+                if (TransportStreamPacket.ReadPid(packet) == conditioner.VideoPid)
+                {
+                    probe.Observe(TransportStreamPacket.ReadPayload(packet));
+                }
+            }
+
+            probe.Evaluate();
         }
 
         /// <summary>

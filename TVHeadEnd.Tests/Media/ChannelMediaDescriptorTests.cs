@@ -58,14 +58,6 @@ public class ChannelMediaDescriptorTests
         Assert.False(Usable().IsMpeg2Video);
     }
 
-    [Fact]
-    public void EveryVariantIsStoredUnderItsOwnKey()
-    {
-        Assert.NotEqual(
-            ChannelMediaDescriptor.Key("42", null),
-            ChannelMediaDescriptor.Key("42", "Mpeg2H264Compatibility"));
-    }
-
     private static ChannelMediaDescriptor Usable(string codec = "h264")
         => new()
         {
@@ -73,7 +65,6 @@ public class ChannelMediaDescriptorTests
             NativeProfile = "pass",
             Container = "mpegts,ts",
             VideoStreamType = 0x1B,
-            RandomAccess = H264RandomAccessKind.Idr,
             IsTransportStream = true,
             Streams = [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = codec }],
         };
