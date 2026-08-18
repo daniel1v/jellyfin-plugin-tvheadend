@@ -45,27 +45,4 @@ public class PluginConfigurationMigrationTests
 
         Assert.Equal("chosen", configuration.DvrProfile);
     }
-
-    [Fact]
-    public void TheNativeStreamProfileDefaultsToPass()
-    {
-        var configuration = new PluginConfiguration { NativeStreamProfile = "  " };
-
-        Assert.True(configuration.Migrate());
-        Assert.Equal(TvheadendStreamProfiles.DefaultNativeProfile, configuration.NativeStreamProfile);
-    }
-
-    [Fact]
-    public void ANewConfigurationCarriesTheDocumentedDefaults()
-    {
-        var configuration = new PluginConfiguration();
-
-        // Only the native role has a default, because only it is required. Naming the optional
-        // roles here would have every fresh installation claim two profiles that almost certainly
-        // do not exist, and the settings page would report both as missing before the
-        // administrator had decided whether to want them at all.
-        Assert.Equal(TvheadendStreamProfiles.DefaultNativeProfile, configuration.NativeStreamProfile);
-        Assert.Equal(string.Empty, configuration.Mpeg2H264CompatibilityProfile);
-        Assert.False(configuration.AnalyzeChannelFormatsOnRefresh);
-    }
 }

@@ -10,6 +10,7 @@ description: "Manage TVHeadend from Jellyfin. This fork reworks live TV and reco
 category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
+  - "Tvheadend.Htsp.dll"
 changelog: |-
   Recordings play. They did not before this release, in any client.
 

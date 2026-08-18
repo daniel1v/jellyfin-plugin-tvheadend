@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -22,8 +22,9 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Recordings;
 using TVHeadEnd.Streaming;
-using TVHeadEnd.TimeoutHelper;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd
 {
@@ -49,12 +50,12 @@ namespace TVHeadEnd
         /// </remarks>
         private static readonly DateTime DescriptionRevisionUtc = new(2026, 8, 16, 23, 45, 0, DateTimeKind.Utc);
 
-        private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
         private readonly ILogger<LiveTvService> _logger;
-        private readonly HTSConnectionHandler _htsConnectionHandler;
+        private readonly TvheadendConnection _connection;
+        private readonly LiveTvService _liveTvService;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _applicationHost;
-        private readonly SourceDescriber _sourceDescriber;
+        private readonly RecordingDescriber _describer;
         private readonly object _secretLock = new();
 
         // A finished recording never changes, so what an analysis found holds for as long as the
@@ -67,16 +68,18 @@ namespace TVHeadEnd
 
         public RecordingsChannel(
             ILoggerFactory loggerFactory,
-            HTSConnectionHandler htsConnectionHandler,
+            TvheadendConnection connection,
+            LiveTvService liveTvService,
             IMediaEncoder mediaEncoder,
             IHttpClientFactory httpClientFactory,
             IServerApplicationHost applicationHost)
         {
-            _htsConnectionHandler = htsConnectionHandler;
+            _connection = connection;
+            _liveTvService = liveTvService;
             _httpClientFactory = httpClientFactory;
             _applicationHost = applicationHost;
             _logger = loggerFactory.CreateLogger<LiveTvService>();
-            _sourceDescriber = new SourceDescriber(mediaEncoder, _logger);
+            _describer = new RecordingDescriber(mediaEncoder, _logger);
             _logger.LogDebug("[TVHclient] RecordingsChannel()");
         }
 
@@ -190,40 +193,13 @@ namespace TVHeadEnd
             return !Plugin.Instance.Configuration.HideRecordingsChannel;
         }
 
-        private LiveTvService GetService()
-        {
-            return _htsConnectionHandler.GetLiveTvService()
-                ?? throw new InvalidOperationException("The TVHeadend LiveTvService has not been registered yet");
-        }
-
-        private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
-        {
-            return Task.Run(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
-        }
+        private LiveTvService GetService() => _liveTvService;
 
         public async Task<IEnumerable<MyRecordingInfo>> GetAllRecordingsAsync(CancellationToken cancellationToken)
         {
-            // retrieve all 'Pending', 'Inprogress' and 'Completed' recordings
-            // we don't deliver the 'Pending' recordings
-
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("[TVHclient] GetAllRecordingsAsync - Not initialized ");
-                return [];
-            }
-
-            TaskWithTimeoutRunner<IEnumerable<MyRecordingInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<MyRecordingInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<MyRecordingInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildDvrInfos(cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogDebug("[TVHclient] GetAllRecordingsAsync - Timeout");
-                return [];
-            }
-
-            return twtRes.Result;
+            // Everything that has at least started. A scheduled entry has nothing to play yet,
+            // and one whose file has gone would offer a recording that answers nothing.
+            return await _liveTvService.GetRecordingsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public bool CanDelete(BaseItem item)
@@ -447,16 +423,17 @@ namespace TVHeadEnd
                 // Straight from TVHeadend, not through the endpoint this plugin serves clients
                 // from: that one exists to make FFmpeg's seeking work, and going through it here
                 // would only route the request back out through Jellyfin.
-                var upstream = _htsConnectionHandler.GetAuthenticatedUrl("dvrfile/" + id);
+                var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
+                var upstream = endpoint.CreateApiUrl("dvrfile/" + id);
                 await FetchAnalysisSample(upstream, sample, cancellationToken).ConfigureAwait(false);
 
-                var described = await _sourceDescriber
+                var described = await _describer
                     .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
                     .ConfigureAwait(false);
 
                 if (described
                     && Plugin.Instance.Configuration.EnableLegacyH264Fallback
-                    && SourceDescriber.ScanRandomAccess(sample) == Streaming.H264RandomAccessKind.RecoveryOpenGop)
+                    && RecordingDescriber.ScanRandomAccess(sample) == H264RandomAccessKind.RecoveryOpenGop)
                 {
                     // A broadcast that signals random access with recovery points instead of IDR
                     // frames -- the ARD network does -- offers a device decoder nothing to start
@@ -516,7 +493,7 @@ namespace TVHeadEnd
             using var client = _httpClientFactory.CreateClient();
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, AnalysisSampleLength - 1);
-            foreach (var header in _htsConnectionHandler.GetHeaders())
+            foreach (var header in _connection.HttpEndpoint.CreateHeaders())
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }

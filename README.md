@@ -20,12 +20,51 @@
 
 This plugin allows you to manage TVHeadend from Jellyfin.
 
-This fork reworks live TV delivery so that channels direct play on the official Jellyfin Android app.
-Channels are served from a shared, conditioned MPEG-TS buffer rather than the raw TVHeadend URL, and
-broadcasts that signal random access without IDR frames — which common device decoders refuse to start
-on, giving audio but a black picture — have their video re-encoded. Every other channel is passed
-through untouched. See the [release notes](https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases)
-for the full list.
+## How live TV works
+
+TVHeadend already parses every broadcast it tunes. This plugin uses that analysis instead of making
+a second one of its own, which is why live TV needs no FFprobe at all.
+
+A running channel has two halves, both on the same TVHeadend service:
+
+- **HTTP, `profile=pass`** is the media path. TVHeadend forwards the original MPEG-TS untouched,
+  with its own PCR, program tables and random access points intact. No TVHeadend transcoding and no
+  compatibility profile is ever requested.
+- **HTSP** is the description. The plugin subscribes to the same channel and immediately filters out
+  every stream index, so TVHeadend keeps parsing and keeps describing the stream but never puts a
+  frame of audio or video on that second socket. The subscription stays open for the life of the
+  stream, so a broadcast that changes shape is re-described and the media source corrected.
+
+The plugin then:
+
+- conditions the transport stream only as far as safety requires — it drops the DVB EIT, waits for a
+  random access point so a decoder can start, and captures PAT/PMT so a viewer joining a channel
+  already running gets the tables it needs;
+- places each elementary stream at the index FFmpeg will give it, by going from HTSP's `es_index`
+  through the service's PID table to the position the delivered PMT puts it at;
+- describes the result to Jellyfin as facts, leaving unknown fields unset.
+
+**Jellyfin** then decides — from the device profile the client sent — whether to direct play, remux
+or transcode. The plugin expresses no opinion about clients, and offers exactly one media source per
+channel.
+
+### TVHeadend permissions
+
+The account configured here should have **administrator** rights.
+
+Live TV plays without them, but the mapping from TVHeadend's `es_index` to a transport stream PID
+comes from TVHeadend's `service/streams` API, which is restricted to administrators. Without it the
+plugin cannot say which track sits at which index, so rather than guess it leaves the stream
+undescribed and lets Jellyfin inspect it — costing a probe on every tune and losing the correct
+track ordering. An account carrying TVHeadend's *anonymise* right is also unable to identify the
+service behind a channel that maps to more than one, with the same consequence.
+
+### Known Jellyfin issues
+
+- Jellyfin overwrites `IsInterlaced` to `true` on the video stream of **every** external live TV
+  service, in `LiveTvMediaSourceProvider.Normalize`, regardless of what the plugin reported. Device
+  profiles that key on interlacing may therefore choose transcoding unnecessarily. This is a server
+  bug and is deliberately **not** worked around here; a plugin-side hack would only hide it.
 
 ## Installation
 

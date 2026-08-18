@@ -60,8 +60,8 @@ public class StreamBootstrapIndexTests
     {
         // Without them the reader cannot map the elementary streams, whatever it joins at.
         var index = new StreamBootstrapIndex();
-        index.RecordProgramAssociationTable(TablePacket(0x00));
-        index.RecordProgramMapTable(TablePacket(0x2c));
+        index.RecordProgramAssociationTable([TablePacket(0x00)]);
+        index.RecordProgramMapTable([TablePacket(0x2c)]);
 
         var prefix = index.CreateBootstrapPrefix();
 

@@ -1,12 +1,8 @@
-using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using TVHeadEnd.Media;
-using TVHeadEnd.Playback;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd;
@@ -19,23 +15,12 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
-        serviceCollection.AddSingleton<HTSConnectionHandler>();
+        // One connection, shared. Everything the plugin knows about the server arrives over it,
+        // and every live subscription is multiplexed onto it.
+        serviceCollection.AddSingleton<TvheadendConnection>();
 
-        // The one place client information enters the plugin. Registered here so that the
-        // playback layer can depend on the abstraction and never on Jellyfin's request pipeline.
-        serviceCollection.AddHttpContextAccessor();
-        // What the plugin has observed about each channel. One instance: the live path writes it,
-        // the settings page discards it, and both have to see the same thing.
-        serviceCollection.AddSingleton(provider => new ChannelMediaDescriptorStore(
-            provider.GetRequiredService<IApplicationPaths>(),
-            provider.GetRequiredService<ILoggerFactory>().CreateLogger<ChannelMediaDescriptorStore>()));
-
-        // Which TVHeadend profile has been proven to keep its role's promise, across restarts.
-        serviceCollection.AddSingleton(provider => new StreamProfileValidationStore(
-            provider.GetRequiredService<IApplicationPaths>(),
-            provider.GetRequiredService<ILoggerFactory>().CreateLogger<StreamProfileValidationStore>()));
-
-        serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
+        serviceCollection.AddSingleton<LiveTvService>();
+        serviceCollection.AddSingleton<ILiveTvService>(provider => provider.GetRequiredService<LiveTvService>());
 
         // Registered under its own type as well, so the endpoint serving recordings can ask it
         // what its analysis found instead of establishing the same thing a second time. Both

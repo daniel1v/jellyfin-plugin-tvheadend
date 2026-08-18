@@ -1,4 +1,4 @@
-﻿<div id="TVHclientConfigurationPage" data-role="page" class="page type-interior pluginConfigurationPage" data-controller="__plugin/tvheadendjs">
+<div id="TVHclientConfigurationPage" data-role="page" class="page type-interior pluginConfigurationPage" data-controller="__plugin/tvheadendjs">
 
     <div data-role="content">
         <div class="content-primary">
@@ -8,12 +8,15 @@
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtHTTP_Port" label="HTTP Port" />
+                    <div class="fieldDescription">Carries the broadcast itself and TVHeadend's administrative API.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtHTSP_Port" label="HTSP Port" />
+                    <div class="fieldDescription">Carries the channel list, the guide, and the description of every running stream.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtUserName" label="Username" />
+                    <div class="fieldDescription">This account needs <strong>administrator</strong> rights in TVHeadend. The plugin reads which PID each elementary stream is carried on from TVHeadend's <code>service/streams</code> API, which is restricted to administrators; that is what lets it describe a channel's tracks to Jellyfin at their real positions. Without it live TV still plays, but Jellyfin has to inspect the stream itself.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtPassword" label="Password" />
@@ -49,30 +52,16 @@
                 <div class="checkboxContainer checkboxContainer-withDescription">
                     <label>
                         <input is="emby-checkbox" type="checkbox" id="chkEnableSubsMaudios" />
-                        <span>Enable live TV subtitles and multiple audio tracks (Experimental)</span>
+                        <span>Offer live TV subtitles and multiple audio tracks</span>
                     </label>
-                    <div class="fieldDescription checkboxFieldDescription">Note: Enabling this feature has security implications and will require a server restart. (TVH username and password will appear in server logs and will be transmitted in cleartext over the network)</div>
+                    <div class="fieldDescription checkboxFieldDescription">Whether additional audio tracks and subtitle tracks are offered to clients.</div>
                 </div>
                 <div class="checkboxContainer checkboxContainer-withDescription">
                     <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkAnalyzeChannelFormatsOnRefresh" />
-                        <span>Analyze unknown channel formats during refresh</span>
+                        <input is="emby-checkbox" type="checkbox" id="chkEnableLegacyH264Fallback" />
+                        <span>Re-encode recordings that carry no IDR frame</span>
                     </label>
-                    <div class="fieldDescription checkboxFieldDescription">Channels are normally analyzed the first time somebody watches them, which costs that viewer a few seconds once. With this enabled the analysis happens during a channel refresh instead, one channel at a time, so playback can offer the right variants from the very first tune. Each analysis briefly occupies a tuner. Failures are skipped and never fail the refresh.</div>
-                </div>
-                <div class="inputContainer">
-                    <input is="emby-input" type="text" id="txtNativeStreamProfile" label="TVHeadend stream profile: native" />
-                    <div class="fieldDescription">The profile the broadcast is received through. "pass" forwards it untouched and is what every channel description is taken from. Changing this discards all stored descriptions.</div>
-                </div>
-                <div class="inputContainer">
-                    <input is="emby-input" type="text" id="txtMpeg2H264CompatibilityProfile" label="TVHeadend stream profile: MPEG-2 to H.264 (optional)" />
-                    <div class="fieldDescription">Offered alongside the broadcast for channels carrying MPEG-2 video, so clients that cannot decode it play H.264 without a Jellyfin transcode. A client that can decode MPEG-2 still receives the broadcast. Leave empty to offer none.</div>
-                </div>
-                <div class="inputContainer" id="streamProfileStatus" style="margin-top:0.6em;"></div>
-                <div class="inputContainer">
-                    <button is="emby-button" type="button" id="btnReanalyze" class="raised block">Re-analyze channel formats</button>
-                    <div class="fieldDescription">Discards every stored channel description so they are established again. Use after changing anything inside a TVHeadend profile: a changed schema or a changed native profile is noticed automatically, a change inside a profile is not.</div>
-                </div>
+                    <div class="fieldDescription checkboxFieldDescription">Recordings only. Some broadcasters signal random access with recovery points rather than IDR frames, which device decoders cannot start on. Live TV is unaffected: it is served as received and Jellyfin decides what each client can play.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size (MB):" />

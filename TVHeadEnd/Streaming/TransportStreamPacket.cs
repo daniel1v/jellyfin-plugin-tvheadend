@@ -118,5 +118,24 @@ namespace TVHeadEnd.Streaming
         /// <returns>Whether it is video.</returns>
         public static bool IsVideoStreamType(byte streamType)
             => streamType is 0x01 or 0x02 or 0x10 or 0x1B or 0x24;
+
+        /// <summary>
+        /// Names the codec a video stream type stands for.
+        /// </summary>
+        /// <remarks>
+        /// Only for a stream the running subscription did not describe, which is the one case
+        /// where the program map is all there is to go on. Anything TVHeadend describes is named
+        /// from that instead, because it is the better source.
+        /// </remarks>
+        /// <param name="streamType">A PMT stream type.</param>
+        /// <returns>The codec name, or <see langword="null"/> when it is not a known video type.</returns>
+        public static string? DescribeVideoStreamType(byte streamType) => streamType switch
+        {
+            0x01 or 0x02 => "mpeg2video",
+            0x10 => "mpeg4",
+            0x1B => "h264",
+            0x24 => "hevc",
+            _ => null,
+        };
     }
 }

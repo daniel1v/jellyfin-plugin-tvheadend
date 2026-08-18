@@ -137,30 +137,33 @@ public class LiveTransportStreamConditionerTests
     }
 
     [Fact]
-    public void ProgramLayoutNamesEveryElementaryStreamInPmtOrder()
+    public void TheProgramMapNamesEveryElementaryStreamInTableOrder()
     {
-        // The fingerprint a cached probe is validated against: reusing a probe is only safe
-        // while the broadcast announces the same streams in the same order, because Jellyfin
-        // addresses the track to copy by its position in the list.
+        // The order every later "-map" argument means. Jellyfin addresses the track to copy by
+        // its position in the media source's stream list, and that position is this one.
         var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         Condition(conditioner, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
 
-        Assert.Equal($"1b:{VideoPid:x4},03:{AudioPid:x4}", conditioner.ProgramLayout);
+        var map = conditioner.ProgramMap;
+        Assert.NotNull(map);
+        Assert.Equal([VideoPid, AudioPid], map!.Entries.Select(entry => entry.Pid));
+        Assert.Equal([0x1b, 0x03], map.Entries.Select(entry => (int)entry.StreamType));
+        Assert.Equal(VideoPid, map.VideoPid);
     }
 
     [Fact]
-    public void ProgramLayoutIsUnknownBeforeThePmtArrives()
+    public void TheProgramMapIsUnknownBeforeThePmtArrives()
     {
         var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         Condition(conditioner, ProgramAssociationTable(), out _);
 
-        Assert.Null(conditioner.ProgramLayout);
+        Assert.Null(conditioner.ProgramMap);
     }
 
     [Fact]
-    public void ProgramLayoutChangesWhenTheBroadcastAddsATrack()
+    public void TheProgramMapFollowsTheBroadcastAddingATrack()
     {
         var withoutExtraTrack = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         Condition(withoutExtraTrack, Concat(ProgramAssociationTable(), ProgramMapTable()), out _);
@@ -168,7 +171,8 @@ public class LiveTransportStreamConditionerTests
         var withExtraTrack = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         Condition(withExtraTrack, Concat(ProgramAssociationTable(), ProgramMapTableWithSecondAudioTrack()), out _);
 
-        Assert.NotEqual(withoutExtraTrack.ProgramLayout, withExtraTrack.ProgramLayout);
+        Assert.Equal(2, withoutExtraTrack.ProgramMap!.Entries.Count);
+        Assert.Equal(3, withExtraTrack.ProgramMap!.Entries.Count);
     }
 
     [Fact]

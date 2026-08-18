@@ -54,7 +54,7 @@ namespace TVHeadEnd.Streaming
         /// Assigned once the container is known. Until then nothing is indexed, which is correct:
         /// a reader arriving that early is served from the beginning anyway.
         /// </remarks>
-        public ILiveStreamBootstrap? Bootstrap { get; set; }
+        public StreamBootstrapIndex? Bootstrap { get; set; }
 
         /// <summary>
         /// Gets how many bytes have been written.
@@ -89,7 +89,7 @@ namespace TVHeadEnd.Streaming
             var basePosition = _ring.WritePosition;
             await _ring.WriteAsync(data, cancellationToken).ConfigureAwait(false);
 
-            Bootstrap?.Record(basePosition, data.Span, randomAccessOffsets);
+            Bootstrap?.Record(basePosition, randomAccessOffsets);
         }
 
         /// <summary>

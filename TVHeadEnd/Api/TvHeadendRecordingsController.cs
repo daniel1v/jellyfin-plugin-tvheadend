@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.Streaming;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Api
 {
@@ -38,14 +39,14 @@ namespace TVHeadEnd.Api
     [Route("TVHeadend")]
     public class TvHeadendRecordingsController : ControllerBase
     {
-        private readonly HTSConnectionHandler _connectionHandler;
+        private readonly TvheadendConnection _connectionHandler;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly RecordingsChannel _recordings;
         private readonly IMediaEncoder _mediaEncoder;
         private readonly ILogger<TvHeadendRecordingsController> _logger;
 
         public TvHeadendRecordingsController(
-            HTSConnectionHandler connectionHandler,
+            TvheadendConnection connectionHandler,
             IHttpClientFactory httpClientFactory,
             RecordingsChannel recordings,
             IMediaEncoder mediaEncoder,
@@ -77,7 +78,7 @@ namespace TVHeadEnd.Api
                 return NotFound();
             }
 
-            var upstream = _connectionHandler.GetAuthenticatedUrl("dvrfile/" + recordingId);
+            var upstream = _connectionHandler.HttpEndpoint.CreateApiUrl("dvrfile/" + recordingId);
             if (string.IsNullOrEmpty(upstream))
             {
                 return NotFound();
@@ -100,7 +101,7 @@ namespace TVHeadEnd.Api
                 HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get,
                 upstream);
 
-            foreach (var header in _connectionHandler.GetHeaders())
+            foreach (var header in _connectionHandler.HttpEndpoint.CreateHeaders())
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
@@ -190,7 +191,7 @@ namespace TVHeadEnd.Api
             CancellationToken cancellationToken)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, upstream);
-            foreach (var header in _connectionHandler.GetHeaders())
+            foreach (var header in _connectionHandler.HttpEndpoint.CreateHeaders())
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
