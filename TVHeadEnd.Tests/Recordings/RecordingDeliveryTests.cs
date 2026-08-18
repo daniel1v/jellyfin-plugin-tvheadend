@@ -132,8 +132,10 @@ public class RecordingDeliveryTests
         Assert.NotEqual(default, first);
         Assert.Equal(DateTimeKind.Utc, first.Kind);
 
-        // Far enough from "now" that it cannot have been read off the clock.
-        Assert.True(Math.Abs((first - DateTime.UtcNow).TotalMinutes) > 1);
+        // Written by hand rather than read off a clock. Comparing against the current time would
+        // itself be a clock-dependent test, and would fail for a minute whenever the two happened
+        // to coincide.
+        Assert.Equal(0, first.Ticks % TimeSpan.TicksPerMinute);
     }
 
     private static DateTime SchemaRevision()
