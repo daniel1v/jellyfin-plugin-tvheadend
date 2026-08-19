@@ -73,11 +73,13 @@ namespace TVHeadEnd.Streaming
         /// </summary>
         /// <param name="data">The bytes to append.</param>
         /// <param name="randomAccessOffsets">Where inside the chunk a decoder may start.</param>
+        /// <param name="tables">The program tables valid for this chunk.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>A task that completes once the bytes are readable.</returns>
         public async ValueTask Write(
             ReadOnlyMemory<byte> data,
             IReadOnlyList<int>? randomAccessOffsets,
+            ProgramTableSnapshot tables,
             CancellationToken cancellationToken)
         {
             if (data.IsEmpty)
@@ -89,7 +91,9 @@ namespace TVHeadEnd.Streaming
             var basePosition = _ring.WritePosition;
             await _ring.WriteAsync(data, cancellationToken).ConfigureAwait(false);
 
-            Bootstrap?.Record(basePosition, randomAccessOffsets);
+            // Published only once the bytes are readable, and as one pair, so a reader is never
+            // sent to a position whose tables it has not been given.
+            Bootstrap?.Publish(tables, basePosition, randomAccessOffsets);
         }
 
         /// <summary>

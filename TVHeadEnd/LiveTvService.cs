@@ -154,7 +154,11 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             return reusable;
         }
 
-        return await _opener.OpenAsync(channelId, GetMediaSourceId(channelId), cancellationToken)
+        return await _opener.OpenAsync(
+                channelId,
+                GetMediaSourceId(channelId),
+                _connection.Channels.GetChannelType(channelId),
+                cancellationToken)
             .ConfigureAwait(false);
     }
 

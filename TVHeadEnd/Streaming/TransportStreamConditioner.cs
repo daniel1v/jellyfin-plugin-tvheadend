@@ -180,23 +180,14 @@ public sealed class TransportStreamConditioner
     }
 
     /// <summary>
-    /// Records the tables captured so far into a bootstrap index.
+    /// Takes the program tables as they stand, so they can be published together with the access
+    /// points found in the same chunk.
     /// </summary>
-    /// <param name="index">The bootstrap index of the buffer being filled.</param>
-    public void PublishProgramTables(StreamBootstrapIndex index)
-    {
-        ArgumentNullException.ThrowIfNull(index);
-
-        if (_programAssociationPackets.Length > 0)
-        {
-            index.RecordProgramAssociationTable(_programAssociationPackets);
-        }
-
-        if (_programMapPackets.Length > 0)
-        {
-            index.RecordProgramMapTable(_programMapPackets);
-        }
-    }
+    /// <returns>The snapshot, empty until both tables have arrived.</returns>
+    public ProgramTableSnapshot TakeProgramTables()
+        => HasProgramTables
+            ? new ProgramTableSnapshot(_programAssociationPackets, _programMapPackets)
+            : ProgramTableSnapshot.Empty;
 
     /// <summary>
     /// Copies <paramref name="source"/> to <paramref name="destination"/>, dropping the filtered
@@ -373,12 +364,29 @@ public sealed class TransportStreamConditioner
             return;
         }
 
-        var pmtPid = ReadFirstProgramMapPid(_programAssociationSection.Section);
-        if (pmtPid >= 0)
+        var table = ProgramAssociationTable.Parse(_programAssociationSection.Section);
+        if (table is null)
         {
-            _programMapTablePid = pmtPid;
+            // Damaged, announced for later, or naming no program. Whatever is already in hand
+            // still describes the stream that is arriving, so none of it is disturbed -- not the
+            // program map PID, not the stored packets.
+            return;
         }
 
+        if (_programMapTablePid >= 0 && table.ProgramMapPid != _programMapTablePid)
+        {
+            // The broadcaster has moved the program map. Everything read from the old PID
+            // describes a program this table no longer points at, so it is put aside until the
+            // map at the new PID arrives; publishing the new PAT beside the old PMT would be a
+            // pairing that never existed on air.
+            _programMapSection.Reset();
+            _programMapCollecting.Clear();
+            _programMapPackets = [];
+            ProgramMap = null;
+            ProgramLayoutChanged = true;
+        }
+
+        _programMapTablePid = table.ProgramMapPid;
         _programAssociationPackets = [.. _programAssociationCollecting];
     }
 
@@ -421,8 +429,14 @@ public sealed class TransportStreamConditioner
     }
 
     /// <summary>
-    /// Reports whether two program maps announce the same elementary streams in the same order.
+    /// Reports whether two program maps would produce the same published description.
     /// </summary>
+    /// <remarks>
+    /// Everything that reaches a media source is compared, not just the PID and the stream type.
+    /// A broadcaster that swaps a track's language, or turns a private stream into an identified
+    /// AC-3 one by adding a descriptor, has changed what a client is told it is playing; treating
+    /// that as "the same layout" would leave viewers with a description of the programme before.
+    /// </remarks>
     private static bool DescribesSameStreams(ProgramMapTable first, ProgramMapTable second)
     {
         if (first.Entries.Count != second.Entries.Count)
@@ -432,38 +446,20 @@ public sealed class TransportStreamConditioner
 
         for (var index = 0; index < first.Entries.Count; index++)
         {
-            if (first.Entries[index].Pid != second.Entries[index].Pid
-                || first.Entries[index].StreamType != second.Entries[index].StreamType)
+            var before = first.Entries[index];
+            var after = second.Entries[index];
+
+            if (before.Pid != after.Pid
+                || before.StreamType != after.StreamType
+                || before.Kind != after.Kind
+                || !string.Equals(before.Codec, after.Codec, StringComparison.Ordinal)
+                || !string.Equals(before.Language, after.Language, StringComparison.Ordinal)
+                || before.IsHearingImpaired != after.IsHearingImpaired)
             {
                 return false;
             }
         }
 
         return true;
-    }
-
-    private static int ReadFirstProgramMapPid(ReadOnlySpan<byte> section)
-    {
-        if (section.Length < 12 || section[0] != 0x00)
-        {
-            return -1;
-        }
-
-        var sectionLength = ((section[1] & 0x0F) << 8) | section[2];
-        var end = Math.Min(3 + sectionLength - 4, section.Length);
-
-        for (var offset = 8; offset + 4 <= end; offset += 4)
-        {
-            var programNumber = (section[offset] << 8) | section[offset + 1];
-            if (programNumber == 0)
-            {
-                // The network information table, not a program.
-                continue;
-            }
-
-            return ((section[offset + 2] & 0x1F) << 8) | section[offset + 3];
-        }
-
-        return -1;
     }
 }

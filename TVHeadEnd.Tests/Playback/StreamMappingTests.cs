@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.LiveTv;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;
@@ -33,10 +34,9 @@ public class StreamMappingTests
             Entry(0x03, EnglishAudioPid, Language("eng")),
             Entry(0x06, SubtitlePid, Subtitling("deu")));
 
-        var description = LiveStreamDescription.FromProgramMap(map);
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV);
 
         Assert.NotNull(description);
-        Assert.True(description!.IsUsable);
         Assert.Equal([0, 1, 2, 3], description.Streams.Select(stream => stream.Index));
         Assert.Equal(
             [MediaStreamType.Video, MediaStreamType.Audio, MediaStreamType.Audio, MediaStreamType.Subtitle],
@@ -57,7 +57,7 @@ public class StreamMappingTests
             Entry(0x03, GermanAudioPid, Language("deu")),
             Entry(0x06, EnglishAudioPid, Concat(Descriptor(0x6A), Language("deu"))));
 
-        var description = LiveStreamDescription.FromProgramMap(map)!;
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
         Assert.Equal(["mpeg2video", null, "ac3"], description.Streams.Select(stream => stream.Codec));
         Assert.Equal(MediaStreamType.Audio, description.Streams[2].Type);
@@ -73,7 +73,7 @@ public class StreamMappingTests
             Entry(0x06, TeletextPid, Concat(Descriptor(0x56, (byte)'d', (byte)'e', (byte)'u'))),
             Entry(0x06, SubtitlePid, Subtitling("deu")));
 
-        var description = LiveStreamDescription.FromProgramMap(map)!;
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
         Assert.Equal(MediaStreamType.Subtitle, description.Streams[1].Type);
         Assert.Equal("dvb_teletext", description.Streams[1].Codec);
@@ -89,7 +89,7 @@ public class StreamMappingTests
             Entry(0x03, GermanAudioPid, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 2)),
             Entry(0x06, SubtitlePid, Descriptor(0x59, (byte)'d', (byte)'e', (byte)'u', 0x20, 0, 0, 0, 0)));
 
-        var description = LiveStreamDescription.FromProgramMap(map)!;
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
         Assert.True(description.Streams[1].IsHearingImpaired);
         Assert.True(description.Streams[2].IsHearingImpaired);
@@ -105,7 +105,7 @@ public class StreamMappingTests
             Entry(0x06, 600),
             Entry(0x03, GermanAudioPid, Language("deu")));
 
-        var description = LiveStreamDescription.FromProgramMap(map)!;
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
         Assert.Equal(3, description.Streams.Count);
         Assert.Equal([0, 1, 2], description.Streams.Select(stream => stream.Index));
@@ -116,30 +116,50 @@ public class StreamMappingTests
     }
 
     [Fact]
-    public void ADescriptionWithoutVideoIsNotOfferedAsComplete()
+    public void ATelevisionChannelWhoseTableNamesNoVideoIsNotDescribedAtAll()
     {
-        // Jellyfin dereferences the video stream while preparing playback. A table this plugin
-        // could not find video in has not been understood, and saying so is what lets Jellyfin
-        // inspect the stream instead.
+        // Fail fast. There is nothing to fall back to and no reason to want one: a probe would
+        // read the same stream to reach the same table. Refusing here turns this into one
+        // immediate error instead of a client waiting on a source with no picture in it.
         var map = Pmt(Entry(0x03, GermanAudioPid, Language("deu")));
 
-        var description = LiveStreamDescription.FromProgramMap(map)!;
-
-        Assert.False(description.IsUsable);
+        Assert.Null(LiveStreamDescription.FromProgramMap(map, ChannelType.TV));
     }
 
     [Fact]
-    public void AnUnknownVideoCodecDoesNotByItselfMakeTheDescriptionUnusable()
+    public void ARadioChannelIsDescribedFromItsAudioAlone()
+    {
+        // The very table that is incomplete for television is a complete radio service. Only the
+        // channel list can tell the two apart, which is why the kind is passed into the open path
+        // rather than guessed from the transport stream.
+        var map = Pmt(Entry(0x03, GermanAudioPid, Language("deu")));
+
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.Radio);
+
+        Assert.NotNull(description);
+        Assert.Equal(MediaStreamType.Audio, description!.Streams[0].Type);
+        Assert.Equal(0, description.Streams[0].Index);
+    }
+
+    [Fact]
+    public void ARadioChannelWhoseTableNamesNoAudioIsNotDescribedAtAll()
+    {
+        var map = Pmt(Entry(0x06, 600));
+
+        Assert.Null(LiveStreamDescription.FromProgramMap(map, ChannelType.Radio));
+    }
+
+    [Fact]
+    public void UnstatedVideoPropertiesAreLeftUnsetRatherThanEstablished()
     {
         // Optional metadata this plugin does not establish -- resolution, frame rate, profile --
-        // is absent by design. Absent is not the same as wrong, and must not trigger a fallback
-        // of its own; Jellyfin treats an unset optional value as unknown and carries on.
+        // is absent by design. Absent is not the same as unclear: it must not read as a reason to
+        // inspect the stream. Jellyfin treats an unset optional value as unknown and carries on.
         var map = Pmt(Entry(0x1B, VideoPid), Entry(0x03, GermanAudioPid, Language("deu")));
 
-        var description = LiveStreamDescription.FromProgramMap(map)!;
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
         var video = description.Streams[0];
 
-        Assert.True(description.IsUsable);
         Assert.Null(video.Width);
         Assert.Null(video.Height);
         Assert.Null(video.RealFrameRate);
@@ -151,7 +171,7 @@ public class StreamMappingTests
     [Fact]
     public void AnEmptyTableDescribesNothing()
     {
-        Assert.Null(LiveStreamDescription.FromProgramMap(Pmt()));
+        Assert.Null(LiveStreamDescription.FromProgramMap(Pmt(), ChannelType.TV));
     }
 
     [Fact]

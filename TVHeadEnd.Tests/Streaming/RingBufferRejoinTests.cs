@@ -133,7 +133,7 @@ public sealed class RingBufferRejoinTests : IDisposable
     private static async Task<long> WriteAccessPoint(LiveStreamBuffer buffer, StreamBootstrapIndex bootstrap)
     {
         var packet = VideoPacket(randomAccess: true);
-        await buffer.Write(packet, [0], CancellationToken.None);
+        await buffer.Write(packet, [0], ProgramTableSnapshot.Empty, CancellationToken.None);
         _ = bootstrap;
         return packet.Length;
     }
@@ -143,7 +143,7 @@ public sealed class RingBufferRejoinTests : IDisposable
         var filler = Enumerable.Range(0, packets)
             .SelectMany(_ => VideoPacket(randomAccess: false))
             .ToArray();
-        await buffer.Write(filler, null, CancellationToken.None);
+        await buffer.Write(filler, null, ProgramTableSnapshot.Empty, CancellationToken.None);
         return filler.Length;
     }
 

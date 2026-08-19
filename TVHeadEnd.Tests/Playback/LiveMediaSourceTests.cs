@@ -51,19 +51,25 @@ public class LiveMediaSourceTests
     }
 
     [Fact]
-    public void AnOpenedSourceWithNoDescriptionLetsJellyfinEstablishItInstead()
+    public void ALiveSourceIsNeverProbed()
     {
-        // Nothing trustworthy to say. Handing over an empty stream list and claiming it is
-        // complete would have Jellyfin act on a description of nothing.
-        var source = LiveMediaSource.CreateOpened(
+        // Both ends of the open path, and the point of the whole exercise. Jellyfin probes a
+        // source when it supports probing and its streams have no indices yet; either half of
+        // that is enough to start a second read of a stream that is already being read, to
+        // answer a question the program map has already answered. Neither is ever true here:
+        // unopened it offers no streams and refuses probing, opened it states them outright.
+        var pending = LiveMediaSource.CreatePending(ItemId, "Das Erste HD");
+        var opened = LiveMediaSource.CreateOpened(
             ItemId,
             "Das Erste HD",
             "/buffers/tvheadend-abc.ts",
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            description: null);
+            Description());
 
-        Assert.True(source.SupportsProbing);
-        Assert.Empty(source.MediaStreams);
+        Assert.False(pending.SupportsProbing);
+        Assert.False(opened.SupportsProbing);
+        Assert.Empty(pending.MediaStreams);
+        Assert.All(opened.MediaStreams, stream => Assert.True(stream.Index >= 0));
     }
 
     [Fact]
@@ -117,6 +123,5 @@ public class LiveMediaSourceTests
                 new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" },
                 new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "mp2" },
             ],
-            HasUnclassifiedStream = false,
         };
 }

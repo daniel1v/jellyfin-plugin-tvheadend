@@ -89,10 +89,10 @@ public static class LiveMediaSource
             SupportsDirectStream = true,
             SupportsTranscoding = true,
 
-            // Nothing is known yet, so Jellyfin is left free to establish it the way it would for
-            // any other source. Once the stream is open this becomes false, because by then the
-            // real answer is in hand.
-            SupportsProbing = true,
+            // Never probed, opened or not. The program map of the stream being delivered is the
+            // description, and asking Jellyfin to inspect a live channel means reading a stream
+            // that is already being read to answer a question already answered.
+            SupportsProbing = false,
             MediaStreams = [],
         };
     }
@@ -104,21 +104,19 @@ public static class LiveMediaSource
     /// <param name="name">What to call the source.</param>
     /// <param name="mediaPath">The buffer file the stream is readable from.</param>
     /// <param name="streamUrl">The address Jellyfin serves the open stream at.</param>
-    /// <param name="description">
-    /// What the stream contains, or <see langword="null"/> when it could not be established and
-    /// Jellyfin should find out for itself.
-    /// </param>
+    /// <param name="description">What the stream contains, read from its program map.</param>
     /// <returns>An opened media source.</returns>
     public static MediaSourceInfo CreateOpened(
         string mediaSourceId,
         string name,
         string mediaPath,
         string streamUrl,
-        LiveStreamDescription? description)
+        LiveStreamDescription description)
     {
         ArgumentException.ThrowIfNullOrEmpty(mediaSourceId);
         ArgumentException.ThrowIfNullOrEmpty(mediaPath);
         ArgumentException.ThrowIfNullOrEmpty(streamUrl);
+        ArgumentNullException.ThrowIfNull(description);
 
         var source = new MediaSourceInfo
         {
@@ -132,6 +130,10 @@ public static class LiveMediaSource
             SupportsDirectPlay = true,
             SupportsDirectStream = true,
             SupportsTranscoding = true,
+
+            // The streams below are the program map of the stream being delivered, at the
+            // indices FFmpeg will give them. Nothing here is ever probed.
+            SupportsProbing = false,
 
             // Read from the buffer file directly where the server can, and fetched over HTTP by
             // whatever cannot.
@@ -147,26 +149,10 @@ public static class LiveMediaSource
             DefaultSubtitleStreamIndex = null,
         };
 
-        if (description is { IsUsable: true })
-        {
-            source.MediaStreams = [.. description.Streams];
+        source.MediaStreams = [.. description.Streams];
 
-            // The streams are known, at the indices FFmpeg will give them. Without this Jellyfin
-            // replaces them with its own placeholder view -- one video, one audio, indices
-            // unknown -- which is exactly the description that makes its "-map" arguments land on
-            // the wrong tracks.
-            source.SupportsProbing = false;
-
-            var audio = description.Streams.FirstOrDefault(stream => stream.Type == MediaStreamType.Audio);
-            source.DefaultAudioStreamIndex = audio?.Index;
-        }
-        else
-        {
-            // Nothing trustworthy to say. Jellyfin probes the open stream itself rather than being
-            // handed a description that might not match what it is about to read.
-            source.MediaStreams = [];
-            source.SupportsProbing = true;
-        }
+        var audio = description.Streams.FirstOrDefault(stream => stream.Type == MediaStreamType.Audio);
+        source.DefaultAudioStreamIndex = audio?.Index;
 
         return source;
     }

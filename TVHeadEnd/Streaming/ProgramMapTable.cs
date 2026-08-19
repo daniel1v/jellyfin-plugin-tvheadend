@@ -29,6 +29,12 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
 {
     private const byte TableIdProgramMap = 0x02;
 
+    /// <summary>
+    /// Everything before the first elementary stream entry: the section header, the program
+    /// number, the PCR PID and the program info length.
+    /// </summary>
+    private const int MinimumBodyLength = 12;
+
     private const byte DescriptorRegistration = 0x05;
     private const byte DescriptorLanguage = 0x0A;
     private const byte DescriptorTeletext = 0x56;
@@ -55,34 +61,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
     /// <returns>The table, or <see langword="null"/> when the section is not a usable PMT.</returns>
     public static ProgramMapTable? Parse(ReadOnlySpan<byte> section)
     {
-        if (section.Length < 13 || section[0] != TableIdProgramMap)
-        {
-            return null;
-        }
-
-        var sectionLength = ((section[1] & 0x0F) << 8) | section[2];
-
-        // The declared length has to fit what was collected, and the last four bytes are the CRC
-        // rather than table content.
-        var end = 3 + sectionLength - 4;
-        if (end > section.Length || end < 12)
-        {
-            return null;
-        }
-
-        // A table announced for later must not be acted on now. current_next_indicator is the
-        // broadcaster saying "this describes the program as it will be", and applying it to the
-        // stream as it is would describe streams that are not there yet.
-        if ((section[5] & 0x01) == 0)
-        {
-            return null;
-        }
-
-        // The whole point of this table is that it is the only description of the stream. A
-        // section that arrived damaged would be believed as readily as a good one, so it is
-        // checked rather than trusted -- the four bytes after the body are exactly what the
-        // broadcaster computed over it.
-        if (!HasValidCrc(section[..(end + 4)]))
+        if (!PsiSectionHeader.TryValidate(section, TableIdProgramMap, MinimumBodyLength, out var end))
         {
             return null;
         }
@@ -98,19 +77,35 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         }
 
         var entries = new List<ProgramMapEntry>();
-        while (offset + 5 <= end)
+        while (offset < end)
         {
+            // Every remaining byte belongs to an entry, so a stub too short to be one means the
+            // lengths above it were wrong.
+            if (offset + 5 > end)
+            {
+                return null;
+            }
+
             var streamType = section[offset];
             var pid = ((section[offset + 1] & 0x1F) << 8) | section[offset + 2];
             var infoLength = ((section[offset + 3] & 0x0F) << 8) | section[offset + 4];
 
             var descriptorsStart = offset + 5;
-            var descriptorsEnd = Math.Min(descriptorsStart + infoLength, end);
-            var descriptors = descriptorsStart <= descriptorsEnd
-                ? section[descriptorsStart..descriptorsEnd]
-                : default;
+            if (descriptorsStart + infoLength > end)
+            {
+                // The entry claims more descriptor bytes than the section holds. Truncating to
+                // what is there would publish a description of a table that was never received;
+                // half a program map is not a program map.
+                return null;
+            }
 
-            entries.Add(Describe(streamType, pid, descriptors));
+            var descriptors = section.Slice(descriptorsStart, infoLength);
+            if (!Describe(streamType, pid, descriptors, out var entry))
+            {
+                return null;
+            }
+
+            entries.Add(entry);
             offset = descriptorsStart + infoLength;
         }
 
@@ -134,8 +129,10 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                 CultureInfo.InvariantCulture,
                 $"{index}:{entry.Kind.ToString().ToLowerInvariant()}/{entry.Codec ?? "?"}/pid={entry.Pid}")));
 
-    private static ProgramMapEntry Describe(byte streamType, int pid, ReadOnlySpan<byte> descriptors)
+    private static bool Describe(byte streamType, int pid, ReadOnlySpan<byte> descriptors, out ProgramMapEntry entry)
     {
+        entry = null!;
+
         string? language = null;
         var hearingImpaired = false;
 
@@ -144,14 +141,22 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         ElementaryStreamKind? descriptorKind = null;
 
         var offset = 0;
-        while (offset + 2 <= descriptors.Length)
+        while (offset < descriptors.Length)
         {
+            if (offset + 2 > descriptors.Length)
+            {
+                // A descriptor header that does not fit. The loop above allotted this entry
+                // exactly the bytes the table said it had, so a remainder too small to be a
+                // descriptor means one of the lengths lied.
+                return false;
+            }
+
             var tag = descriptors[offset];
             var length = descriptors[offset + 1];
             var bodyStart = offset + 2;
             if (bodyStart + length > descriptors.Length)
             {
-                break;
+                return false;
             }
 
             var body = descriptors.Slice(bodyStart, length);
@@ -235,7 +240,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             codec = descriptorCodec;
         }
 
-        return new ProgramMapEntry
+        entry = new ProgramMapEntry
         {
             StreamType = streamType,
             Pid = pid,
@@ -244,6 +249,8 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             Language = language,
             IsHearingImpaired = hearingImpaired,
         };
+
+        return true;
     }
 
     private static (ElementaryStreamKind Kind, string? Codec) FromStreamType(byte streamType) => streamType switch
@@ -275,31 +282,6 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         // what it is.
         _ => (ElementaryStreamKind.Unknown, null),
     };
-
-    /// <summary>
-    /// Checks the MPEG-2 systems CRC-32 that every PSI section ends with.
-    /// </summary>
-    /// <remarks>
-    /// Computed over the section including its own CRC, which leaves zero when the section is
-    /// intact. The polynomial is the one ISO 13818-1 specifies; it is not the same CRC-32 as
-    /// zlib's, so a general-purpose implementation cannot stand in for it.
-    /// </remarks>
-    /// <param name="section">The section, including its trailing CRC.</param>
-    /// <returns>Whether the section is intact.</returns>
-    private static bool HasValidCrc(ReadOnlySpan<byte> section)
-    {
-        var crc = 0xFFFFFFFFu;
-        foreach (var value in section)
-        {
-            crc ^= (uint)value << 24;
-            for (var bit = 0; bit < 8; bit++)
-            {
-                crc = (crc & 0x80000000u) != 0 ? (crc << 1) ^ 0x04C11DB7u : crc << 1;
-            }
-        }
-
-        return crc == 0;
-    }
 
     private static string? ReadLanguage(ReadOnlySpan<byte> code)
     {

@@ -137,6 +137,22 @@ public sealed class ChannelCatalog
     }
 
     /// <summary>
+    /// Gets what kind of channel this is.
+    /// </summary>
+    /// <remarks>
+    /// The one thing the transport stream cannot state. A program map with no video describes a
+    /// radio service completely and a television channel not at all, and only the channel list
+    /// knows which of the two arrived. A channel that is not in the list, or whose service type
+    /// TVHeadend never announced, is treated as television: that is what all but a handful of
+    /// channels are, and it is the reading under which a missing video stream is reported rather
+    /// than quietly accepted.
+    /// </remarks>
+    /// <param name="channelId">The HTSP channel identifier, as Jellyfin passes it back.</param>
+    /// <returns>The channel kind.</returns>
+    public ChannelType GetChannelType(string? channelId)
+        => ResolveChannelType(Get(channelId)?.ServiceType) ?? ChannelType.TV;
+
+    /// <summary>
     /// Describes the channels for Jellyfin.
     /// </summary>
     /// <returns>The channels Jellyfin should offer.</returns>

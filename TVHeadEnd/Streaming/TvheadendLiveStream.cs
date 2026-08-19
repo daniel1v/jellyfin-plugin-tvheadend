@@ -373,12 +373,13 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                             ChannelId);
                     }
 
+                    // The tables are taken before the write and published with the access points
+                    // found in the same chunk, so a reader never sees one without the other.
                     await Buffer.Write(
                         conditionedBuffer.AsMemory(0, conditioned),
                         conditioner.RandomAccessOffsets,
+                        conditioner.TakeProgramTables(),
                         cancellationToken).ConfigureAwait(false);
-
-                    conditioner.PublishProgramTables(_bootstrap);
 
                     // Ready as soon as there is something a reader can actually start on: the
                     // conditioner only forwards once it holds both program tables and has chosen

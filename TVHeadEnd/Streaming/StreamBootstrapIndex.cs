@@ -121,24 +121,52 @@ public sealed class StreamBootstrapIndex
     }
 
     /// <summary>
-    /// Records what was just appended to the buffer.
+    /// Records the tables and the access points of one chunk together.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// One call under one lock, because the two halves only mean anything as a pair. Publishing
+    /// the access points first leaves a window in which a reader joins at a position described by
+    /// tables it has not been given; publishing the tables first leaves the mirror image. Either
+    /// way the reader is handed a picture and a map of a different programme.
+    /// </para>
+    /// <para>
     /// The access points are found by the conditioner, which is already parsing every packet, so
     /// they arrive as offsets rather than being searched for a second time.
+    /// </para>
     /// </remarks>
+    /// <param name="tables">The program tables valid for this chunk.</param>
     /// <param name="basePosition">The logical position the chunk was written at.</param>
     /// <param name="randomAccessOffsets">Access point offsets within the chunk.</param>
-    public void Record(long basePosition, IReadOnlyList<int>? randomAccessOffsets)
+    public void Publish(
+        ProgramTableSnapshot tables,
+        long basePosition,
+        IReadOnlyList<int>? randomAccessOffsets)
     {
-        if (randomAccessOffsets is null)
-        {
-            return;
-        }
+        ArgumentNullException.ThrowIfNull(tables);
 
-        foreach (var offset in randomAccessOffsets)
+        lock (_gate)
         {
-            RecordRandomAccessPoint(basePosition + offset);
+            if (tables.HasBoth)
+            {
+                _programAssociationPackets = [.. tables.ProgramAssociationPackets];
+                _programMapPackets = [.. tables.ProgramMapPackets];
+            }
+
+            if (randomAccessOffsets is null)
+            {
+                return;
+            }
+
+            foreach (var offset in randomAccessOffsets)
+            {
+                if (_points.Count == MaximumPoints)
+                {
+                    _points.Dequeue();
+                }
+
+                _points.Enqueue(basePosition + offset);
+            }
         }
     }
 

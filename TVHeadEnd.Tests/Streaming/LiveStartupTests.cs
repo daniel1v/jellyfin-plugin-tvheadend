@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.LiveTv;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;
@@ -70,20 +72,24 @@ public class LiveStartupTests
     }
 
     [Fact]
-    public void AnUnrecognisedStreamIsNotPublishedAsACompleteDescription()
+    public void AnUnrecognisedExtraStreamKeepsItsIndexAndBlocksNothing()
     {
-        // The counterpart of the test above: the stream plays, but nothing pretends to know what
-        // is in it, so Jellyfin is left to find out.
+        // A recognised video stream is all a television channel needs. The entry beside it that
+        // nothing identifies is described as data at the index the table gave it, so every later
+        // -map argument still means what this says, and it is no reason to inspect the stream.
         var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
         Condition(
             conditioner,
             Concat(ProgramAssociation(), ProgramMap((0x1B, VideoPid), (0x06, AudioPid))),
             out _);
 
-        var description = LiveStreamDescription.FromProgramMap(conditioner.ProgramMap!)!;
+        var description = LiveStreamDescription.FromProgramMap(conditioner.ProgramMap!, ChannelType.TV);
 
-        Assert.True(description.HasUnclassifiedStream);
-        Assert.False(description.IsUsable);
+        Assert.NotNull(description);
+        Assert.Equal(2, description!.Streams.Count);
+        Assert.Equal(MediaStreamType.Video, description.Streams[0].Type);
+        Assert.Equal(MediaStreamType.Data, description.Streams[1].Type);
+        Assert.Equal([0, 1], description.Streams.Select(stream => stream.Index));
     }
 
     [Fact]

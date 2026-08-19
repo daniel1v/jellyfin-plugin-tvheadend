@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging.Abstractions;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
@@ -59,14 +60,13 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         var programMap = stream.ProgramMap;
         Assert.NotNull(programMap);
 
-        var description = LiveStreamDescription.FromProgramMap(programMap!);
+        var description = LiveStreamDescription.FromProgramMap(programMap!, ChannelType.TV);
         Assert.NotNull(description);
-        Assert.True(description!.IsUsable);
 
         // The whole of a typical DVB channel, in the order the table lists it.
         Assert.Equal(
             [MediaStreamType.Video, MediaStreamType.Audio, MediaStreamType.Audio, MediaStreamType.Subtitle],
-            description.Streams.Select(media => media.Type));
+            description!.Streams.Select(media => media.Type));
         Assert.Equal(["h264", null, null, "dvb_subtitle"], description.Streams.Select(media => media.Codec));
         Assert.Equal([null, "deu", "eng", "deu"], description.Streams.Select(media => media.Language));
         Assert.Equal([0, 1, 2, 3], description.Streams.Select(media => media.Index));
@@ -107,7 +107,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         await using var stream = CreateStream(server.Url);
         await stream.Open(CancellationToken.None);
 
-        Assert.Equal(codec, LiveStreamDescription.FromProgramMap(stream.ProgramMap!)!.Streams[0].Codec);
+        Assert.Equal(codec, LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.TV)!.Streams[0].Codec);
 
         using var reader = stream.GetStream();
 
@@ -143,10 +143,11 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         Assert.Equal(0x00, ReadPid(delivered, 0));
         Assert.Equal(PmtPid, ReadPid(delivered, PacketLength));
 
-        // Audio only, so nothing claims to be a complete description of a video channel.
-        var description = LiveStreamDescription.FromProgramMap(stream.ProgramMap!)!;
-        Assert.False(description.IsUsable);
-        Assert.All(description.Streams, media => Assert.Equal(MediaStreamType.Audio, media.Type));
+        // Audio only, and complete: a radio channel is described from its audio, and nothing is
+        // probed to make up for the video that was never going to be there.
+        var description = LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.Radio);
+        Assert.NotNull(description);
+        Assert.All(description!.Streams, media => Assert.Equal(MediaStreamType.Audio, media.Type));
     }
 
     [Fact]
@@ -165,7 +166,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
             "Das Erste HD",
             stream.MediaPath,
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            LiveStreamDescription.FromProgramMap(stream.ProgramMap!));
+            LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.TV)!);
 
         Assert.True(source.AnalyzeDurationMs is > 0 and <= 5000);
     }
@@ -189,7 +190,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         }
 
         // And the description is unaffected by its presence in the source.
-        var description = LiveStreamDescription.FromProgramMap(stream.ProgramMap!)!;
+        var description = LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.TV)!;
         Assert.Equal(4, description.Streams.Count);
     }
 

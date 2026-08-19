@@ -153,8 +153,11 @@ public sealed class LateJoinTests : IDisposable
             return;
         }
 
-        conditioner.PublishProgramTables((StreamBootstrapIndex)buffer.Bootstrap!);
-        await buffer.Write(output.AsMemory(0, length), conditioner.RandomAccessOffsets, CancellationToken.None);
+        await buffer.Write(
+            output.AsMemory(0, length),
+            conditioner.RandomAccessOffsets,
+            conditioner.TakeProgramTables(),
+            CancellationToken.None);
     }
 
     private static byte[] VideoPacket(bool startsUnit, bool randomAccess)
