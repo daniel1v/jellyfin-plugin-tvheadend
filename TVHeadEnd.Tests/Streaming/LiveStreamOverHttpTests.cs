@@ -194,7 +194,39 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         Assert.Equal(4, description.Streams.Count);
     }
 
+    [Fact]
+    public async Task AViewerNeedingIdrPicturesDoesNotJoinABroadcastThatHasNone()
+    {
+        // Sharing is by channel, but a running broadcast that this decoder will not start on is
+        // not a stream this viewer can be handed, however much of it is already buffered. The
+        // access points here are signalled and carry no IDR, which is the ARD case.
+        await using var server = new TransportStreamServer(BuildBroadcast());
+
+        await using var stream = CreateStream(server.Url);
+        await stream.Open(CancellationToken.None);
+
+        Assert.False(stream.NormalizedForIdr);
+        Assert.False(stream.SuitsDecodersNeedingIdr);
+        Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: false));
+        Assert.False(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: true));
+    }
+
+    [Fact]
+    public async Task AnMpeg2BroadcastIsSharedWithEveryClient()
+    {
+        // The IDR question is about H.264 and nothing else. An MPEG-2 service starts on every
+        // decoder that ever had trouble with an open GOP H.264 one.
+        await using var server = new TransportStreamServer(BuildBroadcast(videoStreamType: 0x02));
+
+        await using var stream = CreateStream(server.Url);
+        await stream.Open(CancellationToken.None);
+
+        Assert.True(stream.SuitsDecodersNeedingIdr);
+        Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: true));
+    }
+
     private TvheadendLiveStream CreateStream(string url)
+
         => new(
             "42",
             "Das Erste HD",
@@ -205,7 +237,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
             LiveStreamBuffer.MinimumSizeMegabytes,
             new SingleClientFactory(),
             NullLogger.Instance,
-            TimeSpan.FromSeconds(15));
+            startupTimeLimit: TimeSpan.FromSeconds(15));
 
     /// <summary>
     /// Builds a broadcast the way a DVB multiplex delivers one: tables first, then a run of

@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
@@ -37,6 +38,8 @@ public sealed class LiveStreamOpener
     private readonly TvheadendConnection _connection;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IServerApplicationHost _applicationHost;
+    private readonly PlaybackClient _client;
+    private readonly IMediaEncoder _mediaEncoder;
     private readonly string _bufferDirectory;
     private readonly ILogger _logger;
 
@@ -46,24 +49,32 @@ public sealed class LiveStreamOpener
     /// <param name="connection">The TVHeadend connection, for the channel list and the endpoint.</param>
     /// <param name="httpClientFactory">The HTTP client factory.</param>
     /// <param name="applicationHost">The Jellyfin application host, for the local stream address.</param>
+    /// <param name="client">Who is asking, for the one decision that depends on it.</param>
+    /// <param name="mediaEncoder">The Jellyfin media encoder, for the FFmpeg executable.</param>
     /// <param name="bufferDirectory">Where live buffers are written.</param>
     /// <param name="logger">The logger.</param>
     public LiveStreamOpener(
         TvheadendConnection connection,
         IHttpClientFactory httpClientFactory,
         IServerApplicationHost applicationHost,
+        PlaybackClient client,
+        IMediaEncoder mediaEncoder,
         string bufferDirectory,
         ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(httpClientFactory);
         ArgumentNullException.ThrowIfNull(applicationHost);
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(mediaEncoder);
         ArgumentException.ThrowIfNullOrEmpty(bufferDirectory);
         ArgumentNullException.ThrowIfNull(logger);
 
         _connection = connection;
         _httpClientFactory = httpClientFactory;
         _applicationHost = applicationHost;
+        _client = client;
+        _mediaEncoder = mediaEncoder;
         _bufferDirectory = bufferDirectory;
         _logger = logger;
     }
@@ -86,6 +97,10 @@ public sealed class LiveStreamOpener
 
         var stopwatch = Stopwatch.StartNew();
         var channel = _connection.Channels.Get(channelId);
+
+        // Asked once, here, while the request that carries the answer is still in flight. The
+        // stream is opened on this thread but read on another, by which time there is no request.
+        var needsIdrToStart = _client.IsAndroid;
         var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
         var name = channel?.Name ?? "Live TV";
 
@@ -98,7 +113,9 @@ public sealed class LiveStreamOpener
             Path.Combine(_bufferDirectory, FormattableString.Invariant($"tvheadend-{Guid.NewGuid():N}")),
             _connection.Settings.LiveBufferSizeMegabytes,
             _httpClientFactory,
-            _logger);
+            _logger,
+            needsIdrToStart,
+            _mediaEncoder.EncoderPath);
 
         try
         {

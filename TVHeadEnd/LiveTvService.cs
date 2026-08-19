@@ -9,7 +9,9 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.LiveTv;
 using TVHeadEnd.Playback;
@@ -42,6 +44,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     private readonly TvheadendDvr _dvr;
     private readonly TvheadendGuide _guide;
     private readonly ChannelItemIds _itemIds;
+    private readonly PlaybackClient _client;
 
     private readonly ILogger<LiveTvService> _logger;
 
@@ -54,13 +57,17 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <param name="httpClientFactory">The HTTP client factory.</param>
     /// <param name="configurationManager">The Jellyfin configuration manager.</param>
     /// <param name="applicationHost">The Jellyfin application host.</param>
+    /// <param name="mediaEncoder">The Jellyfin media encoder.</param>
+    /// <param name="httpContextAccessor">The request in flight, for the client name.</param>
     public LiveTvService(
         ILoggerFactory loggerFactory,
         TvheadendConnection connection,
         ILibraryManager libraryManager,
         IHttpClientFactory httpClientFactory,
         IConfigurationManager configurationManager,
-        IServerApplicationHost applicationHost)
+        IServerApplicationHost applicationHost,
+        IMediaEncoder mediaEncoder,
+        IHttpContextAccessor httpContextAccessor)
     {
         ArgumentNullException.ThrowIfNull(loggerFactory);
         ArgumentNullException.ThrowIfNull(connection);
@@ -68,11 +75,19 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         _logger = loggerFactory.CreateLogger<LiveTvService>();
         _connection = connection;
         _itemIds = new ChannelItemIds(libraryManager);
+        _client = new PlaybackClient(httpContextAccessor);
 
         var bufferDirectory = LiveBufferDirectory.Resolve(configurationManager);
         LiveBufferDirectory.RemoveOrphaned(bufferDirectory, _logger);
 
-        _opener = new LiveStreamOpener(connection, httpClientFactory, applicationHost, bufferDirectory, _logger);
+        _opener = new LiveStreamOpener(
+            connection,
+            httpClientFactory,
+            applicationHost,
+            _client,
+            mediaEncoder,
+            bufferDirectory,
+            _logger);
         _dvr = new TvheadendDvr(connection, _logger);
         _guide = new TvheadendGuide(connection, _logger);
     }
@@ -140,9 +155,10 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // across the whole call, so two viewers starting the same channel arrive here one after
         // the other and the second finds the first stream to reuse. A lock of our own would only
         // duplicate that.
+        var needsIdrToStart = _client.IsAndroid;
         var reusable = currentLiveStreams
             .OfType<TvheadendLiveStream>()
-            .FirstOrDefault(stream => CanBeReusedFor(stream, channelId));
+            .FirstOrDefault(stream => CanBeReusedFor(stream, channelId, needsIdrToStart));
 
         if (reusable is not null)
         {
@@ -285,13 +301,21 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// </remarks>
     /// <param name="stream">The open stream.</param>
     /// <param name="channelId">The channel being requested.</param>
+    /// <param name="needsIdrToStart">Whether the asking client's decoder needs IDR pictures.</param>
     /// <returns>Whether the stream may be shared.</returns>
-    internal static bool CanBeReusedFor(TvheadendLiveStream stream, string channelId)
+    internal static bool CanBeReusedFor(TvheadendLiveStream stream, string channelId, bool needsIdrToStart)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
         return stream is { EnableStreamSharing: true, HasBuffer: true }
-            && string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase);
+            && string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase)
+
+            // A viewer whose decoder will not start without an IDR picture cannot be handed a
+            // running broadcast that has none, however much of it is already buffered. The other
+            // direction is fine -- a re-encoded stream is an ordinary conformant one -- but only
+            // once it has been established that the broadcast needed it, which is what this
+            // stream having been normalized says.
+            && (!needsIdrToStart || stream.SuitsDecodersNeedingIdr);
     }
 
     /// <summary>

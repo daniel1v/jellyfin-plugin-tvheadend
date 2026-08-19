@@ -54,6 +54,11 @@ public static class LiveMediaSource
     /// begins with its program tables and an access point, which is exactly what FFmpeg needs to
     /// see.
     /// </para>
+    /// <para>
+    /// Measured on the test server rather than assumed, on 2026-08-19: with this value ZDF's HLS
+    /// playlist was ready 3.4 s after the request, and with it removed the same request took
+    /// 200,008 ms -- the server-wide default of 200M, to the millisecond.
+    /// </para>
     /// </remarks>
     private const int AnalyzeDurationMs = 2000;
 
