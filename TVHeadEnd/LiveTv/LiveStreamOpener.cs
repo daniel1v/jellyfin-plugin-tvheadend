@@ -7,7 +7,6 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller;
-using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
@@ -39,7 +38,6 @@ public sealed class LiveStreamOpener
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IServerApplicationHost _applicationHost;
     private readonly PlaybackClient _client;
-    private readonly IMediaEncoder _mediaEncoder;
     private readonly string _bufferDirectory;
     private readonly ILogger _logger;
 
@@ -50,7 +48,6 @@ public sealed class LiveStreamOpener
     /// <param name="httpClientFactory">The HTTP client factory.</param>
     /// <param name="applicationHost">The Jellyfin application host, for the local stream address.</param>
     /// <param name="client">Who is asking, for the one decision that depends on it.</param>
-    /// <param name="mediaEncoder">The Jellyfin media encoder, for the FFmpeg executable.</param>
     /// <param name="bufferDirectory">Where live buffers are written.</param>
     /// <param name="logger">The logger.</param>
     public LiveStreamOpener(
@@ -58,7 +55,6 @@ public sealed class LiveStreamOpener
         IHttpClientFactory httpClientFactory,
         IServerApplicationHost applicationHost,
         PlaybackClient client,
-        IMediaEncoder mediaEncoder,
         string bufferDirectory,
         ILogger logger)
     {
@@ -66,7 +62,6 @@ public sealed class LiveStreamOpener
         ArgumentNullException.ThrowIfNull(httpClientFactory);
         ArgumentNullException.ThrowIfNull(applicationHost);
         ArgumentNullException.ThrowIfNull(client);
-        ArgumentNullException.ThrowIfNull(mediaEncoder);
         ArgumentException.ThrowIfNullOrEmpty(bufferDirectory);
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -74,7 +69,6 @@ public sealed class LiveStreamOpener
         _httpClientFactory = httpClientFactory;
         _applicationHost = applicationHost;
         _client = client;
-        _mediaEncoder = mediaEncoder;
         _bufferDirectory = bufferDirectory;
         _logger = logger;
     }
@@ -114,8 +108,7 @@ public sealed class LiveStreamOpener
             _connection.Settings.LiveBufferSizeMegabytes,
             _httpClientFactory,
             _logger,
-            needsIdrToStart,
-            _mediaEncoder.EncoderPath);
+            needsIdrToStart);
 
         try
         {

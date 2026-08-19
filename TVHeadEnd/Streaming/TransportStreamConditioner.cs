@@ -54,7 +54,6 @@ public sealed class TransportStreamConditioner
     private static readonly TimeSpan RandomAccessSearchTimeLimit = TimeSpan.FromSeconds(2);
 
     private readonly int _droppedPid;
-    private readonly bool _requireIdrAtAccessPoints;
     private readonly byte[] _partialPacket = new byte[TransportStreamPacket.Length];
     private readonly List<int> _randomAccessOffsets = [];
 
@@ -71,7 +70,6 @@ public sealed class TransportStreamConditioner
     private int _programMapTablePid = -1;
     private bool _started;
     private bool _readingStartAccessUnit;
-    private int _idrCandidateOffset = -1;
     private int _bytesInspected;
     private long _firstInspectedTimestamp;
 
@@ -83,16 +81,7 @@ public sealed class TransportStreamConditioner
     /// Whether to forward from the first packet instead of withholding until a random access
     /// point. For reading a file that already starts at one.
     /// </param>
-    /// <param name="requireIdrAtAccessPoints">
-    /// Whether a signalled access point only counts once an IDR picture has actually been found
-    /// at it. Set for a stream this plugin produced itself to give a decoder somewhere to start:
-    /// publishing a join point there that turns out not to carry one would recreate the very
-    /// failure the re-encode exists to remove.
-    /// </param>
-    public TransportStreamConditioner(
-        int droppedPid,
-        bool startImmediately = false,
-        bool requireIdrAtAccessPoints = false)
+    public TransportStreamConditioner(int droppedPid, bool startImmediately = false)
     {
         if (droppedPid is < -1 or > 0x1FFF)
         {
@@ -101,7 +90,6 @@ public sealed class TransportStreamConditioner
 
         _droppedPid = droppedPid;
         _started = startImmediately;
-        _requireIdrAtAccessPoints = requireIdrAtAccessPoints;
     }
 
     /// <summary>
@@ -240,11 +228,6 @@ public sealed class TransportStreamConditioner
         var written = 0;
         _randomAccessOffsets.Clear();
 
-        // Offsets only mean anything inside one destination buffer, so an access point
-        // still waiting to be confirmed when the chunk ends is dropped rather than carried
-        // over. Another one follows within a second or two.
-        _idrCandidateOffset = -1;
-
         if (_partialPacketLength > 0)
         {
             var missing = Math.Min(TransportStreamPacket.Length - _partialPacketLength, source.Length);
@@ -314,7 +297,11 @@ public sealed class TransportStreamConditioner
         if (_started)
         {
             packet.CopyTo(destination);
-            RecordAccessPoint(packet, pid, isRandomAccessPoint, destinationOffset);
+            if (isRandomAccessPoint)
+            {
+                _randomAccessOffsets.Add(destinationOffset);
+            }
+
             ObserveStartAccessUnit(packet, pid);
             return TransportStreamPacket.Length;
         }
@@ -358,56 +345,12 @@ public sealed class TransportStreamConditioner
         // the adaptation field says it is. Delivering from a guess is recoverable -- the first
         // seconds may not decode -- but storing it would hand every later reader the same bad
         // position for as long as it stays inside the window.
-        RecordAccessPoint(packet, pid, isRandomAccessPoint, destinationOffset + written);
-
-        return written + TransportStreamPacket.Length;
-    }
-
-    /// <summary>
-    /// Records a place a later reader may join, once there is a reason to believe a decoder can
-    /// start there.
-    /// </summary>
-    /// <remarks>
-    /// A broadcast is taken at its word: the random access indicator is the transmitter saying so,
-    /// and second-guessing it would mean decoding the picture. A stream this plugin re-encoded is
-    /// not, because the only reason it exists is that the broadcast's word was not enough for the
-    /// device -- so there the IDR has to be found before the position is published, and a point
-    /// whose picture has not finished arriving by the end of the chunk is simply let go.
-    /// </remarks>
-    private void RecordAccessPoint(ReadOnlySpan<byte> packet, int pid, bool isRandomAccessPoint, int offset)
-    {
-        if (!_requireIdrAtAccessPoints)
-        {
-            if (isRandomAccessPoint)
-            {
-                _randomAccessOffsets.Add(offset);
-            }
-
-            return;
-        }
-
-        if (pid != VideoPid || VideoStreamType != H264StreamType)
-        {
-            return;
-        }
-
         if (isRandomAccessPoint)
         {
-            _idrScanner.Reset();
-            _idrCandidateOffset = offset;
-        }
-        else if (_idrCandidateOffset < 0 || TransportStreamPacket.StartsPayloadUnit(packet))
-        {
-            // A new picture started without the last candidate ever showing an IDR.
-            _idrCandidateOffset = -1;
-            return;
+            _randomAccessOffsets.Add(destinationOffset + written);
         }
 
-        if (_idrCandidateOffset >= 0 && _idrScanner.Scan(TransportStreamPacket.ReadPayload(packet)))
-        {
-            _randomAccessOffsets.Add(_idrCandidateOffset);
-            _idrCandidateOffset = -1;
-        }
+        return written + TransportStreamPacket.Length;
     }
 
     /// <summary>

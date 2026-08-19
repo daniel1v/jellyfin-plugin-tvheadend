@@ -195,37 +195,129 @@ public sealed class LiveStreamOverHttpTests : IDisposable
     }
 
     [Fact]
-    public async Task AViewerNeedingIdrPicturesDoesNotJoinABroadcastThatHasNone()
+    public async Task AnOpenGopBroadcastAsksJellyfinToReEncodeItForADecoderThatNeedsIdrPictures()
     {
-        // Sharing is by channel, but a running broadcast that this decoder will not start on is
-        // not a stream this viewer can be handed, however much of it is already buffered. The
-        // access points here are signalled and carry no IDR, which is the ARD case.
+        // The ARD case end to end. The access points are signalled and hold no IDR, so the source
+        // handed back withdraws direct play -- and the buffer still holds the broadcast exactly as
+        // it arrived, because the re-encoding is Jellyfin's to do.
+        await using var server = new TransportStreamServer(BuildBroadcast());
+
+        await using var stream = CreateStream(server.Url, clientNeedsIdr: true);
+        await stream.Open(CancellationToken.None);
+
+        Assert.True(stream.RequiresVideoReencode);
+
+        // Which is what the opener then builds the source from.
+        var source = OpenedSource(stream);
+        Assert.False(source.SupportsDirectPlay);
+        Assert.False(source.SupportsDirectStream);
+        Assert.True(source.SupportsTranscoding);
+
+        // And the ring still holds the broadcast, tables and all, exactly as it arrived.
+        using var reader = stream.GetStream();
+        var delivered = await ReadUpTo(reader, 2 * PacketLength);
+        Assert.Equal(0x00, ReadPid(delivered, 0));
+        Assert.Equal(PmtPid, ReadPid(delivered, PacketLength));
+    }
+
+    [Fact]
+    public async Task TheSameBroadcastIsHandedToEveryOtherClientAsItIs()
+    {
         await using var server = new TransportStreamServer(BuildBroadcast());
 
         await using var stream = CreateStream(server.Url);
         await stream.Open(CancellationToken.None);
 
-        Assert.False(stream.NormalizedForIdr);
-        Assert.False(stream.SuitsDecodersNeedingIdr);
-        Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: false));
-        Assert.False(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: true));
+        Assert.False(stream.RequiresVideoReencode);
+
+        var source = OpenedSource(stream);
+        Assert.True(source.SupportsDirectPlay);
+        Assert.True(source.SupportsDirectStream);
     }
 
     [Fact]
-    public async Task AnMpeg2BroadcastIsSharedWithEveryClient()
+    public async Task ABroadcastWithRealIdrPicturesIsNotReEncodedForAnyone()
     {
-        // The IDR question is about H.264 and nothing else. An MPEG-2 service starts on every
-        // decoder that ever had trouble with an open GOP H.264 one.
+        await using var server = new TransportStreamServer(BuildBroadcast(carriesIdr: true));
+
+        await using var stream = CreateStream(server.Url, clientNeedsIdr: true);
+        await stream.Open(CancellationToken.None);
+
+        Assert.False(stream.RequiresVideoReencode);
+        Assert.True(stream.SuitsDecodersNeedingIdr);
+        Assert.True(OpenedSource(stream).SupportsDirectPlay);
+    }
+
+    [Fact]
+    public async Task AnMpeg2BroadcastIsNotReEncodedForAnyone()
+    {
+        // The IDR question is about H.264 and nothing else, and asking it of MPEG-2 would find
+        // slice start codes that read the same and mean something else entirely.
         await using var server = new TransportStreamServer(BuildBroadcast(videoStreamType: 0x02));
+
+        await using var stream = CreateStream(server.Url, clientNeedsIdr: true);
+        await stream.Open(CancellationToken.None);
+
+        Assert.False(stream.RequiresVideoReencode);
+        Assert.True(stream.SuitsDecodersNeedingIdr);
+        Assert.True(OpenedSource(stream).SupportsDirectPlay);
+    }
+
+    [Fact]
+    public async Task AForcedReEncodeStreamIsSharedWithItsOwnKindAndNoOther()
+    {
+        // Its media source has direct play withdrawn, which is right for the viewer it was opened
+        // for and wrong for everyone else: handing it on would transcode a channel that plays
+        // perfectly well as it is.
+        await using var server = new TransportStreamServer(BuildBroadcast());
+
+        await using var stream = CreateStream(server.Url, clientNeedsIdr: true);
+        await stream.Open(CancellationToken.None);
+
+        Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: true));
+        Assert.False(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: false));
+    }
+
+    [Fact]
+    public async Task AnOpenGopBroadcastIsSharedWithEveryoneExceptDecodersThatNeedIdrPictures()
+    {
+        await using var server = new TransportStreamServer(BuildBroadcast());
 
         await using var stream = CreateStream(server.Url);
         await stream.Open(CancellationToken.None);
 
-        Assert.True(stream.SuitsDecodersNeedingIdr);
+        Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: false));
+        Assert.False(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: true));
+    }
+
+    [Theory]
+    [InlineData((byte)0x1B, true)]
+    [InlineData((byte)0x02, false)]
+    public async Task ABroadcastEveryDecoderStartsOnIsSharedWithAllOfThem(byte videoStreamType, bool carriesIdr)
+    {
+        await using var server = new TransportStreamServer(
+            BuildBroadcast(videoStreamType: videoStreamType, carriesIdr: carriesIdr));
+
+        await using var stream = CreateStream(server.Url);
+        await stream.Open(CancellationToken.None);
+
+        Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: false));
         Assert.True(LiveTvService.CanBeReusedFor(stream, "42", needsIdrToStart: true));
     }
 
-    private TvheadendLiveStream CreateStream(string url)
+    /// <summary>
+    /// The source the opener would publish for this stream, built the same way it builds it.
+    /// </summary>
+    private static MediaSourceInfo OpenedSource(TvheadendLiveStream stream)
+        => LiveMediaSource.CreateOpened(
+            "8f14e45fceea167a5a36dedd4bea2543",
+            "Das Erste HD",
+            stream.MediaPath,
+            "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
+            LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.TV)!,
+            stream.RequiresVideoReencode);
+
+    private TvheadendLiveStream CreateStream(string url, bool clientNeedsIdr = false)
 
         => new(
             "42",
@@ -233,17 +325,21 @@ public sealed class LiveStreamOverHttpTests : IDisposable
             url,
             new Dictionary<string, string>(),
             LiveMediaSource.CreatePending("8f14e45fceea167a5a36dedd4bea2543", "Das Erste HD"),
-            Path.Combine(_bufferDirectory, "buffer"),
+            Path.Combine(_bufferDirectory, Guid.NewGuid().ToString("N")),
             LiveStreamBuffer.MinimumSizeMegabytes,
             new SingleClientFactory(),
             NullLogger.Instance,
-            startupTimeLimit: TimeSpan.FromSeconds(15));
+            clientNeedsIdr,
+            TimeSpan.FromSeconds(15));
 
     /// <summary>
     /// Builds a broadcast the way a DVB multiplex delivers one: tables first, then a run of
     /// packets with periodic access points.
     /// </summary>
-    private static byte[] BuildBroadcast(bool includeEventInformation = false, byte videoStreamType = 0x1B)
+    private static byte[] BuildBroadcast(
+        bool includeEventInformation = false,
+        byte videoStreamType = 0x1B,
+        bool carriesIdr = false)
     {
         var packets = new List<byte[]>();
 
@@ -260,7 +356,10 @@ public sealed class LiveStreamOverHttpTests : IDisposable
                 packets.Add(Packet(0x12));
             }
 
-            packets.Add(Packet(VideoPid, startsUnit: true, randomAccess: round % 4 == 0));
+            var accessPoint = round % 4 == 0;
+            packets.Add(accessPoint && carriesIdr
+                ? IdrPacket()
+                : Packet(VideoPid, startsUnit: true, randomAccess: accessPoint));
             packets.Add(Packet(VideoPid));
             packets.Add(Packet(GermanAudioPid, startsUnit: true));
             packets.Add(Packet(EnglishAudioPid, startsUnit: true));
@@ -405,7 +504,20 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         return packet;
     }
 
+    /// <summary>
+    /// A signalled access point whose picture actually begins with an IDR, which is what an ARD
+    /// broadcast does not send and a ZDF one does.
+    /// </summary>
+    private static byte[] IdrPacket()
+    {
+        var packet = Packet(VideoPid, startsUnit: true, randomAccess: true);
+        byte[] nalUnits = [0x00, 0x00, 0x01, 0x09, 0x10, 0x00, 0x00, 0x01, 0x65, 0x88];
+        nalUnits.CopyTo(packet.AsSpan(6));
+        return packet;
+    }
+
     private static int ReadPid(byte[] data, int offset)
+
         => ((data[offset + 1] & 0x1F) << 8) | data[offset + 2];
 
     private static async Task<byte[]> ReadUpTo(Stream stream, int count)

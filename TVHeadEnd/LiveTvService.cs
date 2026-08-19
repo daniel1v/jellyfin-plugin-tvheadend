@@ -9,7 +9,6 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
-using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -57,7 +56,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <param name="httpClientFactory">The HTTP client factory.</param>
     /// <param name="configurationManager">The Jellyfin configuration manager.</param>
     /// <param name="applicationHost">The Jellyfin application host.</param>
-    /// <param name="mediaEncoder">The Jellyfin media encoder.</param>
     /// <param name="httpContextAccessor">The request in flight, for the client name.</param>
     public LiveTvService(
         ILoggerFactory loggerFactory,
@@ -66,7 +64,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         IHttpClientFactory httpClientFactory,
         IConfigurationManager configurationManager,
         IServerApplicationHost applicationHost,
-        IMediaEncoder mediaEncoder,
         IHttpContextAccessor httpContextAccessor)
     {
         ArgumentNullException.ThrowIfNull(loggerFactory);
@@ -85,7 +82,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             httpClientFactory,
             applicationHost,
             _client,
-            mediaEncoder,
             bufferDirectory,
             _logger);
         _dvr = new TvheadendDvr(connection, _logger);
@@ -307,15 +303,24 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     {
         ArgumentNullException.ThrowIfNull(stream);
 
-        return stream is { EnableStreamSharing: true, HasBuffer: true }
-            && string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase)
+        if (stream is not { EnableStreamSharing: true, HasBuffer: true }
+            || !string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
 
-            // A viewer whose decoder will not start without an IDR picture cannot be handed a
-            // running broadcast that has none, however much of it is already buffered. The other
-            // direction is fine -- a re-encoded stream is an ordinary conformant one -- but only
-            // once it has been established that the broadcast needed it, which is what this
-            // stream having been normalized says.
-            && (!needsIdrToStart || stream.SuitsDecodersNeedingIdr);
+        // A stream opened for a decoder that needs IDR pictures carries a media source with
+        // direct play withdrawn, so that Jellyfin re-encodes the video. Handing it to anyone else
+        // would transcode a channel that plays perfectly well as it is.
+        if (stream.RequiresVideoReencode)
+        {
+            return needsIdrToStart;
+        }
+
+        // And the other way round: a broadcast whose access point holds no IDR is a stream such a
+        // decoder never starts on, however much of it is already buffered. It opens its own,
+        // which is the same bytes with a media source that asks Jellyfin to re-encode them.
+        return !needsIdrToStart || stream.SuitsDecodersNeedingIdr;
     }
 
     /// <summary>

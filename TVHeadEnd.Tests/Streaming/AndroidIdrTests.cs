@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
+using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Http;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
@@ -60,31 +61,27 @@ public class AndroidIdrTests
     }
 
     [Fact]
-    public void AnH264BroadcastWhoseAccessPointCarriesAnIdrIsLeftAlone()
+    public void AnIdrInTheStartingPictureIsSeenAsSoonAsItArrives()
     {
         var conditioner = Start(H264, withIdr: true);
 
         Assert.True(conditioner.StartAccessUnitCarriesIdr);
-        Assert.False(H264IdrNormalizer.IsNeeded(true, conditioner.VideoStreamType, conditioner.StartAccessUnitCarriesIdr));
-        Assert.False(H264IdrNormalizer.IsNeeded(false, conditioner.VideoStreamType, conditioner.StartAccessUnitCarriesIdr));
     }
 
     [Fact]
-    public void AnH264BroadcastWhoseAccessPointCarriesNoIdrIsReEncodedForAndroidAlone()
+    public void AStartingPictureWithNoIdrIsSettledWhenTheNextPictureBegins()
     {
         // The ARD case, measured: a valid DVB access point -- random access indicator set, a
         // recovery point rather than an IDR -- which FFmpeg starts on and MediaCodec does not.
+        // Nothing waits on a timer; the next payload unit start is the proof that the first
+        // picture has been seen whole.
         var conditioner = Start(H264, withIdr: false);
 
         Assert.False(conditioner.StartAccessUnitCarriesIdr);
-        Assert.True(H264IdrNormalizer.IsNeeded(true, conditioner.VideoStreamType, conditioner.StartAccessUnitCarriesIdr));
-
-        // Every other client receives the broadcast, because the broadcast is conformant.
-        Assert.False(H264IdrNormalizer.IsNeeded(false, conditioner.VideoStreamType, conditioner.StartAccessUnitCarriesIdr));
     }
 
     [Fact]
-    public void AnMpeg2BroadcastIsNeverReEncodedHoweverItsSliceStartCodesRead()
+    public void AnMpeg2BroadcastIsNeverAskedTheQuestionHoweverItsSliceStartCodesRead()
     {
         // The trap this used to fall into. The MPEG-2 slice start code for picture row five is
         // 00 00 01 05, which satisfies the H.264 IDR pattern by coincidence -- measured at 205
@@ -93,47 +90,68 @@ public class AndroidIdrTests
         var conditioner = Start(Mpeg2Video, withIdr: false);
 
         Assert.Null(conditioner.StartAccessUnitCarriesIdr);
-        Assert.False(H264IdrNormalizer.IsNeeded(true, conditioner.VideoStreamType, conditioner.StartAccessUnitCarriesIdr));
     }
 
     [Fact]
-    public void ANormalizedStreamPublishesAJoinPointOnlyWhereAnIdrActuallyIs()
+    public void AStreamThatDidNotStartOnASignalledAccessPointIsNeverGivenAnAnswer()
     {
-        // The stream this plugin produced itself is held to the standard it exists to meet. A
-        // signalled access point with no IDR at it is exactly the thing the re-encode removes, so
-        // finding one is a reason to publish nothing rather than to trust the flag.
-        var conditioner = new TransportStreamConditioner(
-            TransportStreamConditioner.EventInformationTablePid,
-            requireIdrAtAccessPoints: true);
+        // The search gave up and delivery began at a bare picture start. That is a guess about
+        // where a picture begins, and the IDR question has no answer to wait for; inventing one
+        // would either re-encode a channel for nothing or leave one spinning.
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
-        Condition(conditioner, Concat(Pat(), Pmt(H264), VideoAccessPoint(withIdr: true)), out _);
-        Assert.True(conditioner.HasStarted);
-
-        // A real one, recorded.
-        var written = Condition(conditioner, VideoAccessPoint(withIdr: true), out _);
-        Assert.Equal(PacketLength, written);
-        Assert.Equal([0], conditioner.RandomAccessOffsets);
-
-        // A flagged one that turns out to hold no IDR, followed by the next picture: not recorded.
         Condition(
             conditioner,
-            Concat(VideoAccessPoint(withIdr: false), VideoPacket(startsUnit: true, randomAccess: false)),
+            Concat(Pat(), Pmt(H264), VideoPacket(startsUnit: true, randomAccess: false)),
             out _);
-        Assert.Empty(conditioner.RandomAccessOffsets);
+
+        Assert.Null(conditioner.StartAccessUnitCarriesIdr);
     }
 
     [Fact]
     public void ABroadcastIsTakenAtItsWordAboutItsOwnAccessPoints()
     {
-        // The counterpart. Outside the normalized path the random access indicator is the
-        // transmitter saying so, and second-guessing it would mean decoding the picture. An open
-        // GOP access point is still where a decoder is meant to join.
+        // A missing IDR is a property of one client's decoder, not a reason to withhold a join
+        // point from the ring. The random access indicator is the transmitter saying a decoder
+        // may begin here, and second-guessing it would mean decoding the picture.
         var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         Condition(conditioner, Concat(Pat(), Pmt(H264), VideoAccessPoint(withIdr: false)), out _);
         Condition(conditioner, VideoAccessPoint(withIdr: false), out _);
 
         Assert.Equal([0], conditioner.RandomAccessOffsets);
+    }
+
+    [Fact]
+    public void AForcedReencodeSourceWithdrawsDirectPlayAndStatesNothingUntrue()
+    {
+        // The media source stays factually correct about the stream: same container, same streams
+        // read from the same program map. What changes is only which ways of delivering it are on
+        // offer, which is the honest way to reach Jellyfin's transcoder.
+        var description = new LiveStreamDescription
+        {
+            Streams = [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" }],
+        };
+
+        var plain = LiveMediaSource.CreateOpened("id", "Das Erste", "/buffer.ts", "http://host/s.ts", description);
+        var forced = LiveMediaSource.CreateOpened(
+            "id",
+            "Das Erste",
+            "/buffer.ts",
+            "http://host/s.ts",
+            description,
+            requiresVideoReencode: true);
+
+        Assert.True(plain.SupportsDirectPlay);
+        Assert.True(plain.SupportsDirectStream);
+        Assert.True(plain.SupportsTranscoding);
+
+        Assert.False(forced.SupportsDirectPlay);
+        Assert.False(forced.SupportsDirectStream);
+        Assert.True(forced.SupportsTranscoding);
+        Assert.False(forced.SupportsProbing);
+        Assert.Equal(plain.Container, forced.Container);
+        Assert.Equal(plain.MediaStreams.Count, forced.MediaStreams.Count);
     }
 
     private static TransportStreamConditioner Start(byte videoStreamType, bool withIdr)

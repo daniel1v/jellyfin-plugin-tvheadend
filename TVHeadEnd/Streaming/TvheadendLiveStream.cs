@@ -41,12 +41,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     private const byte H264StreamType = 0x1B;
 
     /// <summary>
-    /// How much of the broadcast may be read while establishing whether its access points carry
-    /// IDR pictures.
-    /// </summary>
-    private const int InspectionByteLimit = 4 * 1024 * 1024;
-
-    /// <summary>
     /// How long a connected stream has to produce something playable before the open fails.
     /// </summary>
     /// <remarks>
@@ -56,14 +50,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     /// recoverable; hanging is not.
     /// </remarks>
     private static readonly TimeSpan StartupTimeLimit = TimeSpan.FromSeconds(20);
-
-    /// <summary>
-    /// How much of the broadcast may be read while establishing whether its access points carry
-    /// IDR pictures. Bounded twice, because either bound alone fails on some service: two seconds
-    /// of a high bitrate channel is several megabytes, and four megabytes of a radio-rate one is
-    /// minutes.
-    /// </summary>
-    private static readonly TimeSpan InspectionTimeLimit = TimeSpan.FromSeconds(3);
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger _logger;
@@ -75,11 +61,9 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     private readonly string _bufferPath;
     private readonly int _bufferSizeMegabytes;
     private readonly TimeSpan _startupTimeLimit;
-    private readonly bool _mayNormalizeH264;
-    private readonly string? _ffmpegPath;
+    private readonly bool _clientNeedsIdr;
 
     private TransportStreamConditioner? _conditioner;
-    private H264IdrNormalizer? _normalizer;
     private Task? _feedTask;
     private bool _closed;
     private bool _disposed;
@@ -96,11 +80,10 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     /// <param name="bufferSizeMegabytes">The configured buffer window.</param>
     /// <param name="httpClientFactory">The HTTP client factory.</param>
     /// <param name="logger">The logger.</param>
-    /// <param name="mayNormalizeH264">
-    /// Whether this viewer's decoder needs IDR pictures to start. Only then is the beginning of
-    /// the broadcast examined, and only then may it be re-encoded.
+    /// <param name="clientNeedsIdr">
+    /// Whether the viewer this stream is being opened for has a decoder that will not start
+    /// without an IDR picture. The one thing about the caller that reaches this layer.
     /// </param>
-    /// <param name="ffmpegPath">The FFmpeg executable, without which nothing is re-encoded.</param>
     /// <param name="startupTimeLimit">
     /// How long a connected stream has to produce something playable. Defaults to the production
     /// bound; a test sets it shorter.
@@ -115,8 +98,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         int bufferSizeMegabytes,
         IHttpClientFactory httpClientFactory,
         ILogger logger,
-        bool mayNormalizeH264 = false,
-        string? ffmpegPath = null,
+        bool clientNeedsIdr = false,
         TimeSpan? startupTimeLimit = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(channelId);
@@ -134,8 +116,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _startupTimeLimit = startupTimeLimit ?? StartupTimeLimit;
-        _mayNormalizeH264 = mayNormalizeH264;
-        _ffmpegPath = ffmpegPath;
+        _clientNeedsIdr = clientNeedsIdr;
 
         UniqueId = Guid.NewGuid().ToString("N");
         _bufferPath = bufferPath;
@@ -196,27 +177,35 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
 
     /// <summary>
     /// Gets a value indicating whether a decoder that will not start without an IDR picture can
-    /// be given this stream.
+    /// be handed this broadcast as it is.
     /// </summary>
     /// <remarks>
-    /// True three ways, and they are all the same statement: the video was re-encoded to carry
-    /// IDR pictures, or it is not H.264 and the question does not arise, or the broadcast turned
-    /// out to carry them by itself. Undetermined counts as no, so such a viewer opens its own
-    /// stream rather than joining one that might never start for it.
+    /// Two ways to be true and they say the same thing: the video is not H.264, so the question
+    /// does not arise, or the picture delivery starts on was found to carry an IDR. Undetermined
+    /// counts as no.
     /// </remarks>
     public bool SuitsDecodersNeedingIdr
-        => NormalizedForIdr
-        || (_conditioner is { } conditioner
-            && (conditioner.VideoStreamType != H264StreamType || conditioner.StartAccessUnitCarriesIdr == true));
+        => _conditioner is { } conditioner
+        && (conditioner.VideoStreamType != H264StreamType || conditioner.StartAccessUnitCarriesIdr == true);
 
     /// <summary>
-    /// Gets a value indicating whether the video of this stream was re-encoded to give it IDR
-    /// pictures to start on.
+    /// Gets a value indicating whether Jellyfin has to re-encode this stream's video for the
+    /// viewer it was opened for.
     /// </summary>
     /// <remarks>
-    /// Diagnostic, and the reason <see cref="SuitsDecodersNeedingIdr"/> can answer yes.
+    /// <para>
+    /// One statement and nothing more: this stream was opened for a client whose decoder needs an
+    /// IDR picture, and the H.264 access point it starts on was found to carry none. The buffer
+    /// holds the broadcast exactly as TVHeadend delivered it either way -- this changes what the
+    /// media source offers, not what is in the ring.
+    /// </para>
+    /// <para>
+    /// Settled before <see cref="Open"/> returns, so the media source built from it is built from
+    /// a final answer. The feed is the only thing that sets it; the setter is reachable inside the
+    /// assembly so a test can stand a stream up without running one.
+    /// </para>
     /// </remarks>
-    public bool NormalizedForIdr { get; private set; }
+    public bool RequiresVideoReencode { get; internal set; }
 
     /// <inheritdoc />
     public int ConsumerCount { get; set; }
@@ -268,17 +257,10 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         }
 
         request.Dispose();
-        Stream source = await response.Content.ReadAsStreamAsync(_lifetime.Token).ConfigureAwait(false);
-
-        // The one client-dependent decision in the live path, and it is taken here because it is
-        // the only point where both the caller and the bytes are in hand.
-        if (_mayNormalizeH264 && !string.IsNullOrEmpty(_ffmpegPath))
-        {
-            source = await PrepareForIdrDecoder(source, openCancellationToken).ConfigureAwait(false);
-        }
+        var upstream = await response.Content.ReadAsStreamAsync(_lifetime.Token).ConfigureAwait(false);
 
         Buffer = new LiveStreamBuffer(_bufferPath + ".ts", _bufferSizeMegabytes) { Bootstrap = _bootstrap };
-        _feedTask = Feed(source, [client, response], _lifetime.Token);
+        _feedTask = Feed(upstream, [client, response], _lifetime.Token);
 
         try
         {
@@ -363,11 +345,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
             }
         }
 
-        if (_normalizer is not null)
-        {
-            await _normalizer.DisposeAsync().ConfigureAwait(false);
-        }
-
         if (Buffer is not null)
         {
             await Buffer.DisposeAsync().ConfigureAwait(false);
@@ -379,102 +356,50 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     }
 
     /// <summary>
-    /// Reads the beginning of the broadcast to find out whether the picture a decoder would start
-    /// on is one this viewer's decoder can actually start on, and re-encodes if it is not.
+    /// Reports whether everything the media source has to state about this stream is known.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Three conditions, all of which have to hold: the video is H.264, the broadcast signalled a
-    /// random access point, and the picture at that point contains no IDR. Anything else -- MPEG-2,
-    /// HEVC, an IDR actually present, no access point found inside the bounds -- takes the ordinary
-    /// path untouched, because for those the re-encode would cost a processor core to fix nothing.
+    /// One question, asked of one kind of viewer. A client whose decoder needs an IDR picture and
+    /// a broadcast that started on a signalled H.264 access point: until the picture at that point
+    /// has been read to the end there is no answer, and publishing a media source before then
+    /// would publish a guess.
     /// </para>
     /// <para>
-    /// The bytes read here are not thrown away. They are handed back in front of the rest of the
-    /// stream, so the decision costs a fraction of a second of latency and no data at all.
+    /// It settles as soon as the answer exists -- immediately when an IDR turns up in the access
+    /// unit, and at the start of the next one when none did. Nothing waits on a timer. Everyone
+    /// else is ready straight away: a viewer that does not need IDR pictures, MPEG-2 or HEVC
+    /// video, a radio service, and a stream that began somewhere other than a signalled access
+    /// point, where the question has no answer to wait for.
     /// </para>
     /// </remarks>
-    /// <param name="upstream">The broadcast as TVHeadend is delivering it.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The stream to feed the buffer from, re-encoded or not.</returns>
-    private async Task<Stream> PrepareForIdrDecoder(Stream upstream, CancellationToken cancellationToken)
+    private bool IsPlaybackSettled(TransportStreamConditioner conditioner)
+        => !_clientNeedsIdr
+        || conditioner.VideoStreamType != H264StreamType
+        || !conditioner.StartedOnRandomAccessPoint
+        || conditioner.StartAccessUnitCarriesIdr is not null;
+
+    private void LogPlayback(TransportStreamConditioner conditioner)
     {
-        var stopwatch = Stopwatch.StartNew();
-        var inspector = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
-        var retained = new MemoryStream();
-        var readBuffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
-        var scratch = ArrayPool<byte>.Shared.Rent(
-            TransportStreamConditioner.GetMaximumConditionedLength(StreamBufferSize));
-
-        try
-        {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
-
-            while (inspector.StartAccessUnitCarriesIdr is null
-                && retained.Length < InspectionByteLimit
-                && stopwatch.Elapsed < InspectionTimeLimit)
-            {
-                var read = await upstream.ReadAsync(readBuffer.AsMemory(0, readBuffer.Length), linked.Token)
-                    .ConfigureAwait(false);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                if (retained.Length == 0 && !SourceContainer.IsTransportStream(readBuffer.AsSpan(0, read)))
-                {
-                    throw new InvalidOperationException(FormattableString.Invariant(
-                        $"TVHeadend did not deliver channel {ChannelId} as MPEG-TS. The plugin requests the 'pass' profile, so the server has substituted another one; check that 'pass' exists and that this user may use it."));
-                }
-
-                retained.Write(readBuffer.AsSpan(0, read));
-                inspector.Condition(readBuffer.AsSpan(0, read), scratch);
-
-                // Nothing more to learn: the video is not H.264, so the IDR question is about a
-                // syntax this stream does not use.
-                if (inspector.HasStarted && inspector.VideoStreamType != H264StreamType)
-                {
-                    break;
-                }
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(readBuffer);
-            ArrayPool<byte>.Shared.Return(scratch);
-        }
-
-        Stream source = new PrefixedStream(retained.ToArray(), upstream);
-
-        if (!H264IdrNormalizer.IsNeeded(true, inspector.VideoStreamType, inspector.StartAccessUnitCarriesIdr))
+        if (!RequiresVideoReencode)
         {
             _logger.LogDebug(
-                "Live TV: channel {ChannelId} ({ChannelName}) goes to this client untouched; "
-                + "videoStreamType=0x{VideoStreamType:X2} startAccessUnitCarriesIdr={CarriesIdr} after {ElapsedMilliseconds} ms",
+                "Live TV: channel {ChannelId} ({ChannelName}) plays as delivered; "
+                + "videoStreamType=0x{VideoStreamType:X2} startAccessUnitCarriesIdr={CarriesIdr} clientNeedsIdr={ClientNeedsIdr}",
                 ChannelId,
                 ChannelName ?? "<unknown>",
-                inspector.VideoStreamType,
-                inspector.StartAccessUnitCarriesIdr?.ToString() ?? "undetermined",
-                stopwatch.ElapsedMilliseconds);
-            return source;
+                conditioner.VideoStreamType,
+                conditioner.StartAccessUnitCarriesIdr?.ToString() ?? "n/a",
+                _clientNeedsIdr);
+            return;
         }
 
         _logger.LogInformation(
-            "Live TV: channel {ChannelId} ({ChannelName}) signals random access without an IDR picture, "
-            + "and this client's decoder needs one; re-encoding the video after {ElapsedMilliseconds} ms",
+            "Live TV: channel {ChannelId} ({ChannelName}) signals random access without an IDR picture and this "
+            + "client's decoder needs one; the broadcast is buffered untouched and Jellyfin is asked to re-encode "
+            + "the video rather than copy it",
             ChannelId,
-            ChannelName ?? "<unknown>",
-            stopwatch.ElapsedMilliseconds);
-
-        NormalizedForIdr = true;
-        _normalizer = H264IdrNormalizer.Start(
-            source,
-            _ffmpegPath!,
-            FormattableString.Invariant($"channel {ChannelId}"),
-            _logger,
-            _lifetime.Token);
-
-        return _normalizer.Output;
+            ChannelName ?? "<unknown>");
     }
 
     private async Task Feed(
@@ -493,9 +418,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                 conditionedBuffer = ArrayPool<byte>.Shared.Rent(
                     TransportStreamConditioner.GetMaximumConditionedLength(StreamBufferSize));
 
-                var conditioner = new TransportStreamConditioner(
-                    TransportStreamConditioner.EventInformationTablePid,
-                    requireIdrAtAccessPoints: NormalizedForIdr);
+                var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
                 _conditioner = conditioner;
                 var checkedContainer = false;
 
@@ -559,13 +482,19 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                         conditioner.TakeProgramTables(),
                         cancellationToken).ConfigureAwait(false);
 
-                    // Ready as soon as there is something a reader can actually start on: the
-                    // conditioner only forwards once it holds both program tables and has chosen
-                    // its entry point, so the first bytes in the buffer are already that. Waiting
-                    // for a fixed number of bytes on top would delay a radio service, whose whole
-                    // bitrate is a fraction of a television channel's, for no gain.
-                    if (!_ready.Task.IsCompleted && Buffer.WritePosition > 0)
+                    // Ready as soon as there is something a reader can actually start on and the
+                    // one playback property of this stream is settled. The conditioner only
+                    // forwards once it holds both program tables and has chosen its entry point,
+                    // so the first bytes in the buffer are already that; waiting for a fixed
+                    // number of bytes on top would delay a radio service, whose whole bitrate is
+                    // a fraction of a television channel's, for no gain.
+                    if (!_ready.Task.IsCompleted && Buffer.WritePosition > 0 && IsPlaybackSettled(conditioner))
                     {
+                        RequiresVideoReencode = _clientNeedsIdr
+                            && conditioner.VideoStreamType == H264StreamType
+                            && conditioner.StartAccessUnitCarriesIdr == false;
+
+                        LogPlayback(conditioner);
                         _ready.TrySetResult();
                     }
                 }

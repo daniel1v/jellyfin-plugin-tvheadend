@@ -105,18 +105,57 @@ An ordinary TVHeadend **streaming** account. Nothing in the live path calls an a
 The plugin also needs the rights its other features imply — reading the channel list and guide
 over HTSP, and the DVR rights for recordings.
 
-## When Jellyfin probes the stream itself
+## A live stream is never probed
 
-Only when the plugin cannot honestly describe the stream:
+`SupportsProbing` is false on the media source, opened or not. Probing a live channel means
+reading a stream that is already being read, to answer a question the program map has already
+answered.
 
-- the program map named no video stream (a radio service, or a television service whose video the
-  table did not identify), or none arrived before the stream was published;
-- the program map named a stream the plugin could not classify at all -- stream type 0x06 with no
-  descriptor saying what is inside it. A hole in the description is not a description.
+What "described" means depends on the channel rather than on the table, because the transport
+stream cannot tell the two apart: a program map with no video is a complete radio service and an
+incomplete television channel. The channel kind is therefore passed into the open path from the
+channel list, which knows it. Television needs one recognised video stream, radio one recognised
+audio stream; when it is missing the open fails at once and says which stream was missing and what
+the table held. There is no probe to fall back to and no long timeout standing in for one.
 
-In those cases the media source is published with `SupportsProbing = true` and no streams, and
-Jellyfin establishes what is in it. A description that is merely missing *optional* fields is not
-such a case and never suppresses a probe incorrectly.
+An entry the table names but nothing identifies -- stream type 0x06 with no descriptor saying what
+is inside it -- keeps its index and is described as data. It blocks nothing and is not guessed at.
+
+## The one thing a client changes
+
+Some DVB H.264 services never transmit an IDR picture: their access points are I-frames marked by
+the random access indicator and a recovery point message. FFmpeg starts on those; Android's
+MediaCodec does not — it takes the samples at full rate, emits no frame and raises no error, which
+reaches the viewer as a spinner that never resolves. Measured on a Pixel 10: over thirty seconds
+Das Erste contained no NAL type 5 at all and ZDF contained 48.
+
+Three conditions, all of which have to hold, and they are settled while the stream opens:
+
+- the client Jellyfin authenticated names itself as one of the Android apps;
+- the program map says the video is H.264 — the question belongs to no other syntax, and the
+  MPEG-2 slice start code for picture row five is byte-for-byte an IDR NAL header;
+- delivery began at a signalled access point whose picture was then read to the end and found to
+  hold no IDR.
+
+Anything absent or unsettled means no. The conditioner that fills the ring is the one that answers
+this, as the packets go past: an IDR the moment its NAL appears, and its absence the moment the
+next picture begins. Nothing waits on a timer, and only such a viewer waits at all.
+
+When all three hold the media source withdraws `SupportsDirectPlay` and `SupportsDirectStream`,
+which puts Jellyfin on its ordinary transcoding path, and one small middleware sets
+`allowVideoStreamCopy=false` on the requests naming that live stream — without which Jellyfin
+would copy the H.264 video inside the transcode and deliver the same pictures it cannot start on.
+**The re-encoding is Jellyfin's own, with the server's configured encoder and hardware
+acceleration.** The plugin runs no FFmpeg of its own, and the ring buffer holds the broadcast
+exactly as TVHeadend delivered it either way.
+
+The middleware is registered as an ordinary `IStartupFilter` and keys on nothing but the
+`LiveStreamId` already in the URL: no client detection, no channel names, no session state, no
+cache. Every other request, including every other plugin's, passes through untouched.
+
+Two viewers of such a channel who need different things get two subscriptions, because one media
+source cannot both offer and withhold direct play. A channel whose H.264 does carry IDR pictures,
+and everything that is not H.264, is shared by everyone as before.
 
 ## Recordings
 

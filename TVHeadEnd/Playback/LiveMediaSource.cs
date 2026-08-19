@@ -110,13 +110,19 @@ public static class LiveMediaSource
     /// <param name="mediaPath">The buffer file the stream is readable from.</param>
     /// <param name="streamUrl">The address Jellyfin serves the open stream at.</param>
     /// <param name="description">What the stream contains, read from its program map.</param>
+    /// <param name="requiresVideoReencode">
+    /// Whether the viewer this stream was opened for needs the video re-encoded. True only for the
+    /// one measured case: a decoder that will not start without an IDR picture, and an H.264
+    /// broadcast whose access point was found to carry none.
+    /// </param>
     /// <returns>An opened media source.</returns>
     public static MediaSourceInfo CreateOpened(
         string mediaSourceId,
         string name,
         string mediaPath,
         string streamUrl,
-        LiveStreamDescription description)
+        LiveStreamDescription description,
+        bool requiresVideoReencode = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(mediaSourceId);
         ArgumentException.ThrowIfNullOrEmpty(mediaPath);
@@ -132,8 +138,14 @@ public static class LiveMediaSource
             AnalyzeDurationMs = AnalyzeDurationMs,
             RequiresOpening = false,
             RequiresClosing = true,
-            SupportsDirectPlay = true,
-            SupportsDirectStream = true,
+
+            // Direct play and remux hand the client the broadcast as it is, which for this one
+            // viewer is a stream its decoder will not start on. Withdrawing both leaves Jellyfin
+            // its ordinary transcoding path, which is the thing that can produce a picture with
+            // IDR frames in it. Nothing here misstates what the stream contains to get there:
+            // the streams below are still the program map, and the container is still what it is.
+            SupportsDirectPlay = !requiresVideoReencode,
+            SupportsDirectStream = !requiresVideoReencode,
             SupportsTranscoding = true,
 
             // The streams below are the program map of the stream being delivered, at the
