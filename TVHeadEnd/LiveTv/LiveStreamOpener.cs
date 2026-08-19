@@ -142,7 +142,8 @@ public sealed class LiveStreamOpener
                 name,
                 stream.MediaPath,
                 streamUrl,
-                description);
+                description,
+                stream.RequiresVideoReencode);
 
             LogOpenedStream(stream, programMap, description, stopwatch.ElapsedMilliseconds);
             return stream;
