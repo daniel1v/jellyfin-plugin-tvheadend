@@ -166,7 +166,8 @@ public sealed class LiveStreamOverHttpTests : IDisposable
             "Das Erste HD",
             stream.MediaPath,
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.TV)!);
+            LiveStreamDescription.FromProgramMap(stream.ProgramMap!, ChannelType.TV)!,
+            requiresVideoReencode: false);
 
         Assert.True(source.AnalyzeDurationMs is > 0 and <= 5000);
     }

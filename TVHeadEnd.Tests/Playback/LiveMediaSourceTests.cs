@@ -41,7 +41,8 @@ public class LiveMediaSourceTests
             "Das Erste HD",
             "/buffers/tvheadend-abc.ts",
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            Description());
+            Description(),
+            requiresVideoReencode: false);
 
         Assert.False(source.SupportsProbing);
         Assert.Equal(2, source.MediaStreams.Count);
@@ -64,7 +65,8 @@ public class LiveMediaSourceTests
             "Das Erste HD",
             "/buffers/tvheadend-abc.ts",
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            Description());
+            Description(),
+            requiresVideoReencode: false);
 
         Assert.False(pending.SupportsProbing);
         Assert.False(opened.SupportsProbing);
@@ -82,7 +84,8 @@ public class LiveMediaSourceTests
             "Das Erste HD",
             "/buffers/tvheadend-abc.ts",
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            Description());
+            Description(),
+            requiresVideoReencode: false);
 
         Assert.Equal(MediaProtocol.File, source.Protocol);
         Assert.Equal("/buffers/tvheadend-abc.ts", source.Path);
@@ -109,7 +112,8 @@ public class LiveMediaSourceTests
             "Das Erste HD",
             "/buffers/tvheadend-abc.ts",
             "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
-            Description());
+            Description(),
+            requiresVideoReencode: false);
 
         Assert.Null(source.RunTimeTicks);
         Assert.Null(source.Size);

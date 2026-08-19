@@ -122,7 +122,7 @@ public static class LiveMediaSource
         string mediaPath,
         string streamUrl,
         LiveStreamDescription description,
-        bool requiresVideoReencode = false)
+        bool requiresVideoReencode)
     {
         ArgumentException.ThrowIfNullOrEmpty(mediaSourceId);
         ArgumentException.ThrowIfNullOrEmpty(mediaPath);

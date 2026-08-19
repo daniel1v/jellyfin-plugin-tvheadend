@@ -133,7 +133,13 @@ public class AndroidIdrTests
             Streams = [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" }],
         };
 
-        var plain = LiveMediaSource.CreateOpened("id", "Das Erste", "/buffer.ts", "http://host/s.ts", description);
+        var plain = LiveMediaSource.CreateOpened(
+            "id",
+            "Das Erste",
+            "/buffer.ts",
+            "http://host/s.ts",
+            description,
+            requiresVideoReencode: false);
         var forced = LiveMediaSource.CreateOpened(
             "id",
             "Das Erste",
