@@ -260,11 +260,19 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         0x1B => (ElementaryStreamKind.Video, "h264"),
         0x24 => (ElementaryStreamKind.Video, "hevc"),
 
-        // MPEG audio, and the table does not say which layer. It is Layer II in every DVB
-        // broadcast, but that is a property of the DVB profile rather than of this field, and
-        // FFmpeg reports whichever layer it finds. The medium is certain, so the stream is
-        // described; the codec is not, so it is left unsaid rather than guessed at.
-        0x03 or 0x04 => (ElementaryStreamKind.Audio, null),
+        // MPEG audio. The table does not say which layer, and this used to be left unnamed for
+        // that reason -- on the principle that an absent value is safer than a guessed one. It is
+        // not, here: Jellyfin reads an unnamed codec as one no device profile can match, and the
+        // effect is worse than a wrong name would be. Given the same stream, its own ranking
+        // picks the unnamed track and direct plays, and its later re-check of that very track
+        // refuses it, so the client is sent to a transcode of a channel it could have played.
+        //
+        // Named, then, and named after what is actually there. DVB mandates Layer II for MPEG
+        // audio (ETSI TS 101 154), and FFmpeg reports "mp2" for these stream types -- measured on
+        // ZDF, whose three 0x03 tracks it reads as mp2. With the name present Jellyfin compares
+        // like with like: it prefers a track the client supports, such as the AC-3 one beside
+        // these, and only transcodes when there is genuinely nothing it can play.
+        0x03 or 0x04 => (ElementaryStreamKind.Audio, "mp2"),
 
         0x0F => (ElementaryStreamKind.Audio, "aac"),
         0x11 => (ElementaryStreamKind.Audio, "aac_latm"),

@@ -59,19 +59,18 @@ public sealed class PlaybackClient
     /// reports no error -- the endless spinner.
     /// </para>
     /// <para>
-    /// When the claim is absent or says something else the answer is no, and the caller takes the
-    /// ordinary path. A client that is wrongly treated as Android gets a re-encode it did not
-    /// need; one that is wrongly treated as anything else gets a channel that never starts. The
-    /// asymmetry is the reason this errs towards the plain answer.
+    /// Matched on the word rather than on a list of exact names, because the family spells itself
+    /// several ways and an exact list gets one of them wrong silently. The mobile app reports
+    /// "Jellyfin for Android" -- checking for "Jellyfin Android", which is what a list here first
+    /// contained, meant the real app was never recognised and the channels this exists for went
+    /// out untouched and never started. This is still the name the session authenticated with,
+    /// not a user agent: the client chose it and Jellyfin recorded it.
+    /// </para>
+    /// <para>
+    /// When the claim is absent or names something else the answer is no, and the caller takes
+    /// the ordinary path.
     /// </para>
     /// </remarks>
     public bool IsAndroid
-    {
-        get
-        {
-            var name = Name;
-            return string.Equals(name, "Jellyfin Android", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "AndroidTV", StringComparison.OrdinalIgnoreCase);
-        }
-    }
+        => Name?.Contains("android", StringComparison.OrdinalIgnoreCase) == true;
 }

@@ -67,7 +67,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         Assert.Equal(
             [MediaStreamType.Video, MediaStreamType.Audio, MediaStreamType.Audio, MediaStreamType.Subtitle],
             description!.Streams.Select(media => media.Type));
-        Assert.Equal(["h264", null, null, "dvb_subtitle"], description.Streams.Select(media => media.Codec));
+        Assert.Equal(["h264", "mp2", "mp2", "dvb_subtitle"], description.Streams.Select(media => media.Codec));
         Assert.Equal([null, "deu", "eng", "deu"], description.Streams.Select(media => media.Language));
         Assert.Equal([0, 1, 2, 3], description.Streams.Select(media => media.Index));
 

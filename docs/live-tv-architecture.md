@@ -25,9 +25,12 @@ From the program map of the stream being delivered:
 - **the number of elementary streams and their order**, which is what every later `-map`
   argument means;
 - **what medium each one carries** — video, audio, subtitle or data;
-- **the codec**, where the table identifies one. MPEG audio (stream types 0x03 and 0x04) is left
-  without one on purpose: the table does not say which layer, and FFmpeg reports whichever it
-  finds. The medium is certain, so the track is described; the codec is not, so it is left unsaid.
+- **the codec**, where the table identifies one. MPEG audio (stream types 0x03 and 0x04) is named
+  `mp2`, which is what DVB mandates for them and what FFmpeg reports. This was once left unnamed,
+  on the reasoning that the table does not state the layer — and that turned out to be the worse
+  of the two mistakes: Jellyfin reads an unnamed codec as one no device profile matches, picks
+  such a track anyway when it chooses for itself, and then refuses the same track when it
+  re-checks it, sending the client to a transcode of a channel it could have played.
 - **the language** and the **hearing-impaired flag**, from the DVB descriptors.
 
 Stream type 0x06 is "private data in PES packets" and is where DVB puts AC-3, E-AC-3, subtitles

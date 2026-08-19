@@ -30,8 +30,10 @@ public class AndroidIdrTests
     private const byte Mpeg2Video = 0x02;
 
     [Theory]
+    [InlineData("Jellyfin for Android", true)]
     [InlineData("Jellyfin Android", true)]
     [InlineData("AndroidTV", true)]
+    [InlineData("Jellyfin for Android TV", true)]
     [InlineData("Jellyfin Web", false)]
     [InlineData("Jellyfin Media Player", false)]
     [InlineData("", false)]

@@ -41,9 +41,9 @@ public class StreamMappingTests
         Assert.Equal(
             [MediaStreamType.Video, MediaStreamType.Audio, MediaStreamType.Audio, MediaStreamType.Subtitle],
             description.Streams.Select(stream => stream.Type));
-        // The MPEG audio tracks carry no codec: stream type 0x03 does not say which layer, and
-        // the plugin does not guess. Everything the table does state is stated.
-        Assert.Equal(["h264", null, null, "dvb_subtitle"], description.Streams.Select(stream => stream.Codec));
+        // Named "mp2": that is what DVB mandates for these stream types and what FFmpeg reports
+        // for them. An unnamed codec reads to Jellyfin as one no profile can match.
+        Assert.Equal(["h264", "mp2", "mp2", "dvb_subtitle"], description.Streams.Select(stream => stream.Codec));
         Assert.Equal([null, "deu", "eng", "deu"], description.Streams.Select(stream => stream.Language));
     }
 
@@ -59,7 +59,7 @@ public class StreamMappingTests
 
         var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
-        Assert.Equal(["mpeg2video", null, "ac3"], description.Streams.Select(stream => stream.Codec));
+        Assert.Equal(["mpeg2video", "mp2", "ac3"], description.Streams.Select(stream => stream.Codec));
         Assert.Equal(MediaStreamType.Audio, description.Streams[2].Type);
         Assert.Equal("deu", description.Streams[2].Language);
     }
