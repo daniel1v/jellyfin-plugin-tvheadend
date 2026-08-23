@@ -34,6 +34,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
     private HtspSession? _session;
     private HtspSession? _owner;
     private TvheadendSettings? _settings;
+    private int _subscribed;
     private bool _disposed;
 
     /// <summary>
@@ -75,7 +76,27 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// <summary>
     /// Gets the validated settings, reading them if this is the first ask.
     /// </summary>
-    public TvheadendSettings Settings => _settings ??= TvheadendSettings.From(Plugin.Instance.Configuration);
+    public TvheadendSettings Settings
+    {
+        get
+        {
+            if (_settings is { } cached)
+            {
+                return cached;
+            }
+
+            // Subscribed on the first read rather than in the constructor. This object is built by
+            // Jellyfins container while the plugin instance is still being created, so there is
+            // nothing to subscribe to then -- and the first read of the configuration is by
+            // definition a moment when there is.
+            if (Interlocked.Exchange(ref _subscribed, 1) == 0)
+            {
+                Plugin.Instance.ConfigurationChanged += OnConfigurationChanged;
+            }
+
+            return _settings = TvheadendSettings.From(Plugin.Instance.Configuration);
+        }
+    }
 
     /// <summary>
     /// Gets where TVHeadend's HTTP interface is and how to authenticate to it.
@@ -190,7 +211,10 @@ public sealed class TvheadendConnection : IAsyncDisposable
 
         _disposed = true;
 
-        Plugin.Instance.ConfigurationChanged -= OnConfigurationChanged;
+        if (Interlocked.Exchange(ref _subscribed, 2) == 1)
+        {
+            Plugin.Instance.ConfigurationChanged -= OnConfigurationChanged;
+        }
 
         if (_session is { } session)
         {
