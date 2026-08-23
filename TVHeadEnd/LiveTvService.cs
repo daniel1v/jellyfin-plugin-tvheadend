@@ -95,9 +95,10 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     public string HomePageUrl => "https://tvheadend.org/";
 
     /// <summary>
-    /// Gets when the recordings last changed, which is what Jellyfin polls to refresh them.
+    /// Gets a number that changes whenever TVHeadend's timers and recordings do, which is what
+    /// Jellyfin caches its recording listing against.
     /// </summary>
-    public DateTime LastRecordingChange => _dvr.LastRecordingChange;
+    public long RecordingRevision => _dvr.RecordingRevision;
 
     /// <inheritdoc />
     public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)

@@ -138,7 +138,7 @@ namespace TVHeadEnd
         /// <param name="userId">The user the listing is for. Every user sees the same recordings.</param>
         /// <returns>The cache key.</returns>
         public string GetCacheKey(string userId)
-            => GetService().LastRecordingChange.Ticks.ToString(CultureInfo.InvariantCulture);
+            => GetService().RecordingRevision.ToString(CultureInfo.InvariantCulture);
 
         public InternalChannelFeatures GetChannelFeatures()
         {

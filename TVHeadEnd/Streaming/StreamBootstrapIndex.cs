@@ -41,6 +41,7 @@ public sealed class StreamBootstrapIndex
     private byte[][] _programAssociationPackets = [];
     private byte[][] _programMapPackets = [];
     private int _generation = -1;
+    private long _generationStart;
 
     /// <summary>
     /// Gets a value indicating whether both program tables have been seen.
@@ -98,9 +99,11 @@ public sealed class StreamBootstrapIndex
             if (tables.Generation != _generation)
             {
                 // The broadcaster changed what the stream contains. Every position found under
-                // the layout before describes a picture these tables do not.
+                // the layout before describes a picture these tables do not, and every byte
+                // written before this chunk belongs to that older picture.
                 _points.Clear();
                 _generation = tables.Generation;
+                _generationStart = basePosition;
             }
 
             _programAssociationPackets = [.. tables.ProgramAssociationPackets];
@@ -154,7 +157,20 @@ public sealed class StreamBootstrapIndex
                 }
             }
 
-            return new StreamJoin(CreateBootstrapPrefixLocked(), position);
+            if (position is { } recorded)
+            {
+                return StreamJoin.At(CreateBootstrapPrefixLocked(), recorded);
+            }
+
+            // No access point survives. Reading on from the oldest bytes is only sound while those
+            // bytes belong to the layout the tables describe -- at the start of a stream they
+            // always do, and after a program layout change they do not until the change itself has
+            // scrolled past. Sending a reader there anyway is how it would be handed the new
+            // tables in front of the previous programme, which is the pairing this whole index
+            // exists to prevent.
+            return oldestPosition >= _generationStart && _programAssociationPackets.Length > 0
+                ? StreamJoin.FromOldest(CreateBootstrapPrefixLocked())
+                : StreamJoin.NotYet;
         }
     }
 

@@ -23,7 +23,7 @@ public class StreamBootstrapIndexTests
 
         var join = index.CreateJoin(0);
 
-        Assert.Null(join.Position);
+        Assert.Equal(StreamJoinKind.NotYet, join.Kind);
         Assert.Empty(join.Tables);
     }
 
@@ -35,6 +35,7 @@ public class StreamBootstrapIndexTests
         index.Publish(Tables(generation: 0), basePosition: 0, [1000, 5000, 3000]);
 
         Assert.Equal(5000, index.CreateJoin(0).Position);
+        Assert.Equal(StreamJoinKind.AtPosition, index.CreateJoin(0).Kind);
     }
 
     [Fact]
@@ -43,11 +44,11 @@ public class StreamBootstrapIndexTests
         var index = new StreamBootstrapIndex();
         index.Publish(Tables(generation: 0), basePosition: 0, [1000, 2000]);
 
-        // The ring has lapped past both. The tables still go out, so a reader taking the oldest
-        // bytes can at least map the streams once it resynchronises.
+        // The ring has lapped past both. Those bytes still belong to the layout the tables
+        // describe, so reading on from the oldest is sound and they go out in front.
         var join = index.CreateJoin(9000);
 
-        Assert.Null(join.Position);
+        Assert.Equal(StreamJoinKind.FromOldest, join.Kind);
         Assert.Equal(2 * PacketLength, join.Tables.Length);
     }
 
@@ -85,7 +86,7 @@ public class StreamBootstrapIndexTests
         index.Publish(ProgramTableSnapshot.Empty, basePosition: 0, [1000]);
 
         Assert.False(index.HasProgramTables);
-        Assert.Null(index.CreateJoin(0).Position);
+        Assert.Equal(StreamJoinKind.NotYet, index.CreateJoin(0).Kind);
     }
 
     [Fact]
@@ -102,17 +103,34 @@ public class StreamBootstrapIndexTests
     }
 
     [Fact]
-    public void ALayoutChangeWithNoAccessPointYetLeavesNothingToJoinAt()
+    public void ALayoutChangeWithNoAccessPointYetLeavesNothingSafeToJoinAt()
     {
-        // Between the change and the first access point under it there is genuinely nowhere to
-        // send a reader, and saying so is better than sending it to the picture before.
+        // The gap this closes. Between the change and the first access point under it there is
+        // genuinely nowhere to send a reader: every byte still held belongs to the programme
+        // before, and putting the new tables in front of them is the pairing the index exists to
+        // prevent. Saying so is the only honest answer.
         var index = new StreamBootstrapIndex();
         index.Publish(Tables(generation: 0), basePosition: 0, [1000]);
 
         index.Publish(Tables(generation: 1), basePosition: 3000, null);
 
-        Assert.Null(index.CreateJoin(0).Position);
+        Assert.Equal(StreamJoinKind.NotYet, index.CreateJoin(0).Kind);
         Assert.True(index.HasProgramTables);
+
+        // Once the change itself has scrolled out of the window, what is left is the new layout
+        // and reading on from the oldest byte is sound again.
+        Assert.Equal(StreamJoinKind.FromOldest, index.CreateJoin(3000).Kind);
+    }
+
+    [Fact]
+    public void TheFirstLayoutOfAStreamCanAlwaysBeReadFromItsOldestByte()
+    {
+        // Nothing precedes it, so there is no earlier programme for a fallback to stray into.
+        var index = new StreamBootstrapIndex();
+
+        index.Publish(Tables(generation: 0), basePosition: 0, null);
+
+        Assert.Equal(StreamJoinKind.FromOldest, index.CreateJoin(0).Kind);
     }
 
     private static ProgramTableSnapshot Tables(int generation)

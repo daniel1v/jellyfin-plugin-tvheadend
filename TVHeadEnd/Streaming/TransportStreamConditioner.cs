@@ -523,6 +523,15 @@ public sealed class TransportStreamConditioner
             return false;
         }
 
+        // The clock the decoder times everything against. Moving it to another PID makes every
+        // access point found under the old table useless to a decoder joining there, whatever the
+        // elementary streams do -- and since this comparison now guards the bootstrap and not only
+        // the description, that counts as a different layout.
+        if (first.PcrPid != second.PcrPid)
+        {
+            return false;
+        }
+
         for (var index = 0; index < first.Entries.Count; index++)
         {
             var before = first.Entries[index];

@@ -43,6 +43,7 @@ namespace TVHeadEnd.Streaming
         private readonly FileStream _writer;
 
         private long _writePosition;
+        private long _reservedPosition;
 
         internal LiveRingBuffer(string path, long capacity)
         {
@@ -76,9 +77,17 @@ namespace TVHeadEnd.Streaming
         internal long Capacity => _capacity;
 
         /// <summary>
-        /// Gets the oldest position still readable. Everything before it has been overwritten.
+        /// Gets the oldest position still readable. Everything before it has been overwritten, or
+        /// is being overwritten now.
         /// </summary>
-        internal long OldestPosition => Math.Max(0, WritePosition - _capacity);
+        /// <remarks>
+        /// Derived from what the writer has <em>claimed</em>, not from what it has finished. The
+        /// physical bytes of a region stop being the old logical content the moment the write over
+        /// them begins, and a window computed from the published end would still be offering them
+        /// for the whole duration of that write -- a reader sitting there would be handed the new
+        /// bytes under the old position, which is the one thing a ring must never do.
+        /// </remarks>
+        internal long OldestPosition => Math.Max(0, Volatile.Read(ref _reservedPosition) - _capacity);
 
         public void Dispose()
         {
@@ -90,34 +99,62 @@ namespace TVHeadEnd.Streaming
             await _writer.DisposeAsync().ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Appends to the ring, overwriting the oldest bytes once it is full.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Two boundaries, moved at two different moments, because a write has three states and
+        /// not two. Before a byte moves, the end of the write is claimed: from that instant the
+        /// region about to be overwritten is no longer readable, so a reader still sitting there
+        /// finds itself outside the window and re-joins instead of being handed new bytes under an
+        /// old position. Only when every byte has landed is the readable end moved, so a reader is
+        /// never told about content that is not there yet.
+        /// </para>
+        /// <para>
+        /// Between the two, the region is readable by nobody -- which is exactly what it is.
+        /// </para>
+        /// </remarks>
+        /// <param name="source">The bytes to append.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task that completes once the bytes are readable.</returns>
         internal async Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
         {
-            // A single write larger than the whole window would lap itself; only the tail of it
-            // could survive, so that is all that is written. In practice the pump writes chunks
-            // far smaller than the capacity and this never triggers.
-            if (source.Length > _capacity)
+            if (source.IsEmpty)
             {
-                var skipped = source.Length - (int)_capacity;
-                Volatile.Write(ref _writePosition, _writePosition + skipped);
-                source = source[skipped..];
+                return;
             }
 
-            var offset = _writePosition % _capacity;
-            var untilWrap = (int)Math.Min(source.Length, _capacity - offset);
+            // One writer, so its own position needs no interlocking to read.
+            var start = _writePosition;
+            var end = start + source.Length;
+
+            Volatile.Write(ref _reservedPosition, end);
+
+            // A single write larger than the whole window would lap itself; only its tail could
+            // survive, so that is all that is put down. The head keeps its logical positions and
+            // they fall outside the window the moment the claim above is published, so nothing
+            // reads the bytes that were never written. In practice the pump writes chunks far
+            // smaller than the capacity and this never triggers.
+            var payload = source.Length > _capacity
+                ? source[(source.Length - (int)_capacity)..]
+                : source;
+
+            var offset = (end - payload.Length) % _capacity;
+            var untilWrap = (int)Math.Min(payload.Length, _capacity - offset);
 
             _writer.Seek(offset, SeekOrigin.Begin);
-            await _writer.WriteAsync(source[..untilWrap], cancellationToken).ConfigureAwait(false);
+            await _writer.WriteAsync(payload[..untilWrap], cancellationToken).ConfigureAwait(false);
 
-            if (untilWrap < source.Length)
+            if (untilWrap < payload.Length)
             {
                 _writer.Seek(0, SeekOrigin.Begin);
-                await _writer.WriteAsync(source[untilWrap..], cancellationToken).ConfigureAwait(false);
+                await _writer.WriteAsync(payload[untilWrap..], cancellationToken).ConfigureAwait(false);
             }
 
-            // No flush needed: the stream is unbuffered, so the writes above have already
-            // reached the operating system and are visible to the readers' own handles.
-            // Published last: a reader must never be told about bytes that are not yet there.
-            Volatile.Write(ref _writePosition, _writePosition + source.Length);
+            // No flush needed: the stream is unbuffered, so the writes above have already reached
+            // the operating system and are visible to the readers' own handles.
+            Volatile.Write(ref _writePosition, end);
         }
 
         /// <summary>
@@ -129,9 +166,14 @@ namespace TVHeadEnd.Streaming
         /// to move it to the oldest bytes still present.
         /// </param>
         /// <returns>A stream over the buffer.</returns>
-        internal Stream OpenReaderFromStart(StreamBootstrapIndex? bootstrap)
+        /// <param name="atLiveEdge">
+        /// Whether to start at the write head rather than the oldest bytes, for a reader that has
+        /// nothing it may safely read yet.
+        /// </param>
+        internal Stream OpenReaderFromStart(StreamBootstrapIndex? bootstrap, bool atLiveEdge = false)
         {
-            return new RingReader(_path, this, AlignToPacket(OldestPosition), bootstrap);
+            var start = atLiveEdge ? WritePosition : OldestPosition;
+            return new RingReader(_path, this, AlignToPacket(start), bootstrap);
         }
 
         /// <summary>
@@ -235,8 +277,23 @@ namespace TVHeadEnd.Streaming
                     Math.Min(buffer.Length, available),
                     _buffer.Capacity - fileOffset);
 
+                var start = _position;
                 _file.Seek(fileOffset, SeekOrigin.Begin);
                 var read = await _file.ReadAsync(buffer[..count], cancellationToken).ConfigureAwait(false);
+
+                // The window is checked again now the bytes are in hand. A read is not
+                // instantaneous, and a writer that lapped this region while it was in progress
+                // leaves a mixture of two programmes in the caller's buffer -- so the moment the
+                // region stopped being ours, what came out of it is discarded rather than
+                // delivered. Returning nothing is what ProgressiveFileStream expects: it waits and
+                // asks again, by which time the re-join below has moved this reader somewhere
+                // real.
+                if (_buffer.OldestPosition > start)
+                {
+                    ReJoin(_buffer.OldestPosition);
+                    return TryServePrefix(buffer.Span, out served) ? served : 0;
+                }
+
                 _position += read;
                 return read;
             }
@@ -297,7 +354,17 @@ namespace TVHeadEnd.Streaming
                 }
 
                 var join = _bootstrap.CreateJoin(oldest);
-                _position = AlignToPacket(join.Position ?? oldest);
+
+                if (join.Kind == StreamJoinKind.NotYet)
+                {
+                    // Nothing held is described by the tables in force. Waiting at the write head
+                    // costs this reader the moment it takes the next access point to arrive;
+                    // reading on from the oldest bytes would cost it the picture.
+                    _position = AlignToPacket(_buffer.WritePosition);
+                    return;
+                }
+
+                _position = AlignToPacket(join.Kind == StreamJoinKind.AtPosition ? join.Position : oldest);
 
                 if (join.Tables.Length > 0)
                 {

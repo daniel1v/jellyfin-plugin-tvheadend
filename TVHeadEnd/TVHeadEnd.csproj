@@ -17,7 +17,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" Version="12.*-*" />
+    <!--
+      Pinned, not a range. This plugin leans on a handful of specific Jellyfin behaviours: the
+      ILiveStream contract, IMediaSourceManager.GetLiveStreamInfo and the LiveStreamId that
+      addresses it, the allowVideoStreamCopy request parameter that EncodingHelper reads, the way
+      LiveTvMediaSourceProvider normalises a live source, and ProgressiveFileStream's polling of a
+      stream that returns nothing. A floating range would quietly build against a different
+      set of them on any restore. This is the version the branch is developed and run against.
+    -->
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0-rcrc3" />
+
   </ItemGroup>
 
   <ItemGroup>

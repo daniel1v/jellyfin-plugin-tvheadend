@@ -17,6 +17,8 @@ public sealed class DvrCatalog
     private readonly Dictionary<string, DvrEntry> _entries = [];
     private readonly object _gate = new();
 
+    private long _revision;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="DvrCatalog"/> class.
     /// </summary>
@@ -24,6 +26,34 @@ public sealed class DvrCatalog
     public DvrCatalog(ILogger<DvrCatalog> logger)
     {
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Gets a number that changes whenever the catalog does.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What TVHeadend has actually confirmed, which is the only thing worth caching against. It
+    /// used to be a timestamp set when the plugin sent a command, and that answers a different
+    /// question: a recording created in TVHeadend's own web interface changed nothing, a recording
+    /// starting or finishing changed nothing, and a command whose reply arrived before its
+    /// <c>dvrEntryAdd</c> moved it too early -- so Jellyfin could refresh against the catalog as
+    /// it was before the change and then never refresh again.
+    /// </para>
+    /// <para>
+    /// A counter rather than a clock, because two changes inside the same tick are still two
+    /// changes.
+    /// </para>
+    /// </remarks>
+    public long Revision
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _revision;
+            }
+        }
     }
 
     /// <summary>
@@ -56,6 +86,7 @@ public sealed class DvrCatalog
         lock (_gate)
         {
             _entries[entry.Id] = entry;
+            _revision++;
         }
     }
 
@@ -73,6 +104,8 @@ public sealed class DvrCatalog
 
         lock (_gate)
         {
+            _revision++;
+
             if (!_entries.TryGetValue(updated.Id, out var existing))
             {
                 _entries[updated.Id] = updated;
@@ -97,7 +130,10 @@ public sealed class DvrCatalog
 
         lock (_gate)
         {
-            _entries.Remove(entry.Id);
+            if (_entries.Remove(entry.Id))
+            {
+                _revision++;
+            }
         }
     }
 
@@ -108,7 +144,10 @@ public sealed class DvrCatalog
     {
         lock (_gate)
         {
+            // Counted as a change: a reconnection replaces the whole picture, and anything cached
+            // against the picture before it has to be built again.
             _entries.Clear();
+            _revision++;
         }
     }
 

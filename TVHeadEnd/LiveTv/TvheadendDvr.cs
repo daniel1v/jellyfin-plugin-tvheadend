@@ -51,9 +51,16 @@ public sealed class TvheadendDvr
     }
 
     /// <summary>
-    /// Gets when the recordings last changed, which is what Jellyfin polls to refresh them.
+    /// Gets a number that changes whenever TVHeadend's own view of the timers and recordings does.
     /// </summary>
-    public DateTime LastRecordingChange { get; private set; } = DateTime.MinValue;
+    /// <remarks>
+    /// Read straight from the catalog, because the catalog is what the server has confirmed. This
+    /// used to be a timestamp stamped when a command of ours came back, which said only that the
+    /// plugin had asked for something: a recording made in TVHeadend's web interface moved
+    /// nothing, a recording starting or ending moved nothing, and a reply that overtook its own
+    /// <c>dvrEntryAdd</c> moved it before the change it announced had arrived.
+    /// </remarks>
+    public long RecordingRevision => _connection.Dvr.Revision;
 
     /// <summary>
     /// Schedules a recording.
@@ -81,7 +88,6 @@ public sealed class TvheadendDvr
         }
 
         await SendAsync(request, "schedule a recording", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -100,7 +106,6 @@ public sealed class TvheadendDvr
             .Set("stopExtra", info.PostPaddingSeconds / 60);
 
         await SendAsync(request, "change a recording", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -113,7 +118,6 @@ public sealed class TvheadendDvr
     {
         var request = HtspMessage.Create("cancelDvrEntry").Set("id", timerId);
         await SendAsync(request, "cancel a recording", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -126,7 +130,6 @@ public sealed class TvheadendDvr
     {
         var request = HtspMessage.Create("deleteDvrEntry").Set("id", recordingId);
         await SendAsync(request, "delete a recording", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -144,7 +147,6 @@ public sealed class TvheadendDvr
         ApplySeriesFields(request, info);
 
         await SendAsync(request, "create a series rule", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -161,7 +163,6 @@ public sealed class TvheadendDvr
         ApplySeriesFields(request, info);
 
         await SendAsync(request, "change a series rule", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -174,7 +175,6 @@ public sealed class TvheadendDvr
     {
         var request = HtspMessage.Create("deleteAutorecEntry").Set("id", timerId);
         await SendAsync(request, "delete a series rule", cancellationToken).ConfigureAwait(false);
-        LastRecordingChange = DateTime.UtcNow;
     }
 
     private void ApplySeriesFields(HtspMessage request, SeriesTimerInfo info)

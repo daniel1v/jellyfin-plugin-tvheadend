@@ -31,6 +31,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     private HtspSession? _session;
+    private HtspSession? _owner;
     private TvheadendSettings? _settings;
     private string _webRoot = string.Empty;
     private bool _disposed;
@@ -141,6 +142,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         if (_session is { } session)
         {
             _session = null;
+            _owner = null;
             await session.Connection.DisposeAsync().ConfigureAwait(false);
         }
 
@@ -171,6 +173,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
                 // Cleared before the replacement is opened, so a failed reconnect leaves no
                 // session at all rather than the dead one it was meant to replace.
                 _session = null;
+                _owner = null;
                 _logger.LogInformation("The HTSP connection to TVHeadend was lost; opening a new one");
                 await existing.Connection.DisposeAsync().ConfigureAwait(false);
             }
@@ -200,15 +203,12 @@ public sealed class TvheadendConnection : IAsyncDisposable
             },
             _loggerFactory.CreateLogger<HtspConnection>());
 
-        connection.MessageReceived += OnMessageReceived;
-
         try
         {
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
-            connection.MessageReceived -= OnMessageReceived;
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
@@ -220,6 +220,15 @@ public sealed class TvheadendConnection : IAsyncDisposable
         SeriesRules.Clear();
 
         var session = new HtspSession(connection);
+
+        // The catalogs belong to this connection from here on, and so does everything it says.
+        // Subscribed before the metadata is asked for, because the server starts answering
+        // immediately: a handler wired up afterwards, or one that routed through whichever session
+        // happened to be published, would drop the messages that arrive in between -- including
+        // the one that says the picture is complete, leaving every caller waiting for a sync that
+        // had already happened.
+        _owner = session;
+        connection.MessageReceived += (_, message) => OnMessageReceived(session, message);
 
         // However this connection ends, everyone waiting for the server's picture of the world is
         // told. Without it a waiter outlives the connection it was waiting on and never returns,
@@ -240,7 +249,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         }
         catch
         {
-            connection.MessageReceived -= OnMessageReceived;
+            _owner = null;
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
@@ -255,8 +264,16 @@ public sealed class TvheadendConnection : IAsyncDisposable
         return session;
     }
 
-    private void OnMessageReceived(object? sender, HtspMessage message)
+    private void OnMessageReceived(HtspSession session, HtspMessage message)
     {
+        // A connection that has been replaced may still have messages in flight. They describe a
+        // world that is no longer being maintained, and letting them reach the catalogs would have
+        // an old connection editing a new one's picture.
+        if (!ReferenceEquals(_owner, session))
+        {
+            return;
+        }
+
         switch (message.Method)
         {
             case "channelAdd":
@@ -295,7 +312,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
                     Channels.Count,
                     Dvr.Count,
                     SeriesRules.Count);
-                _session?.InitialSync.TrySetResult();
+                session.InitialSync.TrySetResult();
                 break;
 
             default:

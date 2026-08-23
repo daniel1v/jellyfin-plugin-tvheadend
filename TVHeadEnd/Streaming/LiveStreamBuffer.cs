@@ -130,9 +130,12 @@ namespace TVHeadEnd.Streaming
             // and arriving without them is what it cannot recover from.
             var join = Bootstrap.CreateJoin(_ring.OldestPosition);
 
-            var reader = join.Position is { } position
-                ? _ring.OpenReaderAt(position, Bootstrap)
-                : _ring.OpenReaderFromStart(Bootstrap);
+            // NotYet included: the reader is placed at the live edge and waits there. Every byte
+            // behind it belongs to a programme the current tables do not describe, and the first
+            // access point of the current one is what it is waiting for.
+            var reader = join.Kind == StreamJoinKind.AtPosition
+                ? _ring.OpenReaderAt(join.Position, Bootstrap)
+                : _ring.OpenReaderFromStart(Bootstrap, join.Kind == StreamJoinKind.NotYet);
 
             return join.Tables.Length > 0 ? new PrefixedStream(join.Tables, reader) : reader;
         }
