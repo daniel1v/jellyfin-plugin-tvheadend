@@ -129,22 +129,6 @@ public sealed class LiveRingBufferTests : IDisposable
         Assert.Equal(Pattern((int)expectedStart, PacketSize), buffer);
     }
 
-    [Fact]
-    public async Task ResetDiscardsTheDetectionPhaseSoTheEncoderOutputStandsAlone()
-    {
-        await using var ring = new LiveRingBuffer(_path, 64 * PacketSize);
-        await ring.WriteAsync(Pattern(0, 4 * PacketSize), CancellationToken.None);
-
-        ring.Reset();
-        Assert.Equal(0, ring.WritePosition);
-
-        var encoded = Pattern(1000, 2 * PacketSize);
-        await ring.WriteAsync(encoded, CancellationToken.None);
-
-        using var reader = ring.OpenReaderFromStart(null);
-        Assert.Equal(encoded, await ReadFully(reader, encoded.Length));
-    }
-
     private static byte[] Pattern(int start, int length)
         => Enumerable.Range(start, length).Select(value => (byte)(value % 251)).ToArray();
 

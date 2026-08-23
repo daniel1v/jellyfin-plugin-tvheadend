@@ -171,18 +171,26 @@ public class LiveStartupTests
     }
 
     [Fact]
-    public void ChangingTheProgramLayoutDiscardsTheEarlierJoinPoints()
+    public void AccessPointsFoundBeforeALayoutChangeNeverLeaveTheConditioner()
     {
-        var bootstrap = new StreamBootstrapIndex();
-        bootstrap.RecordRandomAccessPoint(1000);
-        bootstrap.RecordRandomAccessPoint(2000);
+        // The case no amount of discarding afterwards can reach: the access point and the change
+        // that invalidates it are in the same chunk, so the offsets handed on with the new tables
+        // must already exclude it.
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+        Condition(conditioner, Concat(ProgramAssociation(), ProgramMap((0x1B, VideoPid))), out _);
 
-        Assert.Equal(2, bootstrap.Count);
+        var generation = conditioner.ProgramLayoutGeneration;
 
-        bootstrap.Reset();
+        Condition(
+            conditioner,
+            Concat(
+                Packet(VideoPid, startsUnit: true, randomAccess: true),
+                ProgramMap(true, (0x1B, VideoPid), (0x03, AudioPid))),
+            out _);
 
-        Assert.Equal(0, bootstrap.Count);
-        Assert.False(bootstrap.TryGetJoinPosition(0, out _));
+        Assert.True(conditioner.ProgramLayoutChanged);
+        Assert.NotEqual(generation, conditioner.ProgramLayoutGeneration);
+        Assert.Empty(conditioner.RandomAccessOffsets);
     }
 
     private static int Condition(TransportStreamConditioner conditioner, byte[] source, out byte[] output)

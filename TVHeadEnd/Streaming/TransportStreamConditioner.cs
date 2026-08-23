@@ -60,8 +60,6 @@ public sealed class TransportStreamConditioner
     private readonly H264IdrScanner _idrScanner = new();
     private readonly PsiSectionAssembler _programAssociationSection = new();
     private readonly PsiSectionAssembler _programMapSection = new();
-    private readonly List<byte[]> _programAssociationCollecting = [];
-    private readonly List<byte[]> _programMapCollecting = [];
 
     private byte[][] _programAssociationPackets = [];
     private byte[][] _programMapPackets = [];
@@ -138,6 +136,17 @@ public sealed class TransportStreamConditioner
     public bool ProgramLayoutChanged { get; private set; }
 
     /// <summary>
+    /// Gets which program layout the tables and access points now being produced belong to.
+    /// </summary>
+    /// <remarks>
+    /// Counts up whenever the broadcaster changes what the stream contains. Everything downstream
+    /// carries it, so tables and join points can only ever be stored together when they came from
+    /// the same layout -- an invariant a reader can rely on rather than an ordering the writer has
+    /// to remember to get right.
+    /// </remarks>
+    public int ProgramLayoutGeneration { get; private set; }
+
+    /// <summary>
     /// Gets the program map of the stream, or <see langword="null"/> until a complete one has
     /// been reassembled.
     /// </summary>
@@ -212,7 +221,7 @@ public sealed class TransportStreamConditioner
     /// <returns>The snapshot, empty until both tables have arrived.</returns>
     public ProgramTableSnapshot TakeProgramTables()
         => HasProgramTables
-            ? new ProgramTableSnapshot(_programAssociationPackets, _programMapPackets)
+            ? new ProgramTableSnapshot(_programAssociationPackets, _programMapPackets, ProgramLayoutGeneration)
             : ProgramTableSnapshot.Empty;
 
     /// <summary>
@@ -419,13 +428,6 @@ public sealed class TransportStreamConditioner
 
     private void CaptureProgramAssociation(ReadOnlySpan<byte> packet)
     {
-        if (TransportStreamPacket.StartsPayloadUnit(packet))
-        {
-            _programAssociationCollecting.Clear();
-        }
-
-        _programAssociationCollecting.Add(packet.ToArray());
-
         if (!_programAssociationSection.Accept(packet))
         {
             return;
@@ -447,25 +449,17 @@ public sealed class TransportStreamConditioner
             // map at the new PID arrives; publishing the new PAT beside the old PMT would be a
             // pairing that never existed on air.
             _programMapSection.Reset();
-            _programMapCollecting.Clear();
             _programMapPackets = [];
             ProgramMap = null;
-            ProgramLayoutChanged = true;
+            BeginNewProgramLayout();
         }
 
         _programMapTablePid = table.ProgramMapPid;
-        _programAssociationPackets = [.. _programAssociationCollecting];
+        _programAssociationPackets = [.. _programAssociationSection.CompletedPackets];
     }
 
     private void CaptureProgramMap(ReadOnlySpan<byte> packet)
     {
-        if (TransportStreamPacket.StartsPayloadUnit(packet))
-        {
-            _programMapCollecting.Clear();
-        }
-
-        _programMapCollecting.Add(packet.ToArray());
-
         if (!_programMapSection.Accept(packet))
         {
             return;
@@ -487,12 +481,30 @@ public sealed class TransportStreamConditioner
         var layoutChanged = ProgramMap is { } previous && !DescribesSameStreams(previous, table);
 
         ProgramMap = table;
-        _programMapPackets = [.. _programMapCollecting];
+        _programMapPackets = [.. _programMapSection.CompletedPackets];
 
         if (layoutChanged)
         {
-            ProgramLayoutChanged = true;
+            BeginNewProgramLayout();
         }
+    }
+
+    /// <summary>
+    /// Marks everything read under the previous program layout as belonging to it and no longer
+    /// to the stream being delivered.
+    /// </summary>
+    /// <remarks>
+    /// The access points already found in the chunk being conditioned go with it. They were
+    /// recorded under the old tables, and the chunk is published with the new ones, so keeping
+    /// them would hand a joining reader precisely the pairing this exists to prevent -- the new
+    /// description and the old picture -- and it would do so inside a single call, where no
+    /// amount of discarding afterwards can reach them.
+    /// </remarks>
+    private void BeginNewProgramLayout()
+    {
+        _randomAccessOffsets.Clear();
+        ProgramLayoutGeneration++;
+        ProgramLayoutChanged = true;
     }
 
     /// <summary>

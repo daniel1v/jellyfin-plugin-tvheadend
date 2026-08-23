@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace TVHeadEnd.Streaming;
 
@@ -29,7 +30,9 @@ internal sealed class PsiSectionAssembler
 
     private readonly byte[] _section = new byte[MaximumSectionLength];
     private readonly byte[] _completed = new byte[MaximumSectionLength];
+    private readonly List<byte[]> _collectingPackets = [];
 
+    private byte[][] _completedPackets = [];
     private int _collected;
     private int _expected;
     private int _completedLength;
@@ -44,6 +47,20 @@ internal sealed class PsiSectionAssembler
     /// bytes after that has happened.
     /// </remarks>
     public ReadOnlySpan<byte> Section => _completed.AsSpan(0, _completedLength);
+
+    /// <summary>
+    /// Gets the packets the completed section arrived in, valid at the same moments
+    /// <see cref="Section"/> is.
+    /// </summary>
+    /// <remarks>
+    /// Kept here rather than counted again by the caller, because the two have to agree. A caller
+    /// that watched for the payload unit start and cleared its own list there would cut the run at
+    /// a different place than the pointer field does: for a section whose tail shares a packet
+    /// with the start of the next, it would keep the packet that begins the next section and drop
+    /// every packet the finished one actually came in. The parsed table and the stored bytes would
+    /// then describe different broadcasts.
+    /// </remarks>
+    public IReadOnlyList<byte[]> CompletedPackets => _completedPackets;
 
     /// <summary>
     /// Offers the payload of one packet.
@@ -65,6 +82,7 @@ internal sealed class PsiSectionAssembler
 
         if (!TransportStreamPacket.StartsPayloadUnit(packet))
         {
+            _collectingPackets.Add(packet.ToArray());
             return Append(payload);
         }
 
@@ -78,12 +96,18 @@ internal sealed class PsiSectionAssembler
             return false;
         }
 
+        // This packet belongs to both sections when the pointer is non-zero: the end of the one
+        // in progress, and the beginning of the next.
+        var owned = packet.ToArray();
+        _collectingPackets.Add(owned);
+
         // Finish what was in progress before starting anything new. Skipping to the pointer, as
         // the obvious reading of the field invites, throws away the end of that section.
         var completedTail = pointer > 0 && Append(payload[..pointer]);
         payload = payload[pointer..];
 
         Reset();
+        _collectingPackets.Add(owned);
         var completedSection = StartSection(payload);
 
         return completedTail || completedSection;
@@ -96,6 +120,7 @@ internal sealed class PsiSectionAssembler
     {
         _collected = 0;
         _expected = 0;
+        _collectingPackets.Clear();
     }
 
     private bool StartSection(ReadOnlySpan<byte> payload)
@@ -141,6 +166,7 @@ internal sealed class PsiSectionAssembler
 
         _section.AsSpan(0, _expected).CopyTo(_completed);
         _completedLength = _expected;
+        _completedPackets = [.. _collectingPackets];
         return true;
     }
 }

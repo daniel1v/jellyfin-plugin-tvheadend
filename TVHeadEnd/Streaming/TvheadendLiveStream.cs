@@ -420,7 +420,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
 
                 var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
                 _conditioner = conditioner;
-                var checkedContainer = false;
+                var container = new SourceContainerCheck();
 
                 while (true)
                 {
@@ -431,18 +431,15 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                         break;
                     }
 
-                    if (!checkedContainer)
+                    // The pass profile is requested explicitly, so anything else means the server
+                    // substituted a profile of its own. Said plainly here rather than left to
+                    // surface as a startup timeout with no explanation -- but only once enough of
+                    // the opening has arrived for the answer to be worth anything, because a read
+                    // returns whatever is there and a short one proves nothing either way.
+                    if (container.Accept(readBuffer.AsSpan(0, read)) == SourceContainerVerdict.NotTransportStream)
                     {
-                        checkedContainer = true;
-
-                        // The pass profile is requested explicitly, so anything else means the
-                        // server substituted a profile of its own. Said plainly here rather than
-                        // left to surface as a startup timeout with no explanation.
-                        if (!SourceContainer.IsTransportStream(readBuffer.AsSpan(0, read)))
-                        {
-                            throw new InvalidOperationException(FormattableString.Invariant(
-                                $"TVHeadend did not deliver channel {ChannelId} as MPEG-TS. The plugin requests the 'pass' profile, so the server has substituted another one; check that 'pass' exists and that this user may use it."));
-                        }
+                        throw new InvalidOperationException(FormattableString.Invariant(
+                            $"TVHeadend did not deliver channel {ChannelId} as MPEG-TS. The plugin requests the 'pass' profile, so the server has substituted another one; check that 'pass' exists and that this user may use it."));
                     }
 
                     var conditioned = conditioner.Condition(readBuffer.AsSpan(0, read), conditionedBuffer);
@@ -451,26 +448,27 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                         continue;
                     }
 
-                    // A broadcaster that changes the program layout invalidates every entry point
-                    // found under the old one: a reader sent there would get the new tables and
-                    // the old picture. Discarded before this chunk's own access points are
-                    // recorded, so the first point under the new layout survives.
                     if (conditioner.ProgramLayoutChanged)
                     {
                         conditioner.AcknowledgeProgramLayoutChange();
-                        _bootstrap.Reset();
 
-                        // Everyone already watching carries on: their decoder has followed the
-                        // change packet by packet, which is what a broadcast expects of it. What
-                        // must not happen is a new viewer joining here, because the description
-                        // Jellyfin negotiated with belongs to the programme before. Refusing to
-                        // be shared sends the next one to a stream of its own, opened against
-                        // the table that is now on air.
+                        // Discarding the entry points found under the old layout is the bootstrap
+                        // index's own business: the tables it is about to be given carry which
+                        // layout they describe, and it drops everything belonging to the one
+                        // before. Doing it from here as well would be a second place that has to
+                        // stay right, and it could not reach the points found earlier in this
+                        // same chunk in any case.
+                        //
+                        // What does belong here is the sharing decision. Everyone already
+                        // watching carries on: their decoder has followed the change packet by
+                        // packet, which is what a broadcast expects of it. What must not happen
+                        // is a new viewer joining, because the description Jellyfin negotiated
+                        // with belongs to the programme before.
                         EnableStreamSharing = false;
 
                         _logger.LogInformation(
-                            "Live TV: channel {ChannelId} changed its program layout; earlier join points discarded "
-                            + "and the stream withdrawn from sharing, so a new viewer is described from the new tables",
+                            "Live TV: channel {ChannelId} changed its program layout; the stream is withdrawn from "
+                            + "sharing, so a new viewer is described from the tables now on air",
                             ChannelId);
                     }
 

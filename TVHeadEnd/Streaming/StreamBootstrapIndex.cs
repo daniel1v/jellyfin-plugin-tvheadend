@@ -4,17 +4,22 @@ using System.Collections.Generic;
 namespace TVHeadEnd.Streaming;
 
 /// <summary>
-/// Remembers where in a buffered stream a decoder may be started, and the program tables it needs
-/// when it starts there.
+/// Where in a buffered stream a decoder may be started, and the program tables it needs there.
 /// </summary>
 /// <remarks>
 /// <para>
 /// A consumer joining a channel that is already running cannot simply be pointed near the live
 /// edge. It would land in the middle of a picture with no program tables to map the elementary
 /// streams by, which is exactly the state a tuner hands over and which no decoder recovers from on
-/// its own. This records every random access point the writer passed, so a late reader can be
-/// given the most recent one still inside the buffer window, preceded by the tables that were
-/// valid there.
+/// its own. This holds the random access points the writer passed, so a late reader can be given
+/// the most recent one still inside the buffer window, preceded by the tables that were valid
+/// there.
+/// </para>
+/// <para>
+/// Tables and access points are one state, not two. They are written together and read together,
+/// and the layout generation is what keeps them honest: points found under one program layout are
+/// dropped the moment tables of the next arrive, so there is no ordering for a caller to get right
+/// and no window in which a reader can be handed the new description and the old picture.
 /// </para>
 /// <para>
 /// Positions are the logical, ever-increasing ones of <see cref="LiveRingBuffer.WritePosition"/>,
@@ -35,12 +40,7 @@ public sealed class StreamBootstrapIndex
 
     private byte[][] _programAssociationPackets = [];
     private byte[][] _programMapPackets = [];
-
-    /// <summary>
-    /// Gets the byte boundary a join position has to respect. A transport stream is addressable
-    /// at packet boundaries and nowhere else.
-    /// </summary>
-    public int Alignment => TransportStreamPacket.Length;
+    private int _generation = -1;
 
     /// <summary>
     /// Gets a value indicating whether both program tables have been seen.
@@ -57,71 +57,7 @@ public sealed class StreamBootstrapIndex
     }
 
     /// <summary>
-    /// Gets the number of random access points currently remembered.
-    /// </summary>
-    public int Count
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _points.Count;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Records the most recent Program Association Table.
-    /// </summary>
-    /// <remarks>
-    /// Taken as the whole run of packets the section occupied. A section that spans more than one
-    /// packet is normal, and keeping only the first would hand a joining reader a table it cannot
-    /// finish reading.
-    /// </remarks>
-    /// <param name="packets">The packets carrying the section.</param>
-    public void RecordProgramAssociationTable(IReadOnlyList<byte[]> packets)
-    {
-        ArgumentNullException.ThrowIfNull(packets);
-
-        lock (_gate)
-        {
-            _programAssociationPackets = [.. packets];
-        }
-    }
-
-    /// <summary>
-    /// Records the most recent Program Map Table.
-    /// </summary>
-    /// <param name="packets">The packets carrying the section.</param>
-    public void RecordProgramMapTable(IReadOnlyList<byte[]> packets)
-    {
-        ArgumentNullException.ThrowIfNull(packets);
-
-        lock (_gate)
-        {
-            _programMapPackets = [.. packets];
-        }
-    }
-
-    /// <summary>
-    /// Records that a decoder may start at a position.
-    /// </summary>
-    /// <param name="position">The logical buffer position of the access point.</param>
-    public void RecordRandomAccessPoint(long position)
-    {
-        lock (_gate)
-        {
-            if (_points.Count == MaximumPoints)
-            {
-                _points.Dequeue();
-            }
-
-            _points.Enqueue(position);
-        }
-    }
-
-    /// <summary>
-    /// Records the tables and the access points of one chunk together.
+    /// Records the tables of one chunk and the access points found in it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -129,6 +65,11 @@ public sealed class StreamBootstrapIndex
     /// the access points first leaves a window in which a reader joins at a position described by
     /// tables it has not been given; publishing the tables first leaves the mirror image. Either
     /// way the reader is handed a picture and a map of a different programme.
+    /// </para>
+    /// <para>
+    /// Access points without tables are dropped rather than stored, because there is nothing they
+    /// could be described by, and points from an earlier layout are dropped the moment tables of a
+    /// later one arrive.
     /// </para>
     /// <para>
     /// The access points are found by the conditioner, which is already parsing every packet, so
@@ -147,11 +88,23 @@ public sealed class StreamBootstrapIndex
 
         lock (_gate)
         {
-            if (tables.HasBoth)
+            if (!tables.HasBoth)
             {
-                _programAssociationPackets = [.. tables.ProgramAssociationPackets];
-                _programMapPackets = [.. tables.ProgramMapPackets];
+                // Nothing here can be joined at: a position with no tables to describe it is the
+                // state a tuner hands over, which is what this exists to spare a reader.
+                return;
             }
+
+            if (tables.Generation != _generation)
+            {
+                // The broadcaster changed what the stream contains. Every position found under
+                // the layout before describes a picture these tables do not.
+                _points.Clear();
+                _generation = tables.Generation;
+            }
+
+            _programAssociationPackets = [.. tables.ProgramAssociationPackets];
+            _programMapPackets = [.. tables.ProgramMapPackets];
 
             if (randomAccessOffsets is null)
             {
@@ -171,12 +124,17 @@ public sealed class StreamBootstrapIndex
     }
 
     /// <summary>
-    /// Finds the latest position a reader may join at.
+    /// Takes the whole of what a reader needs to start: the tables, and where to start reading.
     /// </summary>
+    /// <remarks>
+    /// One call, because the answer is one state. Asking for the tables and the position
+    /// separately lets the writer publish a new layout between the two, and the reader then holds
+    /// the tables of one programme and a position inside another -- the failure this index exists
+    /// to make impossible, arrived at by using it in the obvious way.
+    /// </remarks>
     /// <param name="oldestPosition">The oldest position the buffer still holds.</param>
-    /// <param name="position">The position to start reading at.</param>
-    /// <returns>Whether a usable access point is still inside the window.</returns>
-    public bool TryGetJoinPosition(long oldestPosition, out long position)
+    /// <returns>Where to start and what to send first.</returns>
+    public StreamJoin CreateJoin(long oldestPosition)
     {
         lock (_gate)
         {
@@ -185,68 +143,51 @@ public sealed class StreamBootstrapIndex
                 _points.Dequeue();
             }
 
-            if (_points.Count == 0)
-            {
-                position = 0;
-                return false;
-            }
-
-            // The newest one: a late reader wants the least delay it can safely have, and
-            // everything recorded has by definition already been written.
-            position = long.MinValue;
+            long? position = null;
             foreach (var candidate in _points)
             {
-                if (candidate > position)
+                // The newest one: a late reader wants the least delay it can safely have, and
+                // everything recorded has by definition already been written.
+                if (position is null || candidate > position)
                 {
                     position = candidate;
                 }
             }
 
-            return true;
+            return new StreamJoin(CreateBootstrapPrefixLocked(), position);
         }
     }
 
     /// <summary>
-    /// Builds the bytes a joining reader has to be given before the buffer content, so its decoder
-    /// can map the elementary streams.
+    /// Builds the bytes a joining reader has to be given before the buffer content, so its
+    /// decoder can map the elementary streams.
     /// </summary>
-    /// <returns>The tables as transport stream packets, empty when none have been seen.</returns>
-    public byte[] CreateBootstrapPrefix()
+    /// <remarks>
+    /// Only reachable through <see cref="CreateJoin"/>, and deliberately so. Offering the tables
+    /// on their own is what let a caller take them separately from the position they belong to.
+    /// </remarks>
+    private byte[] CreateBootstrapPrefixLocked()
     {
-        lock (_gate)
+        var count = _programAssociationPackets.Length + _programMapPackets.Length;
+        if (count == 0)
         {
-            var count = _programAssociationPackets.Length + _programMapPackets.Length;
-            if (count == 0)
-            {
-                return [];
-            }
-
-            var prefix = new byte[count * TransportStreamPacket.Length];
-            var written = 0;
-            foreach (var packet in _programAssociationPackets)
-            {
-                packet.CopyTo(prefix, written);
-                written += TransportStreamPacket.Length;
-            }
-
-            foreach (var packet in _programMapPackets)
-            {
-                packet.CopyTo(prefix, written);
-                written += TransportStreamPacket.Length;
-            }
-
-            return prefix;
+            return [];
         }
-    }
 
-    /// <summary>
-    /// Forgets every recorded position, for a buffer that has been restarted.
-    /// </summary>
-    public void Reset()
-    {
-        lock (_gate)
+        var prefix = new byte[count * TransportStreamPacket.Length];
+        var written = 0;
+        foreach (var packet in _programAssociationPackets)
         {
-            _points.Clear();
+            packet.CopyTo(prefix, written);
+            written += TransportStreamPacket.Length;
         }
+
+        foreach (var packet in _programMapPackets)
+        {
+            packet.CopyTo(prefix, written);
+            written += TransportStreamPacket.Length;
+        }
+
+        return prefix;
     }
 }

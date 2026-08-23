@@ -45,8 +45,6 @@ public sealed class RingBufferRejoinTests : IDisposable
         // A client that paused for longer than the buffer holds. Continuing from the oldest
         // surviving byte is what left it with a decoder that never recovered.
         var bootstrap = new StreamBootstrapIndex();
-        bootstrap.RecordProgramAssociationTable([TablePacket(PatPid)]);
-        bootstrap.RecordProgramMapTable([TablePacket(PmtPid)]);
 
         await using var buffer = new LiveStreamBuffer(_path, LiveStreamBuffer.MinimumSizeMegabytes)
         {
@@ -86,8 +84,6 @@ public sealed class RingBufferRejoinTests : IDisposable
     public async Task AReaderJoiningLateStartsAtAConfirmedRandomAccessPoint()
     {
         var bootstrap = new StreamBootstrapIndex();
-        bootstrap.RecordProgramAssociationTable([TablePacket(PatPid)]);
-        bootstrap.RecordProgramMapTable([TablePacket(PmtPid)]);
 
         await using var buffer = new LiveStreamBuffer(_path, LiveStreamBuffer.MinimumSizeMegabytes)
         {
@@ -114,8 +110,6 @@ public sealed class RingBufferRejoinTests : IDisposable
         // stream is still delivered, and the tables at least let the decoder map the streams
         // once it resynchronises on its own.
         var bootstrap = new StreamBootstrapIndex();
-        bootstrap.RecordProgramAssociationTable([TablePacket(PatPid)]);
-        bootstrap.RecordProgramMapTable([TablePacket(PmtPid)]);
 
         await using var buffer = new LiveStreamBuffer(_path, LiveStreamBuffer.MinimumSizeMegabytes)
         {
@@ -132,8 +126,10 @@ public sealed class RingBufferRejoinTests : IDisposable
 
     private static async Task<long> WriteAccessPoint(LiveStreamBuffer buffer, StreamBootstrapIndex bootstrap)
     {
+        // The tables travel with the chunk, as they do from the conditioner. An access point
+        // offered without them is one no reader could be told how to decode, and is not kept.
         var packet = VideoPacket(randomAccess: true);
-        await buffer.Write(packet, [0], ProgramTableSnapshot.Empty, CancellationToken.None);
+        await buffer.Write(packet, [0], Tables(), CancellationToken.None);
         _ = bootstrap;
         return packet.Length;
     }
@@ -143,7 +139,7 @@ public sealed class RingBufferRejoinTests : IDisposable
         var filler = Enumerable.Range(0, packets)
             .SelectMany(_ => VideoPacket(randomAccess: false))
             .ToArray();
-        await buffer.Write(filler, null, ProgramTableSnapshot.Empty, CancellationToken.None);
+        await buffer.Write(filler, null, Tables(), CancellationToken.None);
         return filler.Length;
     }
 
@@ -168,7 +164,11 @@ public sealed class RingBufferRejoinTests : IDisposable
         return packet;
     }
 
+    private static ProgramTableSnapshot Tables()
+        => new([TablePacket(PatPid)], [TablePacket(PmtPid)], 0);
+
     private static byte[] TablePacket(int pid)
+
     {
         var packet = new byte[PacketLength];
         packet[0] = 0x47;

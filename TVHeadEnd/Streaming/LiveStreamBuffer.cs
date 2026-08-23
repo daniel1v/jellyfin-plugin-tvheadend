@@ -97,15 +97,6 @@ namespace TVHeadEnd.Streaming
         }
 
         /// <summary>
-        /// Discards everything written so far.
-        /// </summary>
-        public void Reset()
-        {
-            _ring.Reset();
-            Bootstrap?.Reset();
-        }
-
-        /// <summary>
         /// Opens a reader for a consumer.
         /// </summary>
         /// <remarks>
@@ -134,16 +125,16 @@ namespace TVHeadEnd.Streaming
                 return _ring.OpenReaderFromStart(null);
             }
 
-            // Wherever the reader ends up, it is given the program tables first. Duplicating the
-            // ones already in the buffer costs a decoder nothing; arriving without them is what
-            // it cannot recover from.
-            var prefix = Bootstrap.CreateBootstrapPrefix();
+            // Taken as one state. Wherever the reader ends up it is given that state's program
+            // tables first: duplicating the ones already in the buffer costs a decoder nothing,
+            // and arriving without them is what it cannot recover from.
+            var join = Bootstrap.CreateJoin(_ring.OldestPosition);
 
-            var reader = Bootstrap.TryGetJoinPosition(_ring.OldestPosition, out var position)
+            var reader = join.Position is { } position
                 ? _ring.OpenReaderAt(position, Bootstrap)
                 : _ring.OpenReaderFromStart(Bootstrap);
 
-            return prefix.Length > 0 ? new PrefixedStream(prefix, reader) : reader;
+            return join.Tables.Length > 0 ? new PrefixedStream(join.Tables, reader) : reader;
         }
 
         /// <inheritdoc />

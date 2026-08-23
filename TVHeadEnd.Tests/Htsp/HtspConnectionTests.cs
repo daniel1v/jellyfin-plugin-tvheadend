@@ -120,6 +120,27 @@ public class HtspConnectionTests
         await connection.DisposeAsync();
     }
 
+    [Fact]
+    public async Task AConnectionThatHasEndedNeverReportsItselfUsableAgain()
+    {
+        // The socket surviving proves nothing. A connection that has been failed by the far end
+        // closing, by the network going away or by the framing losing step can carry nothing, and
+        // anything that believed the socket would keep handing work to it for ever instead of
+        // opening a new one.
+        await using var server = new FakeHtspServer();
+        server.OnRequest = (request, _) => IsHandshake(request.Method) ? Handshake(request) : null;
+
+        server.Start();
+        var connection = await ConnectAsync(server);
+        Assert.True(connection.IsConnected);
+
+        await server.DisposeAsync();
+        await connection.Closed.WaitAsync(Patience);
+
+        Assert.False(connection.IsConnected);
+        await connection.DisposeAsync();
+    }
+
     private static bool IsHandshake(string method)
         => string.Equals(method, "hello", StringComparison.Ordinal)
             || string.Equals(method, "authenticate", StringComparison.Ordinal);

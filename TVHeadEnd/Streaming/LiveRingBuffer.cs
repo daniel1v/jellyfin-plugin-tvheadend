@@ -90,17 +90,6 @@ namespace TVHeadEnd.Streaming
             await _writer.DisposeAsync().ConfigureAwait(false);
         }
 
-        /// <summary>
-        /// Discards everything written so far. Used when the feed hands over to the encoder: the
-        /// bytes the detection phase wrote are the original broadcast, and leaving them in front
-        /// of the encoder's output would make the probe describe the wrong stream. Only safe
-        /// before the first reader exists, which is the case while the stream is still opening.
-        /// </summary>
-        internal void Reset()
-        {
-            Volatile.Write(ref _writePosition, 0);
-        }
-
         internal async Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
         {
             // A single write larger than the whole window would lap itself; only the tail of it
@@ -291,30 +280,28 @@ namespace TVHeadEnd.Streaming
                 return true;
             }
 
+            /// <remarks>
+            /// The reader has been lapped by the writer, which is the same problem as joining for
+            /// the first time and is answered the same way: one state, taken once. Where no access
+            /// point survives in the window, reading on from the oldest bytes is all that is left,
+            /// and the tables still go in front so the decoder can map the streams once it
+            /// resynchronises.
+            /// </remarks>
             /// <param name="oldest">The oldest position the buffer still holds.</param>
             private void ReJoin(long oldest)
             {
-                if (_bootstrap is not null && _bootstrap.TryGetJoinPosition(oldest, out var joinPosition))
+                if (_bootstrap is null)
                 {
-                    _position = AlignToPacket(joinPosition);
-                    var prefix = _bootstrap.CreateBootstrapPrefix();
-                    if (prefix.Length > 0)
-                    {
-                        _pendingPrefix = prefix;
-                        _pendingPrefixPosition = 0;
-                    }
-
+                    _position = AlignToPacket(oldest);
                     return;
                 }
 
-                // No confirmed random access point survives in the window. Reading on from the
-                // oldest bytes is the only thing left; the tables at least let the decoder map
-                // the streams once it resynchronises.
-                _position = AlignToPacket(oldest);
-                var tables = _bootstrap?.CreateBootstrapPrefix() ?? [];
-                if (tables.Length > 0)
+                var join = _bootstrap.CreateJoin(oldest);
+                _position = AlignToPacket(join.Position ?? oldest);
+
+                if (join.Tables.Length > 0)
                 {
-                    _pendingPrefix = tables;
+                    _pendingPrefix = join.Tables;
                     _pendingPrefixPosition = 0;
                 }
             }

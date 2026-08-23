@@ -45,6 +45,7 @@ public sealed class HtspConnection : IAsyncDisposable
     private Task? _readLoop;
     private long _sequence;
     private int _disposed;
+    private int _failed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HtspConnection"/> class.
@@ -76,7 +77,16 @@ public sealed class HtspConnection : IAsyncDisposable
     /// <summary>
     /// Gets a value indicating whether the connection is usable.
     /// </summary>
-    public bool IsConnected => _stream is not null && !_lifetime.IsCancellationRequested && Volatile.Read(ref _disposed) == 0;
+    /// <remarks>
+    /// A connection that has failed never becomes usable again, and this is what says so. The
+    /// socket surviving a read error proves nothing: TVHeadend closing the stream, the network
+    /// going away and the framing losing step all leave an object that still looks alive and can
+    /// carry nothing. A caller that believed the socket would keep handing work to it for ever.
+    /// </remarks>
+    public bool IsConnected => _stream is not null
+        && Volatile.Read(ref _failed) == 0
+        && !_lifetime.IsCancellationRequested
+        && Volatile.Read(ref _disposed) == 0;
 
     /// <summary>
     /// Gets a task that completes when the connection is finished, however it ended.
@@ -420,8 +430,19 @@ public sealed class HtspConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Ends the connection, failing everything waiting on it.
+    /// </summary>
+    /// <remarks>
+    /// The one place a connection stops being usable, and it says so before it completes anyone.
+    /// A waiter that reacts to its failure by asking for a connection has to find this one already
+    /// unusable, or it is handed straight back the object that just failed it.
+    /// </remarks>
+    /// <param name="exception">Why the connection ended.</param>
     private void Fail(Exception exception)
     {
+        Interlocked.Exchange(ref _failed, 1);
+
         foreach (var sequence in _pending.Keys)
         {
             if (_pending.TryRemove(sequence, out var completion))

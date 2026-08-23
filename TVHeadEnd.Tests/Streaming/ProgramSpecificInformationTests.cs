@@ -96,6 +96,36 @@ public class ProgramSpecificInformationTests
         Assert.Equal(2, conditioner.ProgramMap.Entries.Count);
     }
 
+    [Fact]
+    public void TheStoredPacketsAreTheOnesTheParsedSectionArrivedIn()
+    {
+        // The two used to be counted separately: the parser followed the pointer field, and the
+        // packet capture cleared itself at every payload unit start. For a section whose tail
+        // shares a packet with the start of the next, that kept the packet beginning the next
+        // section and dropped every packet the finished one came in -- so a joining reader was
+        // handed bytes that did not contain the table the plugin had just parsed.
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+        var section = PsiSection.WithCrc(ProgramMapSection(0x1B));
+        var split = section.Length - 6;
+
+        Condition(conditioner, Pat(PmtPid), out _);
+        Condition(conditioner, SectionStart(PmtPid, section[..split]), out _);
+        Condition(conditioner, TailThenStart(PmtPid, section[split..], PsiSection.WithCrc(ProgramMapSection(0x1B))), out _);
+
+        Assert.NotNull(conditioner.ProgramMap);
+
+        // Whatever the conditioner hands a reader has to parse back to the same table.
+        var stored = conditioner.TakeProgramTables();
+        var rebuilt = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+        foreach (var packet in stored.ProgramAssociationPackets.Concat(stored.ProgramMapPackets))
+        {
+            Condition(rebuilt, packet, out _);
+        }
+
+        Assert.NotNull(rebuilt.ProgramMap);
+        Assert.Equal(conditioner.ProgramMap!.Describe(), rebuilt.ProgramMap!.Describe());
+    }
+
     [Theory]
     [InlineData(0x30)]
     [InlineData(0x0A)]
@@ -181,14 +211,14 @@ public class ProgramSpecificInformationTests
         // the tables first leaves the mirror image. Either way it is handed a picture and a map
         // of a different programme.
         var index = new StreamBootstrapIndex();
-        var tables = new ProgramTableSnapshot([Pat(PmtPid)], [Pmt(0x1B)]);
+        var tables = new ProgramTableSnapshot([Pat(PmtPid)], [Pmt(0x1B)], 0);
 
         index.Publish(tables, basePosition: 0, randomAccessOffsets: [376]);
+        var join = index.CreateJoin(0);
 
         Assert.True(index.HasProgramTables);
-        Assert.True(index.TryGetJoinPosition(0, out var position));
-        Assert.Equal(376, position);
-        Assert.Equal(2 * PacketLength, index.CreateBootstrapPrefix().Length);
+        Assert.Equal(376, join.Position);
+        Assert.Equal(2 * PacketLength, join.Tables.Length);
     }
 
     [Fact]
@@ -201,7 +231,7 @@ public class ProgramSpecificInformationTests
         index.Publish(ProgramTableSnapshot.Empty, basePosition: 0, randomAccessOffsets: [188]);
 
         Assert.False(index.HasProgramTables);
-        Assert.Empty(index.CreateBootstrapPrefix());
+        Assert.Empty(index.CreateJoin(0).Tables);
     }
 
     private static TransportStreamConditioner Started()
