@@ -100,7 +100,11 @@ public sealed record TvheadendSettings
             HttpPort = configuration.HTTP_Port,
             HtspPort = configuration.HTSP_Port,
             UserName = configuration.Username.Trim(),
-            Password = configuration.Password.Trim(),
+            // Not trimmed. A host name with a stray space is a typo; a password with one is a
+            // password, and silently changing it turns a working credential into a failing login
+            // nobody can explain.
+            Password = configuration.Password,
+
             Priority = priority,
             DvrProfile = configuration.DvrProfile.Trim(),
             ChannelTypeForOther = configuration.ChannelType.Trim(),

@@ -71,7 +71,14 @@ namespace TVHeadEnd.Api
                 return NotFound();
             }
 
-            var upstream = _connectionHandler.HttpEndpoint.CreateApiUrl("dvrfile/" + recordingId);
+            // Taken once, and only after a connection exists. The server's web root is part of
+            // every address here and is only known from a handshake, so the synchronous property
+            // can answer with a root the server never reported -- and asking twice within one
+            // request could answer from two different servers if the configuration changed in
+            // between.
+            var endpoint = await _connectionHandler.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
+
+            var upstream = endpoint.CreateApiUrl("dvrfile/" + recordingId);
             if (string.IsNullOrEmpty(upstream))
             {
                 return NotFound();
@@ -92,7 +99,7 @@ namespace TVHeadEnd.Api
                 HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get,
                 upstream);
 
-            foreach (var header in _connectionHandler.HttpEndpoint.CreateHeaders())
+            foreach (var header in endpoint.CreateHeaders())
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }

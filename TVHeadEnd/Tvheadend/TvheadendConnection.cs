@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Model.Plugins;
 using Microsoft.Extensions.Logging;
 using Tvheadend.Htsp;
 using Tvheadend.Htsp.Protocol;
@@ -33,7 +34,6 @@ public sealed class TvheadendConnection : IAsyncDisposable
     private HtspSession? _session;
     private HtspSession? _owner;
     private TvheadendSettings? _settings;
-    private string _webRoot = string.Empty;
     private bool _disposed;
 
     /// <summary>
@@ -46,6 +46,11 @@ public sealed class TvheadendConnection : IAsyncDisposable
 
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<TvheadendConnection>();
+
+        // Configuration changes are taken as they are saved rather than at the next restart.
+        // Subscribed here because this is the one object that owns a connection and therefore the
+        // one that can decide whether a change invalidates it.
+        Plugin.Instance.ConfigurationChanged += OnConfigurationChanged;
 
         Channels = new ChannelCatalog(loggerFactory.CreateLogger<ChannelCatalog>());
         Dvr = new DvrCatalog(loggerFactory.CreateLogger<DvrCatalog>());
@@ -80,12 +85,13 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// correct after a connection has been established at least once. Callers that need it for
     /// an address reach it through <see cref="GetHttpEndpointAsync"/>.
     /// </remarks>
-    public TvheadendHttpEndpoint HttpEndpoint => new(
-        Settings.Host,
-        Settings.HttpPort,
-        _webRoot,
-        Settings.UserName,
-        Settings.Password);
+    public TvheadendHttpEndpoint HttpEndpoint
+        => _session?.Endpoint ?? new TvheadendHttpEndpoint(
+            Settings.Host,
+            Settings.HttpPort,
+            string.Empty,
+            Settings.UserName,
+            Settings.Password);
 
     /// <summary>
     /// Gets the HTTP endpoint, connecting first so that the server's web root is known.
@@ -94,8 +100,8 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// <returns>The endpoint.</returns>
     public async Task<TvheadendHttpEndpoint> GetHttpEndpointAsync(CancellationToken cancellationToken)
     {
-        await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
-        return HttpEndpoint;
+        var session = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
+        return session.Endpoint;
     }
 
     /// <summary>
@@ -125,9 +131,54 @@ public sealed class TvheadendConnection : IAsyncDisposable
     }
 
     /// <summary>
-    /// Discards the cached settings, so the next operation reads the configuration again.
+    /// Takes the configuration as it now stands.
     /// </summary>
-    public void InvalidateSettings() => _settings = null;
+    /// <remarks>
+    /// <para>
+    /// Two kinds of setting, and they are treated differently because they mean different things.
+    /// Anything that names the server -- host, either port, the credentials -- describes a
+    /// connection, so the one in hand is retired and the next operation opens a replacement
+    /// against the new address. Everything else is a parameter of the next operation and is simply
+    /// read when that operation happens.
+    /// </para>
+    /// <para>
+    /// Nothing is disposed or reconnected here. The replacement happens under the connect lock
+    /// when something next needs a connection, so a configuration save does not start work of its
+    /// own, and a live stream already running is left alone -- it holds an HTTP response that owes
+    /// nothing to this connection.
+    /// </para>
+    /// </remarks>
+    public void ApplyConfiguration()
+    {
+        var previous = _settings;
+        _settings = null;
+
+        if (previous is null)
+        {
+            return;
+        }
+
+        var current = Settings;
+        if (DescribesSameServer(previous, current))
+        {
+            return;
+        }
+
+        _session?.Retire();
+        _logger.LogInformation(
+            "The TVHeadend server settings changed; the next operation opens a connection to {Host}",
+            current.Host);
+    }
+
+    private void OnConfigurationChanged(object? sender, BasePluginConfiguration configuration)
+        => ApplyConfiguration();
+
+    private static bool DescribesSameServer(TvheadendSettings first, TvheadendSettings second)
+        => string.Equals(first.Host, second.Host, StringComparison.Ordinal)
+        && first.HtspPort == second.HtspPort
+        && first.HttpPort == second.HttpPort
+        && string.Equals(first.UserName, second.UserName, StringComparison.Ordinal)
+        && string.Equals(first.Password, second.Password, StringComparison.Ordinal);
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
@@ -138,6 +189,8 @@ public sealed class TvheadendConnection : IAsyncDisposable
         }
 
         _disposed = true;
+
+        Plugin.Instance.ConfigurationChanged -= OnConfigurationChanged;
 
         if (_session is { } session)
         {
@@ -154,7 +207,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var existing = _session;
-        if (existing is { Connection.IsConnected: true })
+        if (existing is { IsRetired: false, Connection.IsConnected: true })
         {
             return existing;
         }
@@ -163,7 +216,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         try
         {
             existing = _session;
-            if (existing is { Connection.IsConnected: true })
+            if (existing is { IsRetired: false, Connection.IsConnected: true })
             {
                 return existing;
             }
@@ -219,7 +272,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         Dvr.Clear();
         SeriesRules.Clear();
 
-        var session = new HtspSession(connection);
+        var session = new HtspSession(connection, settings, NormalizeWebRoot(connection.Hello?.WebRoot));
 
         // The catalogs belong to this connection from here on, and so does everything it says.
         // Subscribed before the metadata is asked for, because the server starts answering
@@ -253,8 +306,6 @@ public sealed class TvheadendConnection : IAsyncDisposable
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-
-        _webRoot = NormalizeWebRoot(connection.Hello?.WebRoot);
 
         // Published last. Until the handshake, the authentication and the metadata subscription
         // have all gone through, this connection cannot answer anything a caller would ask of it,
@@ -348,13 +399,44 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// </remarks>
     private sealed class HtspSession
     {
-        internal HtspSession(HtspConnection connection)
+        internal HtspSession(HtspConnection connection, TvheadendSettings settings, string webRoot)
         {
             Connection = connection;
+            Settings = settings;
+            Endpoint = new TvheadendHttpEndpoint(
+                settings.Host,
+                settings.HttpPort,
+                webRoot,
+                settings.UserName,
+                settings.Password);
         }
 
         internal HtspConnection Connection { get; }
 
+        /// <summary>
+        /// Gets the settings this connection was opened with.
+        /// </summary>
+        internal TvheadendSettings Settings { get; }
+
+        /// <summary>
+        /// Gets the HTTP endpoint of this connection's server.
+        /// </summary>
+        /// <remarks>
+        /// Built once, from the settings that opened the connection and the web root that
+        /// connection's handshake reported. Assembling it later from whatever the configuration
+        /// says now and whatever web root was last seen can produce an address that belonged to
+        /// neither server.
+        /// </remarks>
+        internal TvheadendHttpEndpoint Endpoint { get; }
+
         internal TaskCompletionSource InitialSync { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>
+        /// Gets a value indicating whether this session has been superseded by a configuration
+        /// change and should be replaced at the next opportunity.
+        /// </summary>
+        internal bool IsRetired { get; private set; }
+
+        internal void Retire() => IsRetired = true;
     }
 }
