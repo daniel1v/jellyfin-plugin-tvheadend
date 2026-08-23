@@ -48,11 +48,6 @@ public sealed class TvheadendConnection : IAsyncDisposable
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<TvheadendConnection>();
 
-        // Configuration changes are taken as they are saved rather than at the next restart.
-        // Subscribed here because this is the one object that owns a connection and therefore the
-        // one that can decide whether a change invalidates it.
-        Plugin.Instance.ConfigurationChanged += OnConfigurationChanged;
-
         Channels = new ChannelCatalog(loggerFactory.CreateLogger<ChannelCatalog>());
         Dvr = new DvrCatalog(loggerFactory.CreateLogger<DvrCatalog>());
         SeriesRules = new SeriesRuleCatalog(loggerFactory.CreateLogger<SeriesRuleCatalog>());
