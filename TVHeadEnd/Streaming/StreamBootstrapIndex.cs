@@ -103,7 +103,14 @@ public sealed class StreamBootstrapIndex
                 // written before this chunk belongs to that older picture.
                 _points.Clear();
                 _generation = tables.Generation;
-                _generationStart = basePosition;
+
+                // Where the layout actually began, which the conditioner knows because it saw the
+                // table that changed it. Falling back to the start of the chunk would be a claim
+                // that the change happened earlier than it did, and would let a reader be sent to
+                // bytes of the programme before behind the new tables.
+                _generationStart = tables.GenerationStartOffset >= 0
+                    ? basePosition + tables.GenerationStartOffset
+                    : basePosition;
             }
 
             _programAssociationPackets = [.. tables.ProgramAssociationPackets];

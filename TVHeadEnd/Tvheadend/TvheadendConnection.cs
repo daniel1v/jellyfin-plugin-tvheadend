@@ -27,6 +27,11 @@ namespace TVHeadEnd.Tvheadend;
 /// </remarks>
 public sealed class TvheadendConnection : IAsyncDisposable
 {
+    /// <summary>
+    /// How many times a connect is retried when the configuration changes underneath it.
+    /// </summary>
+    private const int MaximumConnectAttempts = 3;
+
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<TvheadendConnection> _logger;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
@@ -35,6 +40,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
     private HtspSession? _owner;
     private TvheadendSettings? _settings;
     private int _subscribed;
+    private int _configurationGeneration;
     private bool _disposed;
 
     /// <summary>
@@ -180,6 +186,10 @@ public sealed class TvheadendConnection : IAsyncDisposable
             return;
         }
 
+        // Everything opened under the configuration before this is now out of date --
+        // including a connect that is still in progress and has no session to retire yet.
+        Interlocked.Increment(ref _configurationGeneration);
+
         _session?.Retire();
         _logger.LogInformation(
             "The TVHeadend server settings changed; the next operation opens a connection to {Host}",
@@ -250,7 +260,19 @@ public sealed class TvheadendConnection : IAsyncDisposable
                 await existing.Connection.DisposeAsync().ConfigureAwait(false);
             }
 
-            return await ConnectAsync(cancellationToken).ConfigureAwait(false);
+            // A connect discarded because the configuration changed under it is retried with
+            // the settings that replaced it. Bounded, so a configuration being saved repeatedly
+            // cannot keep a caller here.
+            for (var attempt = 0; attempt < MaximumConnectAttempts; attempt++)
+            {
+                if (await ConnectAsync(cancellationToken).ConfigureAwait(false) is { } session)
+                {
+                    return session;
+                }
+            }
+
+            throw new HtspException(
+                "The TVHeadend settings kept changing while connecting, so no connection could be established.");
         }
         finally
         {
@@ -258,8 +280,9 @@ public sealed class TvheadendConnection : IAsyncDisposable
         }
     }
 
-    private async Task<HtspSession> ConnectAsync(CancellationToken cancellationToken)
+    private async Task<HtspSession?> ConnectAsync(CancellationToken cancellationToken)
     {
+        var generation = Volatile.Read(ref _configurationGeneration);
         var settings = Settings;
         var version = typeof(TvheadendConnection).Assembly.GetName().Version;
 
@@ -324,6 +347,22 @@ public sealed class TvheadendConnection : IAsyncDisposable
             _owner = null;
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+
+        // A connect takes as long as a handshake, an authentication and a metadata request,
+        // and the configuration can be saved during any of them. Publishing a session built from
+        // settings that have since been replaced would make the old server the current one until
+        // something else happened to fail. So the generation is checked here, where the session
+        // finally becomes visible, and a stale one is thrown away instead.
+        if (Volatile.Read(ref _configurationGeneration) != generation)
+        {
+            _logger.LogInformation(
+                "The TVHeadend settings changed while connecting to {Host}; that connection is discarded",
+                settings.Host);
+
+            _owner = null;
+            await connection.DisposeAsync().ConfigureAwait(false);
+            return null;
         }
 
         // Published last. Until the handshake, the authentication and the metadata subscription

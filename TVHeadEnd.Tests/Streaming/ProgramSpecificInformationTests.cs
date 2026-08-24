@@ -126,6 +126,36 @@ public class ProgramSpecificInformationTests
         Assert.Equal(conditioner.ProgramMap!.Describe(), rebuilt.ProgramMap!.Describe());
     }
 
+    [Fact]
+    public void TwoWholeSectionsInOnePacketAreBothRead()
+    {
+        // A PSI packet may carry more than one complete section. Reading only as far as the first
+        // -- which is what taking the section length once and stopping amounts to -- silently
+        // drops the rest, and for a program map that is the description of the channel.
+        var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+        Condition(conditioner, Pat(PmtPid), out _);
+
+        // The first names one audio track, the second names it with its language. Both are
+        // complete and both are in one packet; the second is the one in force.
+        var first = PsiSection.WithCrc(ProgramMapSection(0x1B));
+        var second = PsiSection.WithCrc(GermanAudioProgramMapSection());
+
+        Condition(conditioner, TwoSections(PmtPid, first, second), out _);
+
+        Assert.NotNull(conditioner.ProgramMap);
+        Assert.Equal("deu", conditioner.ProgramMap!.Entries[1].Language);
+
+        // And what is stored for a joining reader is the section that was acted on.
+        var stored = conditioner.TakeProgramTables();
+        var rebuilt = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
+        foreach (var packet in stored.ProgramAssociationPackets.Concat(stored.ProgramMapPackets))
+        {
+            Condition(rebuilt, packet, out _);
+        }
+
+        Assert.Equal("deu", rebuilt.ProgramMap!.Entries[1].Language);
+    }
+
     [Theory]
     [InlineData(0x30)]
     [InlineData(0x0A)]
@@ -306,6 +336,48 @@ public class ProgramSpecificInformationTests
 
         return SectionPacket(PmtPid, PsiSection.WithCrc(section));
     }
+
+    /// <summary>
+    /// One packet carrying two complete sections back to back, which is legal and which a
+    /// broadcaster does when both are small.
+    /// </summary>
+    private static byte[] TwoSections(int pid, IReadOnlyList<byte> first, IReadOnlyList<byte> second)
+    {
+        var packet = Packet(pid, startsUnit: true);
+        packet[4] = 0x00;
+
+        var offset = 5;
+        foreach (var value in first)
+        {
+            packet[offset++] = value;
+        }
+
+        foreach (var value in second)
+        {
+            packet[offset++] = value;
+        }
+
+        // Stuffing, as a broadcaster fills the rest.
+        for (; offset < packet.Length; offset++)
+        {
+            packet[offset] = 0xFF;
+        }
+
+        return packet;
+    }
+
+    private static byte[] GermanAudioProgramMapSection() =>
+    [
+        0x02,
+        0xB0, 0x1D,
+        0x00, 0x01,
+        0xC1, 0x00, 0x00,
+        (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), VideoPid & 0xFF,
+        0xF0, 0x00,
+        0x1B, (byte)(0xE0 | ((VideoPid >> 8) & 0x1F)), VideoPid & 0xFF, 0xF0, 0x00,
+        0x03, (byte)(0xE0 | ((AudioPid >> 8) & 0x1F)), AudioPid & 0xFF, 0xF0, 0x06,
+        0x0A, 0x04, (byte)'d', (byte)'e', (byte)'u', 0x00,
+    ];
 
     private static byte[] SectionPacket(int pid, IReadOnlyList<byte> section)
     {

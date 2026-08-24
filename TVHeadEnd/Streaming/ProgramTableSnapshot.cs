@@ -22,7 +22,14 @@ public sealed class ProgramTableSnapshot
     /// <param name="programAssociationPackets">The packets carrying the Program Association Table.</param>
     /// <param name="programMapPackets">The packets carrying the Program Map Table.</param>
     /// <param name="generation">Which program layout these tables describe.</param>
-    public ProgramTableSnapshot(byte[][] programAssociationPackets, byte[][] programMapPackets, int generation)
+    /// <param name="generationStartOffset">
+    /// Where in this chunk that layout begins, or -1 when it began before this chunk.
+    /// </param>
+    public ProgramTableSnapshot(
+        byte[][] programAssociationPackets,
+        byte[][] programMapPackets,
+        int generation,
+        int generationStartOffset = -1)
     {
         ArgumentNullException.ThrowIfNull(programAssociationPackets);
         ArgumentNullException.ThrowIfNull(programMapPackets);
@@ -30,12 +37,24 @@ public sealed class ProgramTableSnapshot
         _programAssociationPackets = programAssociationPackets;
         _programMapPackets = programMapPackets;
         Generation = generation;
+        GenerationStartOffset = generationStartOffset;
     }
 
     /// <summary>
     /// Gets an empty snapshot, for a stream whose tables have not both arrived.
     /// </summary>
     public static ProgramTableSnapshot Empty { get; } = new([], [], -1);
+
+    /// <summary>
+    /// Gets where in this chunk the current layout begins, or -1 when it began before it.
+    /// </summary>
+    /// <remarks>
+    /// A layout change happens where the broadcaster put the table, which is somewhere inside a
+    /// chunk and almost never at its start. Everything emitted before that point is still the
+    /// programme before, so a reader must not be sent there behind the new tables -- and the chunk
+    /// boundary, which is all the buffer knows by itself, would say it may.
+    /// </remarks>
+    public int GenerationStartOffset { get; }
 
     /// <summary>
     /// Gets which program layout these tables describe.

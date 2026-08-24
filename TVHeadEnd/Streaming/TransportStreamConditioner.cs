@@ -68,6 +68,7 @@ public sealed class TransportStreamConditioner
     private int _programMapTablePid = -1;
     private bool _started;
     private bool _readingStartAccessUnit;
+    private int _generationStartOffset = -1;
     private int _bytesInspected;
     private long _firstInspectedTimestamp;
 
@@ -221,7 +222,11 @@ public sealed class TransportStreamConditioner
     /// <returns>The snapshot, empty until both tables have arrived.</returns>
     public ProgramTableSnapshot TakeProgramTables()
         => HasProgramTables
-            ? new ProgramTableSnapshot(_programAssociationPackets, _programMapPackets, ProgramLayoutGeneration)
+            ? new ProgramTableSnapshot(
+                _programAssociationPackets,
+                _programMapPackets,
+                ProgramLayoutGeneration,
+                _generationStartOffset)
             : ProgramTableSnapshot.Empty;
 
     /// <summary>
@@ -236,6 +241,7 @@ public sealed class TransportStreamConditioner
     {
         var written = 0;
         _randomAccessOffsets.Clear();
+        _generationStartOffset = -1;
 
         if (_partialPacketLength > 0)
         {
@@ -289,6 +295,8 @@ public sealed class TransportStreamConditioner
             return 0;
         }
 
+        var generationBefore = ProgramLayoutGeneration;
+
         if (pid == TransportStreamPacket.ProgramAssociationTablePid)
         {
             CaptureProgramAssociation(packet);
@@ -296,6 +304,15 @@ public sealed class TransportStreamConditioner
         else if (pid == _programMapTablePid)
         {
             CaptureProgramMap(packet);
+        }
+
+        if (ProgramLayoutGeneration != generationBefore)
+        {
+            // Where the new layout begins in this chunk's output, which is this packet. The
+            // chunk boundary is not a usable approximation: a layout change lands wherever the
+            // broadcaster put the table, and everything emitted before it in the same chunk is
+            // still the programme before.
+            _generationStartOffset = destinationOffset;
         }
 
         var videoPid = VideoPid;
@@ -433,7 +450,15 @@ public sealed class TransportStreamConditioner
             return;
         }
 
-        var table = ProgramAssociationTable.Parse(_programAssociationSection.Section);
+        foreach (var section in _programAssociationSection.Completed)
+        {
+            CaptureProgramAssociation(section);
+        }
+    }
+
+    private void CaptureProgramAssociation(PsiSection section)
+    {
+        var table = ProgramAssociationTable.Parse(section.Bytes);
         if (table is null)
         {
             // Damaged, announced for later, or naming no program. Whatever is already in hand
@@ -455,7 +480,7 @@ public sealed class TransportStreamConditioner
         }
 
         _programMapTablePid = table.ProgramMapPid;
-        _programAssociationPackets = [.. _programAssociationSection.CompletedPackets];
+        _programAssociationPackets = section.Packets;
     }
 
     private void CaptureProgramMap(ReadOnlySpan<byte> packet)
@@ -465,7 +490,15 @@ public sealed class TransportStreamConditioner
             return;
         }
 
-        var table = ProgramMapTable.Parse(_programMapSection.Section);
+        foreach (var section in _programMapSection.Completed)
+        {
+            CaptureProgramMap(section);
+        }
+    }
+
+    private void CaptureProgramMap(PsiSection section)
+    {
+        var table = ProgramMapTable.Parse(section.Bytes);
         if (table is null)
         {
             // Damaged, or announced for later. The table already in hand still describes the
@@ -481,7 +514,7 @@ public sealed class TransportStreamConditioner
         var layoutChanged = ProgramMap is { } previous && !DescribesSameStreams(previous, table);
 
         ProgramMap = table;
-        _programMapPackets = [.. _programMapSection.CompletedPackets];
+        _programMapPackets = section.Packets;
 
         if (layoutChanged)
         {

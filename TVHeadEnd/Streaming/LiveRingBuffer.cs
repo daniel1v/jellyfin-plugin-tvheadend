@@ -166,14 +166,13 @@ namespace TVHeadEnd.Streaming
         /// to move it to the oldest bytes still present.
         /// </param>
         /// <returns>A stream over the buffer.</returns>
-        /// <param name="atLiveEdge">
-        /// Whether to start at the write head rather than the oldest bytes, for a reader that has
-        /// nothing it may safely read yet.
+        /// <param name="waitingForJoin">
+        /// Whether this reader has nowhere safe to begin yet and must wait for one, rather than
+        /// reading on from the oldest bytes.
         /// </param>
-        internal Stream OpenReaderFromStart(StreamBootstrapIndex? bootstrap, bool atLiveEdge = false)
+        internal Stream OpenReaderFromStart(StreamBootstrapIndex? bootstrap, bool waitingForJoin = false)
         {
-            var start = atLiveEdge ? WritePosition : OldestPosition;
-            return new RingReader(_path, this, AlignToPacket(start), bootstrap);
+            return new RingReader(_path, this, AlignToPacket(OldestPosition), bootstrap, waitingForJoin);
         }
 
         /// <summary>
@@ -205,14 +204,21 @@ namespace TVHeadEnd.Streaming
             private readonly StreamBootstrapIndex? _bootstrap;
 
             private long _position;
+            private bool _waitingForJoin;
             private byte[]? _pendingPrefix;
             private int _pendingPrefixPosition;
 
-            internal RingReader(string path, LiveRingBuffer buffer, long start, StreamBootstrapIndex? bootstrap)
+            internal RingReader(
+                string path,
+                LiveRingBuffer buffer,
+                long start,
+                StreamBootstrapIndex? bootstrap,
+                bool waitingForJoin = false)
             {
                 _buffer = buffer;
                 _position = start;
                 _bootstrap = bootstrap;
+                _waitingForJoin = waitingForJoin;
                 // Unbuffered: a read-ahead buffer would keep serving bytes the writer has
                 // already overwritten once it laps this reader.
                 _file = new FileStream(
@@ -245,6 +251,20 @@ namespace TVHeadEnd.Streaming
             {
                 // Whatever a re-join queued up goes out before buffer content resumes.
                 if (TryServePrefix(buffer.Span, out var served))
+                {
+                    return served;
+                }
+
+                // Nowhere safe to start yet. Every byte held belongs to a programme the tables in
+                // force do not describe, so this reader waits for the first access point of the
+                // current one rather than reading whatever the writer happens to add next. Asked
+                // afresh each time, because the answer changes on its own.
+                if (_waitingForJoin && !TryTakeJoin())
+                {
+                    return 0;
+                }
+
+                if (TryServePrefix(buffer.Span, out served))
                 {
                     return served;
                 }
@@ -311,6 +331,44 @@ namespace TVHeadEnd.Streaming
             /// client that paused too long came back to a decoder that never recovered.
             /// </remarks>
             /// <summary>
+            /// Asks the bootstrap index again whether there is anywhere safe to start yet.
+            /// </summary>
+            /// <returns>Whether this reader may now read.</returns>
+            private bool TryTakeJoin()
+            {
+                if (_bootstrap is null)
+                {
+                    _waitingForJoin = false;
+                    return true;
+                }
+
+                var oldest = _buffer.OldestPosition;
+                var join = _bootstrap.CreateJoin(oldest);
+                if (join.Kind == StreamJoinKind.NotYet)
+                {
+                    return false;
+                }
+
+                Take(join, oldest);
+                _waitingForJoin = false;
+                return true;
+            }
+
+            /// <summary>
+            /// Moves to what a join describes: its position, and its tables ahead of the bytes.
+            /// </summary>
+            private void Take(StreamJoin join, long oldest)
+            {
+                _position = AlignToPacket(join.Kind == StreamJoinKind.AtPosition ? join.Position : oldest);
+
+                if (join.Tables.Length > 0)
+                {
+                    _pendingPrefix = join.Tables;
+                    _pendingPrefixPosition = 0;
+                }
+            }
+
+            /// <summary>
             /// Hands over as much of a queued prefix as fits.
             /// </summary>
             /// <param name="destination">The caller's buffer.</param>
@@ -357,20 +415,15 @@ namespace TVHeadEnd.Streaming
 
                 if (join.Kind == StreamJoinKind.NotYet)
                 {
-                    // Nothing held is described by the tables in force. Waiting at the write head
-                    // costs this reader the moment it takes the next access point to arrive;
-                    // reading on from the oldest bytes would cost it the picture.
-                    _position = AlignToPacket(_buffer.WritePosition);
+                    // Nothing held is described by the tables in force. This reader now waits for
+                    // an access point of the current layout, and every further read asks again.
+                    _waitingForJoin = true;
+                    _pendingPrefix = null;
+                    _pendingPrefixPosition = 0;
                     return;
                 }
 
-                _position = AlignToPacket(join.Kind == StreamJoinKind.AtPosition ? join.Position : oldest);
-
-                if (join.Tables.Length > 0)
-                {
-                    _pendingPrefix = join.Tables;
-                    _pendingPrefixPosition = 0;
-                }
+                Take(join, oldest);
             }
 
             public override void Flush()

@@ -130,14 +130,19 @@ namespace TVHeadEnd.Streaming
             // and arriving without them is what it cannot recover from.
             var join = Bootstrap.CreateJoin(_ring.OldestPosition);
 
-            // NotYet included: the reader is placed at the live edge and waits there. Every byte
-            // behind it belongs to a programme the current tables do not describe, and the first
-            // access point of the current one is what it is waiting for.
+            // NotYet opens a reader that waits: every byte held belongs to a programme the tables
+            // in force do not describe, and it asks again on every read until an access point of
+            // the current layout exists. Failing the open instead would send Jellyfin to a second
+            // subscription for a stream that is about to be perfectly joinable.
             var reader = join.Kind == StreamJoinKind.AtPosition
                 ? _ring.OpenReaderAt(join.Position, Bootstrap)
                 : _ring.OpenReaderFromStart(Bootstrap, join.Kind == StreamJoinKind.NotYet);
 
-            return join.Tables.Length > 0 ? new PrefixedStream(join.Tables, reader) : reader;
+            // The tables go in front only when this join has somewhere for them to describe. A
+            // waiting reader receives the ones belonging to the join it eventually takes.
+            return join.Kind != StreamJoinKind.NotYet && join.Tables.Length > 0
+                ? new PrefixedStream(join.Tables, reader)
+                : reader;
         }
 
         /// <inheritdoc />
