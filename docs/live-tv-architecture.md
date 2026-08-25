@@ -31,7 +31,8 @@ From the program map of the stream being delivered:
   of the two mistakes: Jellyfin reads an unnamed codec as one no device profile matches, picks
   such a track anyway when it chooses for itself, and then refuses the same track when it
   re-checks it, sending the client to a transcode of a channel it could have played.
-- **the language** and the **hearing-impaired flag**, from the DVB descriptors.
+- **the language** and the **hearing-impaired flag**, from the DVB descriptors;
+- **what an audio track is for**, where the descriptors say so -- see [Audio](#audio) below.
 
 Stream type 0x06 is "private data in PES packets" and is where DVB puts AC-3, E-AC-3, subtitles
 and teletext; those are told apart by the descriptors that follow it (`0x6A`, `0x7A`, `0x59`,
@@ -43,6 +44,37 @@ Resolution, frame rate, bit rate, codec profile and level. None of them is in a 
 needed for the playback decision, and none is worth a second analysis of a stream that is already
 playing. They are left unset. Jellyfin treats an absent optional value as unknown and carries on;
 it is a *wrong* value that makes it choose badly.
+
+## Audio
+
+`IsDefault` on an audio stream is a statement about the broadcast, not about the viewer. It says
+the tables did not call this track an addition to the programme -- nothing more. Which track a
+given viewer actually hears is Jellyfin's decision, made from the device profile, the account's
+language and default-track preferences, and the stream metadata below.
+
+What the tables can say, in order of authority:
+
+- DVB's **supplementary audio descriptor** states a track's editorial role outright. Where it
+  appears it settles the question: main audio, an audio description for the visually impaired, a
+  clean mix for the hearing impaired, spoken subtitles. Values the standard reserves are not
+  interpreted.
+- Otherwise the **audio type** of the ISO 639 language descriptor is read, and only its two
+  unambiguous values are acted on -- a hearing impaired mix and a commentary for the visually
+  impaired. Audio type one is nominally "clean effects" and is *not* treated as an addition,
+  because broadcasters use it for ordinary programme sound.
+- Where neither says anything, the purpose is unknown, and an unknown track is not withheld.
+
+No track is made the default for being first in the table. That was tried and it is the wrong
+statement: the table says which tracks exist, not which one a viewer wants.
+
+The asymmetry -- withhold only on a clear statement, never on silence -- is deliberate, because
+the failure it prevents is not obvious. Jellyfin narrows its audio candidates to the tracks marked
+default whenever the account prefers default tracks, which is how a new account is created. If
+that narrowing leaves nothing, the audio compatibility check is *skipped* rather than failed:
+direct play is granted with no transcode reason and labelled with the first track of the map. The
+client pins the track it was told, asks again, and this time the check does run -- against that one
+track -- and refuses it. Reading silence as "supplementary" would put every channel without audio
+descriptors into exactly that state.
 
 ## What FFmpeg is told
 
@@ -70,6 +102,21 @@ one as an entry point would hand every later reader a position its decoder canno
 long as it stayed inside the buffer window. `StartedOnConfirmedRandomAccessPoint` reports which of
 the two happened, for the log.
 
+An entry point also carries *how strong* a guarantee it is, and the two are not interchangeable:
+
+- **`DvbRandomAccess`** -- the broadcast signalled a random access point. That is a legal entry
+  for the broadcast, and for H.264 it may be an IDR picture or a recovery point opening a GOP that
+  refers backwards.
+- **`Idr`** -- the picture at that position was read and found to contain an IDR.
+
+`Idr` is the stricter of the two. Every `Idr` point is also a valid `DvbRandomAccess` point; the
+reverse does not hold, which is the whole reason the distinction exists.
+
+Classification does not stop once a stream is running. A position is published as
+`DvbRandomAccess` as soon as the broadcast signals it, and the same position is republished as
+`Idr` if the picture there turns out to carry one. A point therefore gets stronger over time, never
+weaker.
+
 ## Joining and re-joining the ring buffer
 
 Both go through the same bootstrap index, because they are the same problem: the oldest surviving
@@ -82,6 +129,11 @@ no tables in front of it.
   re-joined the same way, and the tables are delivered before the bytes they describe.
 - If no confirmed access point survives, the stream is still delivered from the oldest bytes, with
   the tables in front so the decoder can map the elementary streams once it resynchronises.
+
+A reader states the guarantee it needs, and it is honoured on both paths. A reader that requires
+`Idr` is never placed on a position known only as `DvbRandomAccess`, however much closer to live
+that position is -- it is put further back, onto the most recent point that actually carries the
+guarantee. A nearer entry point is not a better one.
 
 ## Trusting the table
 
@@ -137,12 +189,19 @@ Three conditions, all of which have to hold, and they are settled while the stre
 - the client Jellyfin authenticated names itself as one of the Android apps;
 - the program map says the video is H.264 — the question belongs to no other syntax, and the
   MPEG-2 slice start code for picture row five is byte-for-byte an IDR NAL header;
-- delivery began at a signalled access point whose picture was then read to the end and found to
-  hold no IDR.
+- the first few signalled access points were classified and none of them carried an IDR.
 
 Anything absent or unsettled means no. The conditioner that fills the ring is the one that answers
 this, as the packets go past: an IDR the moment its NAL appears, and its absence the moment the
-next picture begins. Nothing waits on a timer, and only such a viewer waits at all.
+next picture begins.
+
+**The broadcast is never held up for this.** Bytes run from TVHeadend through the conditioner into
+the ring from the first packet, as they always do. What waits is only the playback decision for an
+Android H.264 cold start, and only until the first three signalled access points have been
+classified -- a statement about how far this open looked, not about the broadcaster. The first of
+them to carry an IDR settles it in favour of direct play, and the reader joins on that IDR. Three
+classified without one settles it the other way. Classification carries on afterwards for the
+readers that join later; it simply no longer decides anything about this open.
 
 When all three hold the media source withdraws `SupportsDirectPlay` and `SupportsDirectStream`,
 which puts Jellyfin on its ordinary transcoding path, and one small middleware sets
@@ -179,3 +238,21 @@ advertising the same length and the same range support to both.
 stream of every external live TV service, whatever the plugin reported. Device profiles keying on
 interlacing may therefore choose transcoding unnecessarily. This is a server bug; no workaround is
 built here, because a plugin-side hack would only hide it.
+
+Jellyfin for Android 2.7.1 does not complete direct play of a live MPEG-TS stream. Measured on
+2026-08-25: negotiation succeeds twice, both answers being `DirectPlay`; the client then fetches
+the stream itself, sends no `Range` header, reads between half a megabyte and a megabyte in about
+a tenth of a second, closes the connection, and asks a third time with direct play switched off.
+What it was served has been checked against FFmpeg and is sound -- `video/mp2t`, chunked, program
+tables followed by an access unit delimiter, parameter sets and an IDR picture, indices matching
+the published program map exactly. The cause is on the client's side of the connection and cannot
+be seen from the server.
+
+This is **not** a reason to publish the buffer as a file again or to build HLS inside the plugin.
+The file route is closed in any case: the server serves a live stream from its static video
+endpoint only when the request carries a `LiveStreamId`, and this client omits it, so that route
+delivers the buffer file, which ends.
+
+The remaining cost is startup latency rather than quality. Jellyfin's HLS path waits for several
+segments before releasing the playlist, which is several seconds on a live channel; the fallback
+itself copies both video and audio, so what the viewer sees is the broadcast unaltered.
