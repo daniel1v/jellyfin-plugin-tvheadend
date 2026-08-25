@@ -135,6 +135,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
 
         string? language = null;
         var hearingImpaired = false;
+        var supplementaryAudio = false;
 
         // Set only by a descriptor, and only for stream types that need one to be identified.
         string? descriptorCodec = null;
@@ -165,9 +166,12 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                 case DescriptorLanguage when body.Length >= 4:
                     language ??= ReadLanguage(body[..3]);
 
-                    // ISO 13818-1 audio_type: 2 is "hearing impaired", 3 is a visual
-                    // impairment commentary. Only the first is a Jellyfin flag.
+                    // ISO 13818-1 audio_type: 1 is clean effects, 2 is a hearing impaired mix,
+                    // 3 is a commentary for the visually impaired. Zero is what the specification
+                    // calls undefined and what every ordinary programme track carries, so the
+                    // three named values are exactly the tracks that are not the programme audio.
                     hearingImpaired |= body[3] == 2;
+                    supplementaryAudio |= body[3] != 0;
                     break;
 
                 case DescriptorSubtitling when body.Length >= 4:
@@ -248,6 +252,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             Codec = codec,
             Language = language,
             IsHearingImpaired = hearingImpaired,
+            IsSupplementaryAudio = supplementaryAudio,
         };
 
         return true;

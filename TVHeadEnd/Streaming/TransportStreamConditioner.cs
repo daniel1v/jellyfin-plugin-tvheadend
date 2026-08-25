@@ -663,7 +663,8 @@ public sealed class TransportStreamConditioner
                 || before.Kind != after.Kind
                 || !string.Equals(before.Codec, after.Codec, StringComparison.Ordinal)
                 || !string.Equals(before.Language, after.Language, StringComparison.Ordinal)
-                || before.IsHearingImpaired != after.IsHearingImpaired)
+                || before.IsHearingImpaired != after.IsHearingImpaired
+                || before.IsSupplementaryAudio != after.IsSupplementaryAudio)
             {
                 return false;
             }

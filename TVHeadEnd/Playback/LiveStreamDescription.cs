@@ -102,6 +102,23 @@ public sealed record LiveStreamDescription
             Codec = entry.Codec,
             Language = entry.Language,
             IsHearingImpaired = entry.IsHearingImpaired,
+
+            // Not a preference, and not a ranking: every track the table does not flag as
+            // supplementary is the programme's own audio, and all of them say so. Which one a
+            // given viewer on a given device gets is Jellyfin's decision, and this is the list it
+            // decides from.
+            //
+            // Measured, because leaving every track unflagged is not the neutral act it looks
+            // like. A viewer whose account prefers default tracks -- which is the setting a new
+            // account is created with -- makes Jellyfin narrow the tracks it will consider to the
+            // ones marked default. With none marked, that narrowing yields nothing, and an empty
+            // list is not treated as "no track fits" but as "no audio to check": the compatibility
+            // test is skipped and direct play is granted, labelled with the first track of the
+            // map. On the German broadcasts that is MPEG audio, which the Android profile does not
+            // list. The client pins the track it was told, asks once more, and this time the test
+            // does run -- against that one track -- and refuses it. So the stream was played
+            // through a transcode of an AC-3 track the device could have taken as it was.
+            IsDefault = !entry.IsSupplementaryAudio,
         },
 
         ElementaryStreamKind.Subtitle => new MediaStream

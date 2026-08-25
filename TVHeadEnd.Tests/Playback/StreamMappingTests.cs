@@ -96,6 +96,38 @@ public class StreamMappingTests
     }
 
     [Fact]
+    public void EveryTrackTheTableDoesNotCallSupplementaryIsOfferedAsProgrammeAudio()
+    {
+        // Measured on ZDF. Marking none of them is not neutral: an account that prefers default
+        // tracks -- the setting a new account gets -- makes Jellyfin narrow its candidates to the
+        // tracks marked default, and a narrowing that yields nothing is read as "no audio to
+        // check" rather than "nothing fits". Direct play is then granted and labelled with the
+        // first track of the map, which here is MPEG audio; the client pins it, asks again, and
+        // that second answer refuses the very track the first one named.
+        //
+        // So the flag is set from the one thing the table actually states: the audio type, which
+        // names only the exceptions. Both German renderings of the programme sound qualify, and
+        // Jellyfin picks between them knowing the device -- which this plugin does not.
+        var map = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Language("deu")),
+            Entry(0x03, EnglishAudioPid, Descriptor(0x0A, (byte)'m', (byte)'i', (byte)'s', 3)),
+            Entry(0x06, 516, Concat(Descriptor(0x6A), Language("deu"))));
+
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
+
+        Assert.Equal("mp2", description.Streams[1].Codec);
+        Assert.True(description.Streams[1].IsDefault);
+
+        // A commentary for the visually impaired: audio the table names as an exception.
+        Assert.Equal("mp2", description.Streams[2].Codec);
+        Assert.False(description.Streams[2].IsDefault);
+
+        Assert.Equal("ac3", description.Streams[3].Codec);
+        Assert.True(description.Streams[3].IsDefault);
+    }
+
+    [Fact]
     public void AnEntryThatCannotBeClassifiedStillOccupiesItsIndex()
     {
         // Dropping it would shift every index after it, which is the same failure as counting the

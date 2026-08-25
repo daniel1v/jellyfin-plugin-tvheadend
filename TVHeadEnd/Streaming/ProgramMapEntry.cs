@@ -84,6 +84,18 @@ public sealed record ProgramMapEntry
     public bool IsHearingImpaired { get; init; }
 
     /// <summary>
+    /// Gets a value indicating whether the table flags this audio as something other than the
+    /// programme's own sound.
+    /// </summary>
+    /// <remarks>
+    /// The audio type of the ISO 639 language descriptor, which names only the exceptions: clean
+    /// effects, a hearing impaired mix, a commentary for the visually impaired. Zero -- the value
+    /// the specification calls undefined -- and an audio track carrying no such descriptor at all
+    /// are both ordinary programme audio, and that is the common case.
+    /// </remarks>
+    public bool IsSupplementaryAudio { get; init; }
+
+    /// <summary>
     /// Gets a value indicating whether the stream type names video.
     /// </summary>
     public bool IsVideo => Kind == ElementaryStreamKind.Video;
