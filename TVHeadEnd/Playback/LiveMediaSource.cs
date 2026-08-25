@@ -152,10 +152,20 @@ public static class LiveMediaSource
             // indices FFmpeg will give them. Nothing here is ever probed.
             SupportsProbing = false,
 
-            // Read from the buffer file directly where the server can, and fetched over HTTP by
-            // whatever cannot.
-            Path = mediaPath,
-            Protocol = MediaProtocol.File,
+            // Measured: published as a local file, Jellyfin answers a client's direct play request
+            // by serving that file, and a file ends. One fetch delivered 5,434 bytes in 47 ms --
+            // exactly what stood in the ring at that instant -- and closed with 200, which the
+            // player reads as a finished medium and answers by asking again with direct play
+            // switched off. The same broadcast fetched over the live stream address ran 19 MB in
+            // 12 s without pausing, because that route goes through this plugin's direct stream
+            // provider, which waits for what has not been written yet instead of stopping at the
+            // end of the file.
+            //
+            // So the address published is the one that keeps running. The buffer file stays where
+            // it is and the server still reads it directly through the provider; what changes is
+            // only which door a client is sent to.
+            Path = streamUrl,
+            Protocol = MediaProtocol.Http,
             EncoderPath = streamUrl,
             EncoderProtocol = MediaProtocol.Http,
             RequiredHttpHeaders = new Dictionary<string, string>(),
