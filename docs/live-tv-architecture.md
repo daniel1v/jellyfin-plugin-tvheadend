@@ -127,13 +127,45 @@ no tables in front of it.
   window, preceded by PAT and PMT.
 - A reader the writer has **lapped** — a client paused for longer than the buffer holds — is
   re-joined the same way, and the tables are delivered before the bytes they describe.
-- If no confirmed access point survives, the stream is still delivered from the oldest bytes, with
-  the tables in front so the decoder can map the elementary streams once it resynchronises.
 
 A reader states the guarantee it needs, and it is honoured on both paths. A reader that requires
 `Idr` is never placed on a position known only as `DvbRandomAccess`, however much closer to live
 that position is -- it is put further back, onto the most recent point that actually carries the
 guarantee. A nearer entry point is not a better one.
+
+What happens when nothing in the window is good enough depends on what was asked for, and the two
+answers are different on purpose:
+
+- **`DvbRandomAccess`** falls back to the oldest surviving bytes, with the tables in front, so the
+  decoder can map the elementary streams and resynchronise on its own. An ordinary random access
+  is all that was wanted, and starting somewhere imperfect beats not starting.
+- **`Idr`** does not fall back. There is no weaker position that satisfies it -- not the oldest
+  bytes, and not a nearer point that only promises random access -- so the reader is told *not
+  yet* and waits for an IDR to be recorded. Falling back here would hand a decoder that cannot
+  start without an IDR a position with none, which is the failure the guarantee exists to prevent.
+
+## How long a channel stays open
+
+One subscription serves every viewer of a channel whose stream they can share, and it is closed
+when the last of them stops. What counts is viewers, not the number of times playback was
+negotiated -- a client whose first attempt fails negotiates again, and Jellyfin answers by asking
+for the stream once more. Counting those asks left channels running with nobody watching, because
+a client reports one stop and not one per attempt it abandoned.
+
+A viewer is identified by the client name and device id of the authenticated request, which is how
+the server keys a session of its own, so the plugin and the server agree on who is watching.
+
+The two directions are not symmetrical, and the asymmetry is Jellyfin's:
+
+- **arriving** is `GetChannelStreamWithDirectStreamProvider`, on the authenticated request, so the
+  viewer can be named;
+- **leaving** is `ILiveStream.ConsumerCount--`, reached from the session manager, the media info
+  controller, the transcode manager and a stream state being disposed. It says how many are left
+  and never who, and not every one of those paths is on a request at all.
+
+So a departure does not delete a name -- any of the named viewers could have been the one that
+left. It reduces the total and forgets the names, leaving viewers known to be there but no longer
+identifiable; a later arrival takes one of those places back instead of adding to the count.
 
 ## Trusting the table
 
@@ -239,19 +271,26 @@ stream of every external live TV service, whatever the plugin reported. Device p
 interlacing may therefore choose transcoding unnecessarily. This is a server bug; no workaround is
 built here, because a plugin-side hack would only hide it.
 
-Jellyfin for Android 2.7.1 does not complete direct play of a live MPEG-TS stream. Measured on
-2026-08-25: negotiation succeeds twice, both answers being `DirectPlay`; the client then fetches
-the stream itself, sends no `Range` header, reads between half a megabyte and a megabyte in about
-a tenth of a second, closes the connection, and asks a third time with direct play switched off.
-What it was served has been checked against FFmpeg and is sound -- `video/mp2t`, chunked, program
-tables followed by an access unit delimiter, parameter sets and an IDR picture, indices matching
-the published program map exactly. The cause is on the client's side of the connection and cannot
-be seen from the server.
+Jellyfin for Android 2.7.1 does not complete direct play of a live MPEG-TS stream, and the reason
+is in the client rather than in what it is served. For `PlayMethod.DIRECT_PLAY` over
+`MediaProtocol.HTTP` it hands Media3 the source path together with a forced MIME type of
+`application/x-mpegURL`, whatever the URL ends in. Media3 therefore builds an HLS media source,
+fetches our `stream.ts`, and tries to parse a transport stream as a playlist. Playback fails and
+the client falls through to its next option.
 
-This is **not** a reason to publish the buffer as a file again or to build HLS inside the plugin.
-The file route is closed in any case: the server serves a live stream from its static video
-endpoint only when the request carries a `LiveStreamId`, and this client omits it, so that route
-delivers the buffer file, which ends.
+The measurement matches that exactly rather than contradicting it. On 2026-08-25: negotiation
+succeeded twice, both answers `DirectPlay`; the client then fetched the stream itself, sent no
+`Range` header, read between half a megabyte and a megabyte in about a tenth of a second, closed
+the connection, and asked a third time with direct play switched off. What it was served has been
+checked against FFmpeg and is sound -- `video/mp2t`, chunked, program tables followed by an access
+unit delimiter, parameter sets and an IDR picture, indices matching the published program map
+exactly. The download is real; the parser it was fed to is the wrong one.
+
+Nothing further is to be learned from the server side, so no more tracing. Nor is this a reason to
+publish the buffer as a file again, to rename the route, to lie about the content type, or to
+build HLS inside the plugin. The file route is closed in any case: the server serves a live stream
+from its static video endpoint only when the request carries a `LiveStreamId`, and this client
+omits it, so that route delivers the buffer file, which ends.
 
 The remaining cost is startup latency rather than quality. Jellyfin's HLS path waits for several
 segments before releasing the playlist, which is several seconds on a live channel; the fallback

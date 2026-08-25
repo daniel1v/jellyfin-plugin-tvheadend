@@ -148,6 +148,10 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         var purposeFromLanguage = AudioPurpose.Unknown;
         var purposeFromSupplementary = AudioPurpose.Unknown;
 
+        // The supplementary audio descriptor may carry a language of its own, and where it does it
+        // is describing this track more closely than the general language descriptor does.
+        string? languageFromSupplementary = null;
+
         // Set only by a descriptor, and only for stream types that need one to be identified.
         string? descriptorCodec = null;
         ElementaryStreamKind? descriptorKind = null;
@@ -177,15 +181,15 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                 case DescriptorLanguage when body.Length >= 4:
                     language ??= ReadLanguage(body[..3]);
 
-                    // ISO 13818-1 audio_type. Only two of its values name an addition to the
-                    // programme beyond doubt: 2 is a hearing impaired mix and 3 is a commentary
-                    // for the visually impaired. Zero is the ordinary programme track. One is
-                    // nominally clean effects and is left unclassified rather than excluded,
-                    // because broadcasters use it for main audio as well.
+                    // ISO 13818-1 audio_type. Zero is undefined and one is clean effects, and DVB
+                    // uses both for the programme's own sound, so both are main audio here. Two is
+                    // a hearing impaired mix and three a commentary for the visually impaired, and
+                    // those are the additions. Everything above them is reserved and is not read
+                    // as anything.
                     hearingImpaired |= body[3] == 2;
                     purposeFromLanguage = FirstConclusive(purposeFromLanguage, body[3] switch
                     {
-                        0 => AudioPurpose.Main,
+                        0 or 1 => AudioPurpose.Main,
                         2 or 3 => AudioPurpose.Supplementary,
                         _ => AudioPurpose.Unknown,
                     });
@@ -235,16 +239,28 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
 
                     // EN 300 468 supplementary_audio_descriptor. The byte after the extension tag
                     // is mix_type in bit 7, editorial_classification in bits 6..2, then a reserved
-                    // bit and language_code_present. Only the three classifications the standard
-                    // actually names are acted on; the reserved range says the broadcast is
-                    // describing something this does not know, which is not the same as an
-                    // addition to the programme.
+                    // bit and language_code_present in bit 0.
+                    //
+                    // Zero is main audio. One, two and three are the named additions: an audio
+                    // description for the visually impaired, a clean mix for the hearing impaired,
+                    // spoken subtitles. 0x17 is the standard's own catch-all -- unspecified
+                    // supplementary audio -- and is an addition like the rest of them. 0x18 to
+                    // 0x1F are user defined and say nothing this can act on, and the range between
+                    // is reserved; neither is read as an addition, and neither is allowed to
+                    // overwrite what the language descriptor already said.
                     purposeFromSupplementary = FirstConclusive(purposeFromSupplementary, ((body[1] >> 2) & 0x1F) switch
                     {
                         0x00 => AudioPurpose.Main,
-                        0x01 or 0x02 or 0x03 => AudioPurpose.Supplementary,
+                        0x01 or 0x02 or 0x03 or 0x17 => AudioPurpose.Supplementary,
                         _ => AudioPurpose.Unknown,
                     });
+
+                    // language_code_present. The three bytes that follow describe this very track.
+                    if ((body[1] & 0x01) != 0 && body.Length >= 5)
+                    {
+                        languageFromSupplementary ??= ReadLanguage(body.Slice(2, 3));
+                    }
+
                     break;
 
                 case DescriptorRegistration when body.Length >= 4:
@@ -284,14 +300,16 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             Pid = pid,
             Kind = kind,
             Codec = codec,
-            Language = language,
+            // Closest first: a language the supplementary audio descriptor states is describing
+            // this track, where the general language descriptor describes the elementary stream.
+            Language = languageFromSupplementary ?? language,
             IsHearingImpaired = hearingImpaired,
 
-            // The supplementary audio descriptor states the role outright, so where it appears it
-            // is the answer. The audio type is only consulted in its absence.
-            AudioPurpose = purposeFromSupplementary != AudioPurpose.Unknown
-                ? purposeFromSupplementary
-                : purposeFromLanguage,
+            // The supplementary audio descriptor states the role outright, so where it says
+            // something it is the answer. Where it says nothing this understands -- a user defined
+            // or reserved classification -- it does not get to erase what the language descriptor
+            // did say, which is why the fallback is a value and not a precedence.
+            AudioPurpose = FirstConclusive(purposeFromSupplementary, purposeFromLanguage),
         };
 
         return true;

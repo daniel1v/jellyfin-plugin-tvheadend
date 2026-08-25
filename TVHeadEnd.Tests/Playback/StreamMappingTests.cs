@@ -128,43 +128,98 @@ public class StreamMappingTests
     }
 
     [Fact]
-    public void AnAudioTypeOfOneIsNotEnoughToWithholdATrack()
+    public void OnlyTheAudioTypesThatNameAnAdditionWithholdATrack()
     {
-        // Nominally "clean effects", and not treated as one. Broadcasters do use this value for
-        // ordinary programme sound, so reading it as an addition would withhold a main track --
-        // and if it were the only track, would leave Jellyfin no default audio at all.
+        // ISO 13818-1 audio_type. Zero is undefined and one is clean effects, and DVB uses both
+        // for the programme's own sound -- reading one as an addition would withhold a main track,
+        // and on a channel carrying only that track would leave no default audio at all. Two and
+        // three name the additions outright.
         var map = Pmt(
             Entry(0x1B, VideoPid),
-            Entry(0x03, GermanAudioPid, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 1)));
+            Entry(0x03, GermanAudioPid, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 0)),
+            Entry(0x03, EnglishAudioPid, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 1)),
+            Entry(0x03, 517, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 2)),
+            Entry(0x03, 518, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 3)));
 
         var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
         Assert.True(description.Streams[1].IsDefault);
+        Assert.True(description.Streams[2].IsDefault);
+        Assert.False(description.Streams[3].IsDefault);
+        Assert.False(description.Streams[4].IsDefault);
     }
 
     [Fact]
-    public void ATrackTheSupplementaryAudioDescriptorClassifiesIsTakenAtItsWord()
+    public void TheSupplementaryAudioDescriptorSettlesWhatItActuallyNames()
     {
-        // DVB's supplementary audio descriptor states the editorial role outright, so it settles
-        // the question wherever it appears -- including against an audio type that says otherwise.
-        // Only the classifications the standard names are acted on; a reserved value means the
-        // broadcast is describing something this does not know, which is not an addition.
+        // EN 300 468 editorial_classification. Zero is main audio; one, two and three are the
+        // named additions; 0x17 is the standard's own "unspecified supplementary audio" and is an
+        // addition like the rest. 0x18 upwards is user defined -- it says nothing this can act on,
+        // so the track is not withheld for it.
         var map = Pmt(
             Entry(0x1B, VideoPid),
-            Entry(0x03, GermanAudioPid, Concat(Language("deu"), SupplementaryAudio(0x01))),
-            Entry(0x03, EnglishAudioPid, Concat(Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 3), SupplementaryAudio(0x00))),
-            Entry(0x03, 517, Concat(Language("deu"), SupplementaryAudio(0x1F))));
+            Entry(0x03, GermanAudioPid, SupplementaryAudio(0x00)),
+            Entry(0x03, EnglishAudioPid, SupplementaryAudio(0x01)),
+            Entry(0x03, 517, SupplementaryAudio(0x02)),
+            Entry(0x03, 518, SupplementaryAudio(0x03)),
+            Entry(0x03, 519, SupplementaryAudio(0x17)),
+            Entry(0x03, 520, SupplementaryAudio(0x1F)));
 
         var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
 
-        // An audio description for the visually impaired.
-        Assert.False(description.Streams[1].IsDefault);
+        Assert.True(description.Streams[1].IsDefault);
+        Assert.False(description.Streams[2].IsDefault);
+        Assert.False(description.Streams[3].IsDefault);
+        Assert.False(description.Streams[4].IsDefault);
+        Assert.False(description.Streams[5].IsDefault);
+        Assert.True(description.Streams[6].IsDefault);
+    }
 
-        // Classified as main audio, over an audio type that called it a commentary.
-        Assert.True(description.Streams[2].IsDefault);
+    [Fact]
+    public void ADescriptorThatNamesNothingDoesNotEraseOneThatDid()
+    {
+        // A user defined classification is not an answer, so it must not overwrite the answer the
+        // language descriptor already gave. The order the two descriptors arrive in cannot change
+        // that either: they are read apart and reconciled once, at the end.
+        var withKnownFirst = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Concat(Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 2), SupplementaryAudio(0x1F))));
 
-        // Reserved, so nothing is claimed and the track is not withheld.
-        Assert.True(description.Streams[3].IsDefault);
+        var withUnknownFirst = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Concat(SupplementaryAudio(0x1F), Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 2))));
+
+        Assert.False(LiveStreamDescription.FromProgramMap(withKnownFirst, ChannelType.TV)!.Streams[1].IsDefault);
+        Assert.False(LiveStreamDescription.FromProgramMap(withUnknownFirst, ChannelType.TV)!.Streams[1].IsDefault);
+
+        // And the other way round: a classification that does say something outranks the audio
+        // type, whichever of the two the table happens to carry first.
+        var contradicting = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Concat(SupplementaryAudio(0x00), Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 3))));
+
+        Assert.True(LiveStreamDescription.FromProgramMap(contradicting, ChannelType.TV)!.Streams[1].IsDefault);
+    }
+
+    [Fact]
+    public void ALanguageTheSupplementaryDescriptorStatesDescribesThisTrackMoreClosely()
+    {
+        // The general language descriptor describes the elementary stream; a language carried by
+        // the supplementary audio descriptor is describing this very track, so it is the closer
+        // statement of the two and wins whichever order they arrive in.
+        var map = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Concat(Language("deu"), SupplementaryAudioIn("eng", 0x01))),
+            Entry(0x03, EnglishAudioPid, Concat(SupplementaryAudioIn("eng", 0x01), Language("deu"))),
+            Entry(0x03, 517, Concat(Language("deu"), SupplementaryAudio(0x01))));
+
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
+
+        Assert.Equal("eng", description.Streams[1].Language);
+        Assert.Equal("eng", description.Streams[2].Language);
+
+        // No language of its own, so the elementary stream's own language stands.
+        Assert.Equal("deu", description.Streams[3].Language);
     }
 
     [Fact]
@@ -288,6 +343,18 @@ public class StreamMappingTests
     /// </summary>
     private static byte[] SupplementaryAudio(byte editorialClassification)
         => Descriptor(0x7F, 0x06, (byte)(editorialClassification << 2));
+
+    /// <summary>
+    /// The same descriptor with language_code_present set and a language after it.
+    /// </summary>
+    private static byte[] SupplementaryAudioIn(string code, byte editorialClassification)
+        => Descriptor(
+            0x7F,
+            0x06,
+            (byte)((editorialClassification << 2) | 0x01),
+            (byte)code[0],
+            (byte)code[1],
+            (byte)code[2]);
 
     private static byte[] Descriptor(byte tag, params byte[] body)
         => [tag, (byte)body.Length, .. body];

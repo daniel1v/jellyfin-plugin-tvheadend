@@ -27,98 +27,82 @@ public class LiveStreamConsumerTests
     public void OneViewerNegotiatingSeveralTimesIsStillOneViewer()
     {
         // Measured shape of the defect: three opens for a single Android viewer, because its
-        // player failed twice before falling back.
-        var consumers = new LiveStreamConsumers();
+        // player failed twice before falling back. One stop follows, not three.
+        using var stream = LiveStream();
 
-        Assert.True(consumers.Acquire(ViewerA));
-        Assert.False(consumers.Acquire(ViewerA));
-        Assert.False(consumers.Acquire(ViewerA));
+        Assert.True(stream.Consumers.Acquire(ViewerA));
+        Assert.False(stream.Consumers.Acquire(ViewerA));
+        Assert.False(stream.Consumers.Acquire(ViewerA));
+        Assert.Equal(1, stream.ConsumerCount);
 
-        Assert.Equal(1, consumers.Count);
+        stream.ConsumerCount--;
+
+        Assert.Equal(0, stream.ConsumerCount);
     }
 
     [Fact]
     public void TwoViewersAreTwoViewers()
     {
-        var consumers = new LiveStreamConsumers();
-
-        Assert.True(consumers.Acquire(ViewerA));
-        Assert.True(consumers.Acquire(ViewerB));
-
-        Assert.Equal(2, consumers.Count);
-    }
-
-    [Fact]
-    public void TheStreamOutlivesTheFirstViewerToLeave()
-    {
-        var consumers = new LiveStreamConsumers();
-        consumers.Acquire(ViewerA);
-        consumers.Acquire(ViewerB);
-
-        Assert.Equal(1, consumers.ReleaseOne());
-    }
-
-    [Fact]
-    public void TheLastViewerToLeaveTakesTheStreamWithThem()
-    {
-        var consumers = new LiveStreamConsumers();
-        consumers.Acquire(ViewerA);
-        consumers.Acquire(ViewerB);
-
-        consumers.ReleaseOne();
-
-        Assert.Equal(0, consumers.ReleaseOne());
-    }
-
-    [Fact]
-    public void LeavingTwiceIsNotWorseThanLeavingOnce()
-    {
-        // Jellyfin closes a live stream from several places, and a late or repeated close must
-        // not drive the count below nothing -- which would take the stream away from whoever
-        // arrives next.
-        var consumers = new LiveStreamConsumers();
-        consumers.Acquire(ViewerA);
-
-        Assert.Equal(0, consumers.ReleaseOne());
-        Assert.Equal(0, consumers.ReleaseOne());
-        Assert.Equal(0, consumers.Count);
-
-        Assert.True(consumers.Acquire(ViewerB));
-        Assert.Equal(1, consumers.Count);
-    }
-
-    [Fact]
-    public void AStreamOpenedThreeTimesForOneViewerClosesOnTheFirstStop()
-    {
-        // The contract as Jellyfin uses it: MediaSourceManager decrements ConsumerCount once for
-        // the stop the client reports, and closes the stream when that reaches nothing. Before
-        // this, three opens for one viewer left it at two and the stream ran on unwatched.
         using var stream = LiveStream();
 
-        stream.Consumers.Acquire(ViewerA);
-        stream.Consumers.Acquire(ViewerA);
-        stream.Consumers.Acquire(ViewerA);
-        Assert.Equal(1, stream.ConsumerCount);
+        Assert.True(stream.Consumers.Acquire(ViewerA));
+        Assert.True(stream.Consumers.Acquire(ViewerB));
 
-        stream.ConsumerCount--;
-
-        Assert.Equal(0, stream.ConsumerCount);
+        Assert.Equal(2, stream.ConsumerCount);
     }
 
     [Fact]
-    public void AStreamTwoViewersShareSurvivesTheFirstStop()
+    public void AViewerArrivingAfterSomebodyLeftTakesThatPlaceRatherThanAddingOne()
     {
+        // The case the first attempt at this got wrong. A departure says how many are left and
+        // not who, so afterwards neither viewer is still known to be here -- and an arrival must
+        // be able to be the one who stayed. Counting it as a newcomer would put the stream back
+        // to two and leave it held open by somebody who had already gone.
+        //
+        // Deliberately says nothing about which name survives internally: after an unnamed
+        // departure there is no such thing.
         using var stream = LiveStream();
-
         stream.Consumers.Acquire(ViewerA);
         stream.Consumers.Acquire(ViewerB);
-        Assert.Equal(2, stream.ConsumerCount);
+
+        stream.ConsumerCount--;
+        Assert.Equal(1, stream.ConsumerCount);
+
+        Assert.False(stream.Consumers.Acquire(ViewerA));
+        Assert.Equal(1, stream.ConsumerCount);
+    }
+
+    [Fact]
+    public void AStreamTwoViewersShareOutlivesTheFirstOfThemToLeave()
+    {
+        using var stream = LiveStream();
+        stream.Consumers.Acquire(ViewerA);
+        stream.Consumers.Acquire(ViewerB);
 
         stream.ConsumerCount--;
         Assert.Equal(1, stream.ConsumerCount);
 
         stream.ConsumerCount--;
         Assert.Equal(0, stream.ConsumerCount);
+    }
+
+    [Fact]
+    public void ACloseTooManyIsHarmlessRatherThanEndless()
+    {
+        // Jellyfin closes a live stream from four places, so one can arrive twice or late. The
+        // property is written as a decrement, which on an empty stream asks for minus one; taken
+        // literally that spins for ever, and stored literally it would swallow the next viewer.
+        using var stream = LiveStream();
+        stream.Consumers.Acquire(ViewerA);
+
+        stream.ConsumerCount--;
+        stream.ConsumerCount--;
+        stream.ConsumerCount--;
+
+        Assert.Equal(0, stream.ConsumerCount);
+
+        Assert.True(stream.Consumers.Acquire(ViewerB));
+        Assert.Equal(1, stream.ConsumerCount);
     }
 
     private static TvheadendLiveStream LiveStream()

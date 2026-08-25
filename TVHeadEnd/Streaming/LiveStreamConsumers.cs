@@ -1,5 +1,5 @@
+using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace TVHeadEnd.Streaming;
 
@@ -20,17 +20,30 @@ namespace TVHeadEnd.Streaming;
 /// negotiates again. This mirrors that, keyed the same way, so the two agree.
 /// </para>
 /// <para>
-/// Departures arrive without a name -- Jellyfin's contract decrements a count and does not say
-/// whose. <see cref="ReleaseOne"/> therefore forgets an arbitrary viewer. That cannot make the
-/// count too low, which is the direction that would matter: the count only falls when Jellyfin
-/// says a viewer left, and forgetting the wrong key only means a viewer who is still watching is
-/// no longer recognised, so their next arrival is counted afresh rather than suppressed.
+/// Arrivals are named and departures are not. Jellyfin's contract carries the request's identity
+/// into opening a stream -- <c>GetChannelStreamWithDirectStreamProvider</c> runs on the
+/// authenticated request -- but closing one is <c>ILiveStream.ConsumerCount--</c>, reached from
+/// four places, not all of them on a request. So a departure says how many are left and nothing
+/// about who.
+/// </para>
+/// <para>
+/// That asymmetry is modelled rather than papered over. A departure does not pick a name to
+/// delete, because any of the named viewers could have been the one that left, and deleting one
+/// would assert something nobody said. It reduces the total and forgets every name, leaving
+/// viewers this knows exist but can no longer identify. A later arrival takes one of those places
+/// back rather than adding to the count, which is what makes a client negotiating again after a
+/// departure cost nothing.
 /// </para>
 /// </remarks>
 public sealed class LiveStreamConsumers
 {
-    private readonly HashSet<string> _active = new(System.StringComparer.Ordinal);
+    private readonly HashSet<string> _named = new(StringComparer.Ordinal);
     private readonly object _lock = new();
+
+    /// <summary>
+    /// Viewers known to be here, whose identity has been forgotten to a departure.
+    /// </summary>
+    private int _unnamed;
 
     /// <summary>
     /// Gets how many viewers the stream is being held open for.
@@ -41,42 +54,59 @@ public sealed class LiveStreamConsumers
         {
             lock (_lock)
             {
-                return _active.Count;
+                return _named.Count + _unnamed;
             }
         }
     }
 
     /// <summary>
-    /// Registers a viewer, if it is not already registered.
+    /// Registers a viewer.
     /// </summary>
     /// <param name="consumerId">Who is watching.</param>
     /// <returns>
-    /// <see langword="true"/> when this is a viewer the stream was not already being held open
-    /// for, and <see langword="false"/> when the same one is negotiating again.
+    /// <see langword="true"/> when this arrival raised the count, and <see langword="false"/>
+    /// when it did not -- either the same viewer is negotiating again, or it took back a place
+    /// left by a viewer whose identity a departure had forgotten.
     /// </returns>
     public bool Acquire(string consumerId)
     {
         lock (_lock)
         {
-            return _active.Add(consumerId);
+            if (!_named.Add(consumerId))
+            {
+                return false;
+            }
+
+            if (_unnamed > 0)
+            {
+                _unnamed--;
+                return false;
+            }
+
+            return true;
         }
     }
 
     /// <summary>
-    /// Forgets one viewer, without being told which.
+    /// Records that one viewer has gone, without being told which.
     /// </summary>
     /// <returns>How many are left.</returns>
     public int ReleaseOne()
     {
         lock (_lock)
         {
-            var any = _active.FirstOrDefault();
-            if (any is not null)
+            var remaining = _named.Count + _unnamed;
+            if (remaining == 0)
             {
-                _active.Remove(any);
+                return 0;
             }
 
-            return _active.Count;
+            // Any of them could have been the one that left, so none of them is still known to be
+            // here. What survives is the number.
+            remaining--;
+            _named.Clear();
+            _unnamed = remaining;
+            return remaining;
         }
     }
 }

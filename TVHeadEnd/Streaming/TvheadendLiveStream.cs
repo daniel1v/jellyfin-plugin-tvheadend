@@ -225,8 +225,8 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     /// <remarks>
     /// Backed by the viewers the stream is actually being held open for, rather than by a tally
     /// of the times Jellyfin was asked to open it. Jellyfin only ever assigns a lower value here,
-    /// to say one viewer has gone; it does not say which, so one is forgotten. See
-    /// <see cref="LiveStreamConsumers"/> for why that cannot close a stream somebody is watching.
+    /// to say a viewer has gone, and it does not say which; see <see cref="LiveStreamConsumers"/>
+    /// for what is done with that.
     /// </remarks>
     public int ConsumerCount
     {
@@ -234,9 +234,14 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
 
         set
         {
-            while (Consumers.Count > value)
+            // Defensive about a contract this does not own. A close that arrives twice, or after
+            // the last viewer has already gone, assigns a negative value; taking that literally
+            // would spin here for ever. Nothing is invented in the other direction either -- a
+            // higher value would be asking for viewers there are no names for.
+            var target = Math.Max(0, value);
+
+            while (Consumers.Count > target && Consumers.ReleaseOne() > target)
             {
-                Consumers.ReleaseOne();
             }
         }
     }

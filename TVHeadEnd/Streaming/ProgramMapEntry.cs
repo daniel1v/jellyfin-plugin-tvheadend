@@ -89,16 +89,21 @@ public sealed record ProgramMapEntry
     /// <remarks>
     /// <para>
     /// Two descriptors can answer this, and they do not carry equal weight. DVB's supplementary
-    /// audio descriptor states the track's editorial role outright and is taken as final where it
-    /// appears. Where it does not, the audio type of the ISO 639 language descriptor is read, and
-    /// only its two unambiguous values are acted on: a hearing impaired mix and a commentary for
-    /// the visually impaired.
+    /// audio descriptor states the track's editorial role outright and is taken as final wherever
+    /// it says something this understands. Where it does not -- a user defined or reserved
+    /// classification -- it stays out of the way rather than erasing the other answer, and the
+    /// audio type of the ISO 639 language descriptor is read instead.
     /// </para>
     /// <para>
-    /// Everything else is <see cref="AudioPurpose.Unknown"/>. Notably an audio type of one --
-    /// nominally "clean effects" -- is not treated as an addition, because broadcasters do use it
-    /// for ordinary programme sound, and a reserved value means the tables are describing
-    /// something this does not understand rather than something supplementary.
+    /// Audio types zero and one are both the programme's own sound: DVB uses either for main
+    /// audio, and reading "clean effects" as an addition would withhold ordinary tracks. Two and
+    /// three are the additions -- a hearing impaired mix, a commentary for the visually impaired.
+    /// Anything above them is reserved and is not read as anything at all.
+    /// </para>
+    /// <para>
+    /// Everything left over is <see cref="AudioPurpose.Unknown"/>, which is not a quieter way of
+    /// saying supplementary: the tables did not answer, and a track nobody classified is not an
+    /// addition to the programme.
     /// </para>
     /// </remarks>
     public AudioPurpose AudioPurpose { get; init; }

@@ -128,13 +128,14 @@ public sealed class RingBufferRejoinTests : IDisposable
     }
 
     [Fact]
-    public async Task AReaderThatNeedsAnIdrIsNotPutOnANewerPointThatOnlyPromisesRandomAccess()
+    public async Task AReaderTheWriterHasLappedRejoinsOnAnIdrRatherThanANearerRandomAccessPoint()
     {
         // The two guarantees are not interchangeable and the newer point is not the better one.
-        // A DVB random access point is a legal entry for the broadcast and may be a recovery
-        // point rather than an IDR; a decoder that will not start without an IDR gets no picture
-        // from it. So a reader that asked for the stronger guarantee has to be put further back,
-        // onto the older point that carries it, and never on the nearer weaker one.
+        // A DVB random access point is a legal entry for the broadcast and may be a recovery point
+        // rather than an IDR; a decoder that will not start without an IDR gets no picture from
+        // it. That has to hold on the rejoin path as much as on the first join -- a reader the
+        // writer has lapped is being placed afresh, and placing it on the nearest point would put
+        // it exactly where it must not be.
         const byte Idr = 0xA1;
         const byte Rap = 0xB2;
 
@@ -146,18 +147,42 @@ public sealed class RingBufferRejoinTests : IDisposable
             RequiredGuarantee = RandomAccessGuarantee.Idr,
         };
 
+        // Start the reader off on an IDR, so it is running before it is overtaken.
+        await WriteAccessPoint(buffer, bootstrap, RandomAccessGuarantee.Idr, Idr);
+        var reader = buffer.OpenReader();
+
+        var opening = await ReadUpTo(reader, 3 * PacketLength);
+        Assert.Equal(PatPid, ReadPid(opening, 0));
+        Assert.Equal(Idr, opening[(2 * PacketLength) + Mark]);
+
+        // Overtake it. Everything written while lapping is an ordinary random access point, so
+        // the IDR it started on is the only one of its kind -- and it scrolls out of the window.
+        var capacity = LiveStreamBuffer.MinimumSizeMegabytes * 1024L * 1024L;
+        var written = 0L;
+        while (written < capacity + (2 * 1024 * 1024))
+        {
+            written += await WriteAccessPoint(buffer, bootstrap, RandomAccessGuarantee.DvbRandomAccess, Rap);
+            written += await WriteFiller(buffer, 64);
+        }
+
+        // What the window now holds: an IDR, and after it a nearer point that is only a DVB
+        // random access point.
         await WriteAccessPoint(buffer, bootstrap, RandomAccessGuarantee.Idr, Idr);
         await WriteFiller(buffer, 200);
         await WriteAccessPoint(buffer, bootstrap, RandomAccessGuarantee.DvbRandomAccess, Rap);
         await WriteFiller(buffer, 200);
 
-        var opening = await ReadUpTo(buffer.OpenReader(), 3 * PacketLength);
+        var resumed = await ReadUpTo(reader, 3 * PacketLength);
 
-        Assert.Equal(PatPid, ReadPid(opening, 0));
-        Assert.Equal(PmtPid, ReadPid(opening, PacketLength));
-        Assert.Equal(VideoPid, ReadPid(opening, 2 * PacketLength));
-        Assert.True(SignalsRandomAccess(opening, 2 * PacketLength));
-        Assert.Equal(Idr, opening[(2 * PacketLength) + Mark]);
+        // Program tables ahead of the payload are what a rejoin produces and what reading on from
+        // the old position could not: a reader that had not been placed afresh would be part way
+        // through filler here.
+        Assert.Equal(PatPid, ReadPid(resumed, 0));
+        Assert.Equal(PmtPid, ReadPid(resumed, PacketLength));
+
+        Assert.Equal(VideoPid, ReadPid(resumed, 2 * PacketLength));
+        Assert.True(SignalsRandomAccess(resumed, 2 * PacketLength));
+        Assert.Equal(Idr, resumed[(2 * PacketLength) + Mark]);
     }
 
     private static async Task<long> WriteAccessPoint(
