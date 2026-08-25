@@ -57,7 +57,7 @@ public sealed class TransportStreamConditioner
     private readonly byte[] _partialPacket = new byte[TransportStreamPacket.Length];
     private readonly List<int> _randomAccessOffsets = [];
 
-    private readonly H264IdrScanner _idrScanner = new();
+    private readonly H264AccessUnitScanner _accessUnitScanner = new();
     private readonly PsiSectionAssembler _programAssociationSection = new();
     private readonly PsiSectionAssembler _programMapSection = new();
 
@@ -68,6 +68,7 @@ public sealed class TransportStreamConditioner
     private int _programMapTablePid = -1;
     private bool _started;
     private bool _readingStartAccessUnit;
+    private int _videoUnitsSinceStart;
     private int _generationStartOffset = -1;
     private int _bytesInspected;
     private long _firstInspectedTimestamp;
@@ -351,13 +352,10 @@ public sealed class TransportStreamConditioner
         if (isRandomAccessPoint && VideoStreamType == H264StreamType)
         {
             _readingStartAccessUnit = true;
-            _idrScanner.Reset();
-            _idrScanner.Scan(TransportStreamPacket.ReadPayload(packet));
-            if (_idrScanner.HasSeenIdr)
-            {
-                StartAccessUnitCarriesIdr = true;
-                _readingStartAccessUnit = false;
-            }
+            _videoUnitsSinceStart = 0;
+            _accessUnitScanner.Reset();
+            _accessUnitScanner.Scan(TransportStreamPacket.ReadPayload(packet));
+            Settle();
         }
 
         // The player needs the tables before it can make sense of the elementary streams, and
@@ -392,17 +390,34 @@ public sealed class TransportStreamConditioner
 
         if (TransportStreamPacket.StartsPayloadUnit(packet))
         {
-            // The next picture has begun, so the first one is fully seen and held no IDR.
-            StartAccessUnitCarriesIdr = false;
-            _readingStartAccessUnit = false;
+            _videoUnitsSinceStart++;
+        }
+
+        _accessUnitScanner.Scan(TransportStreamPacket.ReadPayload(packet));
+        Settle();
+    }
+
+    /// <summary>
+    /// Settles whether the picture delivery began at carried an IDR, once that can be said.
+    /// </summary>
+    /// <remarks>
+    /// The scanner ends the access unit where the syntax ends it -- a second access unit delimiter,
+    /// or a slice that starts a new picture -- which on the broadcasts measured falls in the PES
+    /// after the one the entry point is in. The payload unit count is only a bound -- the next PES
+    /// begins a new picture in every broadcast measured -- so a stream
+    /// whose access unit never closes settles conservatively instead of leaving the open waiting.
+    /// </remarks>
+    private void Settle()
+    {
+        const int MaximumPayloadUnits = 1;
+
+        if (!_accessUnitScanner.Completed && _videoUnitsSinceStart < MaximumPayloadUnits)
+        {
             return;
         }
 
-        if (_idrScanner.Scan(TransportStreamPacket.ReadPayload(packet)))
-        {
-            StartAccessUnitCarriesIdr = true;
-            _readingStartAccessUnit = false;
-        }
+        StartAccessUnitCarriesIdr = _accessUnitScanner.CarriesIdr;
+        _readingStartAccessUnit = false;
     }
 
     private bool ShouldStartAt(ReadOnlySpan<byte> packet, int pid)
