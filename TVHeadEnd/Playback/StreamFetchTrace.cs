@@ -57,11 +57,12 @@ public sealed class StreamFetchTrace
         }
 
         _logger.LogInformation(
-            "Stream fetch: {Method} {Path}{Query} by {Agent}",
+            "Stream fetch: {Method} {Path}{Query} by {Agent} range={Range}",
             context.Request.Method,
             path,
             context.Request.QueryString.Value,
-            context.Request.Headers.UserAgent.ToString());
+            context.Request.Headers.UserAgent.ToString(),
+            context.Request.Headers.Range.ToString());
 
         // How much a fetch carried and how long it took is the whole question for the static path:
         // a growing file served as a file ends at whatever had been written when it started.
@@ -78,12 +79,15 @@ public sealed class StreamFetchTrace
         {
             context.Response.Body = original;
 
+            // Who hung up. A live stream this plugin serves never ends on its own, so a finished
+            // request means either the client closed the connection or the pipeline was torn down.
             _logger.LogInformation(
-                "Stream fetch ended: {Path} status={Status} bytes={Bytes} after={Elapsed}ms",
+                "Stream fetch ended: {Path} status={Status} bytes={Bytes} after={Elapsed}ms aborted={Aborted}",
                 path,
                 context.Response.StatusCode,
                 counted.Written,
-                started.ElapsedMilliseconds);
+                started.ElapsedMilliseconds,
+                context.RequestAborted.IsCancellationRequested);
         }
     }
 
