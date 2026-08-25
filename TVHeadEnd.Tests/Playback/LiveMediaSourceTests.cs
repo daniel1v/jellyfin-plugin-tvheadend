@@ -46,9 +46,28 @@ public class LiveMediaSourceTests
 
         Assert.False(source.SupportsProbing);
         Assert.Equal(2, source.MediaStreams.Count);
-        Assert.Equal(1, source.DefaultAudioStreamIndex);
         Assert.False(source.RequiresOpening);
         Assert.True(source.RequiresClosing);
+    }
+
+    [Fact]
+    public void NoAudioTrackIsNominatedAsTheDefault()
+    {
+        // Measured: naming one made the Android client pin it in its next question, and a pinned
+        // track collapses Jellyfin's candidate list to that track alone (StreamBuilder widens to
+        // every audio stream only while none is pinned and no default has a source). The track
+        // named was the first of the program map, which on the German broadcasts is MPEG audio, so
+        // a device that cannot decode it was made to transcode a stream it could have taken as
+        // delivered -- over a preference nobody had expressed.
+        var source = LiveMediaSource.CreateOpened(
+            ItemId,
+            "Das Erste HD",
+            "/buffers/tvheadend-abc.ts",
+            "http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts",
+            Description(),
+            requiresVideoReencode: false);
+
+        Assert.Null(source.DefaultAudioStreamIndex);
     }
 
     [Fact]

@@ -168,9 +168,17 @@ public static class LiveMediaSource
 
         source.MediaStreams = [.. description.Streams];
 
-        var audio = description.Streams.FirstOrDefault(stream => stream.Type == MediaStreamType.Audio);
-        source.DefaultAudioStreamIndex = audio?.Index;
-
+        // No default audio track is nominated, and that is deliberate. The program map says which
+        // tracks exist, not which one a viewer wants, so naming one here would be an invention --
+        // and it was: the first track of the map was nominated, which on the German broadcasts is
+        // MPEG audio. Jellyfin then reports that choice back, the client pins it in its next
+        // question, and a pinned track collapses the candidate list to exactly that one
+        // (StreamBuilder narrows to all audio streams only while none is pinned and no default has
+        // a source). A device that cannot decode MPEG audio is then made to transcode a stream it
+        // could have taken as delivered, because of a preference nobody expressed.
+        //
+        // Left unset, the choice falls to Jellyfin, which knows the viewer, their language and
+        // their client -- none of which this plugin knows.
         return source;
     }
 }
