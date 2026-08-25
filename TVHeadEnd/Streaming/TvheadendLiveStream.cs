@@ -65,6 +65,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
 
     private TransportStreamConditioner? _conditioner;
     private Task? _feedTask;
+    private MediaSourceInfo _mediaSource = null!;
     private bool _closed;
     private bool _disposed;
 
@@ -234,8 +235,51 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     /// <inheritdoc />
     public bool EnableStreamSharing { get; private set; }
 
-    /// <inheritdoc />
-    public MediaSourceInfo MediaSource { get; set; }
+    /// <summary>
+    /// Gets or sets what this stream tells Jellyfin it is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One object describes the stream for as long as it runs, and Jellyfin writes each single
+    /// request's outcome back into it: <c>MediaInfoHelper</c> assigns <c>SupportsDirectPlay</c>
+    /// from the play method it has just chosen for one client, and clears it outright when that
+    /// one request had direct play turned off. Some of the paths that hand the object out copy it
+    /// first and some return it as it stands, so a verdict reached for one viewer can stay behind
+    /// on the stream itself. Every later question is then answered from that leftover, and a
+    /// client that could have taken the broadcast untouched is told direct play failed.
+    /// </para>
+    /// <para>
+    /// These two fields belong to the stream, so the stream restores them whenever it is asked.
+    /// They say what is on offer, which does not change between requests; what any one viewer may
+    /// do with it is Jellyfin's to decide, and it still decides that freshly every time.
+    /// </para>
+    /// </remarks>
+    public MediaSourceInfo MediaSource
+    {
+        get
+        {
+            if (_mediaSource is { } source
+                && (source.SupportsDirectPlay == RequiresVideoReencode
+                    || source.SupportsDirectStream == RequiresVideoReencode))
+            {
+                _logger.LogDebug(
+                    "Live TV: channel {ChannelId} ({ChannelName}) had its offer overwritten and it is being "
+                    + "restored; directPlay={DirectPlay} directStream={DirectStream} requiresVideoReencode={Reencode}",
+                    ChannelId,
+                    ChannelName ?? "<unknown>",
+                    source.SupportsDirectPlay,
+                    source.SupportsDirectStream,
+                    RequiresVideoReencode);
+
+                source.SupportsDirectPlay = !RequiresVideoReencode;
+                source.SupportsDirectStream = !RequiresVideoReencode;
+            }
+
+            return _mediaSource;
+        }
+
+        set => _mediaSource = value;
+    }
 
     /// <inheritdoc />
     public string UniqueId { get; }
