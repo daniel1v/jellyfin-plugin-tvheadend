@@ -29,8 +29,6 @@ public sealed class ForcedVideoReencodeStartupFilter : IStartupFilter
 
         return builder =>
         {
-            builder.UseMiddleware<PlaybackRequestTrace>();
-            builder.UseMiddleware<StreamFetchTrace>();
             builder.UseMiddleware<ForcedVideoReencodeMiddleware>();
             next(builder);
         };

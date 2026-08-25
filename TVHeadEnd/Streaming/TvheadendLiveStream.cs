@@ -323,7 +323,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         // one, and a reader that joins later -- or after the writer laps it -- must not be able to
         // land on a weaker point than the stream is capable of.
         Buffer.RequiredGuarantee = JoinGuarantee;
-        return new DirectReadTrace(Buffer.OpenReader(), ChannelId, _logger);
+        return Buffer.OpenReader();
     }
 
     /// <inheritdoc />
