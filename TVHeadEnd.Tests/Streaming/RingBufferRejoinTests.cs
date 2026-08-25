@@ -25,6 +25,9 @@ public sealed class RingBufferRejoinTests : IDisposable
     private const int PmtPid = 0x13ec;
     private const int VideoPid = 0x13ed;
 
+    /// <summary>Where a written packet carries the label that says which one it is.</summary>
+    private const int Mark = 10;
+
     private readonly string _path = Path.Combine(Path.GetTempPath(), $"ringrejoin-{Guid.NewGuid():N}.ts");
 
     public void Dispose()
@@ -124,12 +127,49 @@ public sealed class RingBufferRejoinTests : IDisposable
         Assert.Equal(PmtPid, ReadPid(opening, PacketLength));
     }
 
-    private static async Task<long> WriteAccessPoint(LiveStreamBuffer buffer, StreamBootstrapIndex bootstrap)
+    [Fact]
+    public async Task AReaderThatNeedsAnIdrIsNotPutOnANewerPointThatOnlyPromisesRandomAccess()
+    {
+        // The two guarantees are not interchangeable and the newer point is not the better one.
+        // A DVB random access point is a legal entry for the broadcast and may be a recovery
+        // point rather than an IDR; a decoder that will not start without an IDR gets no picture
+        // from it. So a reader that asked for the stronger guarantee has to be put further back,
+        // onto the older point that carries it, and never on the nearer weaker one.
+        const byte Idr = 0xA1;
+        const byte Rap = 0xB2;
+
+        var bootstrap = new StreamBootstrapIndex();
+
+        await using var buffer = new LiveStreamBuffer(_path, LiveStreamBuffer.MinimumSizeMegabytes)
+        {
+            Bootstrap = bootstrap,
+            RequiredGuarantee = RandomAccessGuarantee.Idr,
+        };
+
+        await WriteAccessPoint(buffer, bootstrap, RandomAccessGuarantee.Idr, Idr);
+        await WriteFiller(buffer, 200);
+        await WriteAccessPoint(buffer, bootstrap, RandomAccessGuarantee.DvbRandomAccess, Rap);
+        await WriteFiller(buffer, 200);
+
+        var opening = await ReadUpTo(buffer.OpenReader(), 3 * PacketLength);
+
+        Assert.Equal(PatPid, ReadPid(opening, 0));
+        Assert.Equal(PmtPid, ReadPid(opening, PacketLength));
+        Assert.Equal(VideoPid, ReadPid(opening, 2 * PacketLength));
+        Assert.True(SignalsRandomAccess(opening, 2 * PacketLength));
+        Assert.Equal(Idr, opening[(2 * PacketLength) + Mark]);
+    }
+
+    private static async Task<long> WriteAccessPoint(
+        LiveStreamBuffer buffer,
+        StreamBootstrapIndex bootstrap,
+        RandomAccessGuarantee guarantee = RandomAccessGuarantee.DvbRandomAccess,
+        byte mark = 0)
     {
         // The tables travel with the chunk, as they do from the conditioner. An access point
         // offered without them is one no reader could be told how to decode, and is not kept.
-        var packet = VideoPacket(randomAccess: true);
-        await buffer.Write(packet, [new StreamAccessPoint(buffer.WritePosition, RandomAccessGuarantee.DvbRandomAccess)], Tables(), CancellationToken.None);
+        var packet = VideoPacket(randomAccess: true, mark);
+        await buffer.Write(packet, [new StreamAccessPoint(buffer.WritePosition, guarantee)], Tables(), CancellationToken.None);
         _ = bootstrap;
         return packet.Length;
     }
@@ -143,7 +183,7 @@ public sealed class RingBufferRejoinTests : IDisposable
         return filler.Length;
     }
 
-    private static byte[] VideoPacket(bool randomAccess)
+    private static byte[] VideoPacket(bool randomAccess, byte mark = 0)
     {
         var packet = new byte[PacketLength];
         packet[0] = 0x47;
@@ -160,6 +200,10 @@ public sealed class RingBufferRejoinTests : IDisposable
         {
             packet[3] = 0x10;
         }
+
+        // First payload byte: the adaptation field above is one byte long, so this is past it.
+        // Only a test reads it, and only to say which access point a reader was put on.
+        packet[Mark] = mark;
 
         return packet;
     }
