@@ -105,9 +105,9 @@ public class StreamMappingTests
         // first track of the map, which here is MPEG audio; the client pins it, asks again, and
         // that second answer refuses the very track the first one named.
         //
-        // So the flag is set from the one thing the table actually states: the audio type, which
-        // names only the exceptions. Both German renderings of the programme sound qualify, and
-        // Jellyfin picks between them knowing the device -- which this plugin does not.
+        // So a track is withheld only where the tables say outright that it is an addition to the
+        // programme. Both German renderings of the programme sound stay, and Jellyfin picks
+        // between them knowing the device -- which this plugin does not.
         var map = Pmt(
             Entry(0x1B, VideoPid),
             Entry(0x03, GermanAudioPid, Language("deu")),
@@ -124,6 +124,46 @@ public class StreamMappingTests
         Assert.False(description.Streams[2].IsDefault);
 
         Assert.Equal("ac3", description.Streams[3].Codec);
+        Assert.True(description.Streams[3].IsDefault);
+    }
+
+    [Fact]
+    public void AnAudioTypeOfOneIsNotEnoughToWithholdATrack()
+    {
+        // Nominally "clean effects", and not treated as one. Broadcasters do use this value for
+        // ordinary programme sound, so reading it as an addition would withhold a main track --
+        // and if it were the only track, would leave Jellyfin no default audio at all.
+        var map = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 1)));
+
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
+
+        Assert.True(description.Streams[1].IsDefault);
+    }
+
+    [Fact]
+    public void ATrackTheSupplementaryAudioDescriptorClassifiesIsTakenAtItsWord()
+    {
+        // DVB's supplementary audio descriptor states the editorial role outright, so it settles
+        // the question wherever it appears -- including against an audio type that says otherwise.
+        // Only the classifications the standard names are acted on; a reserved value means the
+        // broadcast is describing something this does not know, which is not an addition.
+        var map = Pmt(
+            Entry(0x1B, VideoPid),
+            Entry(0x03, GermanAudioPid, Concat(Language("deu"), SupplementaryAudio(0x01))),
+            Entry(0x03, EnglishAudioPid, Concat(Descriptor(0x0A, (byte)'d', (byte)'e', (byte)'u', 3), SupplementaryAudio(0x00))),
+            Entry(0x03, 517, Concat(Language("deu"), SupplementaryAudio(0x1F))));
+
+        var description = LiveStreamDescription.FromProgramMap(map, ChannelType.TV)!;
+
+        // An audio description for the visually impaired.
+        Assert.False(description.Streams[1].IsDefault);
+
+        // Classified as main audio, over an audio type that called it a commentary.
+        Assert.True(description.Streams[2].IsDefault);
+
+        // Reserved, so nothing is claimed and the track is not withheld.
         Assert.True(description.Streams[3].IsDefault);
     }
 
@@ -241,6 +281,13 @@ public class StreamMappingTests
 
     private static byte[] Subtitling(string code)
         => Descriptor(0x59, (byte)code[0], (byte)code[1], (byte)code[2], 0x10, 0, 0, 0, 0);
+
+    /// <summary>
+    /// A DVB supplementary audio descriptor: an extension descriptor whose body names it, then
+    /// mix_type, editorial_classification, a reserved bit and language_code_present.
+    /// </summary>
+    private static byte[] SupplementaryAudio(byte editorialClassification)
+        => Descriptor(0x7F, 0x06, (byte)(editorialClassification << 2));
 
     private static byte[] Descriptor(byte tag, params byte[] body)
         => [tag, (byte)body.Length, .. body];

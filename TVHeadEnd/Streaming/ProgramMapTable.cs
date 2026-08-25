@@ -45,6 +45,13 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
     private const byte DescriptorAac = 0x7C;
 
     /// <summary>
+    /// DVB carries its newer descriptors inside an extension descriptor, whose first body byte
+    /// says which one it is. Six is the supplementary audio descriptor.
+    /// </summary>
+    private const byte DescriptorExtension = 0x7F;
+    private const byte ExtensionSupplementaryAudio = 0x06;
+
+    /// <summary>
     /// Gets the PID of the first video stream, or -1 when the program carries none.
     /// </summary>
     public int VideoPid => Entries.FirstOrDefault(entry => entry.IsVideo)?.Pid ?? -1;
@@ -135,7 +142,11 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
 
         string? language = null;
         var hearingImpaired = false;
-        var supplementaryAudio = false;
+
+        // Two sources, and the descriptor that states the editorial role outright wins. Kept
+        // apart until the end so their order in the table cannot decide the outcome.
+        var purposeFromLanguage = AudioPurpose.Unknown;
+        var purposeFromSupplementary = AudioPurpose.Unknown;
 
         // Set only by a descriptor, and only for stream types that need one to be identified.
         string? descriptorCodec = null;
@@ -166,12 +177,18 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                 case DescriptorLanguage when body.Length >= 4:
                     language ??= ReadLanguage(body[..3]);
 
-                    // ISO 13818-1 audio_type: 1 is clean effects, 2 is a hearing impaired mix,
-                    // 3 is a commentary for the visually impaired. Zero is what the specification
-                    // calls undefined and what every ordinary programme track carries, so the
-                    // three named values are exactly the tracks that are not the programme audio.
+                    // ISO 13818-1 audio_type. Only two of its values name an addition to the
+                    // programme beyond doubt: 2 is a hearing impaired mix and 3 is a commentary
+                    // for the visually impaired. Zero is the ordinary programme track. One is
+                    // nominally clean effects and is left unclassified rather than excluded,
+                    // because broadcasters use it for main audio as well.
                     hearingImpaired |= body[3] == 2;
-                    supplementaryAudio |= body[3] != 0;
+                    purposeFromLanguage = FirstConclusive(purposeFromLanguage, body[3] switch
+                    {
+                        0 => AudioPurpose.Main,
+                        2 or 3 => AudioPurpose.Supplementary,
+                        _ => AudioPurpose.Unknown,
+                    });
                     break;
 
                 case DescriptorSubtitling when body.Length >= 4:
@@ -213,6 +230,23 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                     descriptorCodec = "aac";
                     break;
 
+                case DescriptorExtension
+                    when body.Length >= 2 && body[0] == ExtensionSupplementaryAudio:
+
+                    // EN 300 468 supplementary_audio_descriptor. The byte after the extension tag
+                    // is mix_type in bit 7, editorial_classification in bits 6..2, then a reserved
+                    // bit and language_code_present. Only the three classifications the standard
+                    // actually names are acted on; the reserved range says the broadcast is
+                    // describing something this does not know, which is not the same as an
+                    // addition to the programme.
+                    purposeFromSupplementary = FirstConclusive(purposeFromSupplementary, ((body[1] >> 2) & 0x1F) switch
+                    {
+                        0x00 => AudioPurpose.Main,
+                        0x01 or 0x02 or 0x03 => AudioPurpose.Supplementary,
+                        _ => AudioPurpose.Unknown,
+                    });
+                    break;
+
                 case DescriptorRegistration when body.Length >= 4:
                     (descriptorKind, descriptorCodec) = ReadRegistration(body[..4]) switch
                     {
@@ -252,11 +286,23 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             Codec = codec,
             Language = language,
             IsHearingImpaired = hearingImpaired,
-            IsSupplementaryAudio = supplementaryAudio,
+
+            // The supplementary audio descriptor states the role outright, so where it appears it
+            // is the answer. The audio type is only consulted in its absence.
+            AudioPurpose = purposeFromSupplementary != AudioPurpose.Unknown
+                ? purposeFromSupplementary
+                : purposeFromLanguage,
         };
 
         return true;
     }
+
+    /// <summary>
+    /// Keeps the first conclusive answer, so a repeated descriptor cannot overwrite one that
+    /// already said something.
+    /// </summary>
+    private static AudioPurpose FirstConclusive(AudioPurpose current, AudioPurpose candidate)
+        => current == AudioPurpose.Unknown ? candidate : current;
 
     private static (ElementaryStreamKind Kind, string? Codec) FromStreamType(byte streamType) => streamType switch
     {

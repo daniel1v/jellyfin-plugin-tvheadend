@@ -157,22 +157,42 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             .OfType<TvheadendLiveStream>()
             .FirstOrDefault(stream => CanBeReusedFor(stream, channelId, needsIdrToStart));
 
+        // Who is watching, not how many times they asked. A client whose first attempt at
+        // playback fails negotiates again, and Jellyfin answers by asking for the stream once
+        // more; recognising that as the same viewer is what keeps the stream from being held
+        // open by attempts that were abandoned.
+        var consumer = _client.ResolveConsumerId();
+
         if (reusable is not null)
         {
-            reusable.ConsumerCount++;
-            _logger.LogInformation(
-                "Live TV: channel {ChannelId} is already running and now has {ConsumerCount} consumers",
-                channelId,
-                reusable.ConsumerCount);
+            if (reusable.Consumers.Acquire(consumer))
+            {
+                _logger.LogInformation(
+                    "Live TV: channel {ChannelId} is already running and now has {ConsumerCount} viewers",
+                    channelId,
+                    reusable.ConsumerCount);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Live TV: channel {ChannelId} is already running for this viewer, who is negotiating again",
+                    channelId);
+            }
+
             return reusable;
         }
 
-        return await _opener.OpenAsync(
+        var opened = await _opener.OpenAsync(
                 channelId,
                 GetMediaSourceId(channelId),
                 _connection.Channels.GetChannelType(channelId),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        // Only once it is open. A stream that failed to open is never registered, so a failed
+        // attempt cannot leave a viewer behind holding one.
+        opened.Consumers.Acquire(consumer);
+        return opened;
     }
 
     /// <summary>

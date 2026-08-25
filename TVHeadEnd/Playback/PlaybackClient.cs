@@ -27,6 +27,11 @@ public sealed class PlaybackClient
     /// </summary>
     private const string ClientClaim = "Jellyfin-Client";
 
+    /// <summary>
+    /// Jellyfin.Api.Constants.InternalClaimTypes.DeviceId, named for the same reason.
+    /// </summary>
+    private const string DeviceIdClaim = "Jellyfin-DeviceId";
+
     private readonly IHttpContextAccessor? _httpContextAccessor;
 
     /// <summary>
@@ -73,4 +78,31 @@ public sealed class PlaybackClient
     /// </remarks>
     public bool IsAndroid
         => Name?.Contains("android", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>
+    /// Identifies the viewer the request is being served for, for as long as a live stream needs
+    /// to be kept open for them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The client name and the device identifier, which is how the session manager of the server
+    /// keys a session of its own: <c>GetSessionKey(appName, deviceId)</c>. Using the same two
+    /// claims means a stream is held open for exactly the viewers Jellyfin considers to be
+    /// watching it, and that a client which negotiates playback several times over -- as one does
+    /// when its first attempt fails -- is recognised as the one viewer it is.
+    /// </para>
+    /// <para>
+    /// Where there is no request there is no viewer to recognise, and a fresh identity is
+    /// returned so that two such callers are never mistaken for one.
+    /// </para>
+    /// </remarks>
+    /// <returns>An identity stable for as long as the viewer is watching.</returns>
+    public string ResolveConsumerId()
+    {
+        var device = _httpContextAccessor?.HttpContext?.User?.FindFirst(DeviceIdClaim)?.Value;
+
+        return string.IsNullOrEmpty(device)
+            ? Guid.NewGuid().ToString("N")
+            : Name + device;
+    }
 }

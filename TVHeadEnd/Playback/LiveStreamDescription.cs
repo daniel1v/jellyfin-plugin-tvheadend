@@ -103,22 +103,18 @@ public sealed record LiveStreamDescription
             Language = entry.Language,
             IsHearingImpaired = entry.IsHearingImpaired,
 
-            // Not a preference, and not a ranking: every track the table does not flag as
-            // supplementary is the programme's own audio, and all of them say so. Which one a
-            // given viewer on a given device gets is Jellyfin's decision, and this is the list it
-            // decides from.
+            // Broadcast metadata, not a preference: the tables are being asked what a track is
+            // for, and only a track they call an addition to the programme is withheld from the
+            // default set. Main and unclassified both stay in it.
             //
-            // Measured, because leaving every track unflagged is not the neutral act it looks
-            // like. A viewer whose account prefers default tracks -- which is the setting a new
-            // account is created with -- makes Jellyfin narrow the tracks it will consider to the
-            // ones marked default. With none marked, that narrowing yields nothing, and an empty
-            // list is not treated as "no track fits" but as "no audio to check": the compatibility
-            // test is skipped and direct play is granted, labelled with the first track of the
-            // map. On the German broadcasts that is MPEG audio, which the Android profile does not
-            // list. The client pins the track it was told, asks once more, and this time the test
-            // does run -- against that one track -- and refuses it. So the stream was played
-            // through a transcode of an AC-3 track the device could have taken as it was.
-            IsDefault = !entry.IsSupplementaryAudio,
+            // The asymmetry is deliberate and was measured. Jellyfin narrows its audio candidates
+            // to the tracks marked default whenever the viewer prefers default tracks, which is
+            // how a new account is created. If that narrowing yields nothing, the compatibility
+            // check is skipped rather than failed -- direct play is granted and labelled with the
+            // first track of the map, the client pins it, and the second answer refuses what the
+            // first one named. Reading an unclassified track as an addition would put every
+            // channel with no audio descriptors into exactly that state.
+            IsDefault = entry.AudioPurpose != AudioPurpose.Supplementary,
         },
 
         ElementaryStreamKind.Subtitle => new MediaStream

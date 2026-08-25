@@ -123,7 +123,6 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         _bufferSizeMegabytes = bufferSizeMegabytes;
 
         MediaSource = mediaSource;
-        ConsumerCount = 1;
         EnableStreamSharing = true;
         OriginalStreamId = string.Empty;
         TunerHostId = string.Empty;
@@ -223,7 +222,29 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     public bool RequiresVideoReencode { get; internal set; }
 
     /// <inheritdoc />
-    public int ConsumerCount { get; set; }
+    /// <remarks>
+    /// Backed by the viewers the stream is actually being held open for, rather than by a tally
+    /// of the times Jellyfin was asked to open it. Jellyfin only ever assigns a lower value here,
+    /// to say one viewer has gone; it does not say which, so one is forgotten. See
+    /// <see cref="LiveStreamConsumers"/> for why that cannot close a stream somebody is watching.
+    /// </remarks>
+    public int ConsumerCount
+    {
+        get => Consumers.Count;
+
+        set
+        {
+            while (Consumers.Count > value)
+            {
+                Consumers.ReleaseOne();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the viewers this stream is being kept open for.
+    /// </summary>
+    public LiveStreamConsumers Consumers { get; } = new();
 
     /// <inheritdoc />
     public string OriginalStreamId { get; set; }

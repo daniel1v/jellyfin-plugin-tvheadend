@@ -84,16 +84,24 @@ public sealed record ProgramMapEntry
     public bool IsHearingImpaired { get; init; }
 
     /// <summary>
-    /// Gets a value indicating whether the table flags this audio as something other than the
-    /// programme's own sound.
+    /// Gets what the tables say this audio track is for.
     /// </summary>
     /// <remarks>
-    /// The audio type of the ISO 639 language descriptor, which names only the exceptions: clean
-    /// effects, a hearing impaired mix, a commentary for the visually impaired. Zero -- the value
-    /// the specification calls undefined -- and an audio track carrying no such descriptor at all
-    /// are both ordinary programme audio, and that is the common case.
+    /// <para>
+    /// Two descriptors can answer this, and they do not carry equal weight. DVB's supplementary
+    /// audio descriptor states the track's editorial role outright and is taken as final where it
+    /// appears. Where it does not, the audio type of the ISO 639 language descriptor is read, and
+    /// only its two unambiguous values are acted on: a hearing impaired mix and a commentary for
+    /// the visually impaired.
+    /// </para>
+    /// <para>
+    /// Everything else is <see cref="AudioPurpose.Unknown"/>. Notably an audio type of one --
+    /// nominally "clean effects" -- is not treated as an addition, because broadcasters do use it
+    /// for ordinary programme sound, and a reserved value means the tables are describing
+    /// something this does not understand rather than something supplementary.
+    /// </para>
     /// </remarks>
-    public bool IsSupplementaryAudio { get; init; }
+    public AudioPurpose AudioPurpose { get; init; }
 
     /// <summary>
     /// Gets a value indicating whether the stream type names video.
