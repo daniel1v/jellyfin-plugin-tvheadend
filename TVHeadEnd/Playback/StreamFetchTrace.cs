@@ -1,4 +1,7 @@
 using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -60,11 +63,80 @@ public sealed class StreamFetchTrace
             context.Request.QueryString.Value,
             context.Request.Headers.UserAgent.ToString());
 
-        await _next(context).ConfigureAwait(false);
+        // How much a fetch carried and how long it took is the whole question for the static path:
+        // a growing file served as a file ends at whatever had been written when it started.
+        var original = context.Response.Body;
+        var counted = new CountingBody(original);
+        context.Response.Body = counted;
+        var started = Stopwatch.StartNew();
 
-        _logger.LogInformation(
-            "Stream fetch ended: {Path} status={Status}",
-            path,
-            context.Response.StatusCode);
+        try
+        {
+            await _next(context).ConfigureAwait(false);
+        }
+        finally
+        {
+            context.Response.Body = original;
+
+            _logger.LogInformation(
+                "Stream fetch ended: {Path} status={Status} bytes={Bytes} after={Elapsed}ms",
+                path,
+                context.Response.StatusCode,
+                counted.Written,
+                started.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Counts what actually reached the client.
+    /// </summary>
+    private sealed class CountingBody : Stream
+    {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage(
+            "Usage",
+            "CA2213:Disposable fields should be disposed",
+            Justification = "The response body belongs to the pipeline, which disposes it. Wrapping it must not.")]
+        private readonly Stream _inner;
+
+        public CountingBody(Stream inner) => _inner = inner;
+
+        public long Written { get; private set; }
+
+        public override bool CanRead => false;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => true;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() => _inner.Flush();
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+            => _inner.FlushAsync(cancellationToken);
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Written += count;
+            _inner.Write(buffer, offset, count);
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Written += buffer.Length;
+            await _inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        }
     }
 }
