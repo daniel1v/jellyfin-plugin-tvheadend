@@ -47,7 +47,7 @@ public class LiveStartupTests
 
         // Nothing was invented to start on.
         Assert.False(conditioner.StartedOnRandomAccessPoint);
-        Assert.Empty(conditioner.RandomAccessOffsets);
+        Assert.Empty(conditioner.AccessPoints);
     }
 
     [Fact]
@@ -190,7 +190,7 @@ public class LiveStartupTests
 
         Assert.True(conditioner.ProgramLayoutChanged);
         Assert.NotEqual(generation, conditioner.ProgramLayoutGeneration);
-        Assert.Empty(conditioner.RandomAccessOffsets);
+        Assert.Empty(conditioner.AccessPoints);
     }
 
     private static int Condition(TransportStreamConditioner conditioner, byte[] source, out byte[] output)

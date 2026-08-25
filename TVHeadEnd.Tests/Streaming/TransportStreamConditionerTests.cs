@@ -340,7 +340,7 @@ public class LiveTransportStreamConditionerTests
         Assert.NotEmpty(output);
 
         // Delivered, but not offered as a place to join.
-        Assert.Empty(conditioner.RandomAccessOffsets);
+        Assert.Empty(conditioner.AccessPoints);
     }
 
     [Fact]
@@ -354,14 +354,14 @@ public class LiveTransportStreamConditionerTests
             out _);
 
         Assert.True(conditioner.StartedOnRandomAccessPoint);
-        Assert.Single(conditioner.RandomAccessOffsets);
+        Assert.Single(conditioner.AccessPoints);
 
         // A later picture start without the indicator adds nothing.
         Condition(conditioner, VideoPacket(startsUnit: true, randomAccess: false), out _);
-        Assert.Empty(conditioner.RandomAccessOffsets);
+        Assert.Empty(conditioner.AccessPoints);
 
         // A later indicated one does.
         Condition(conditioner, VideoPacket(startsUnit: true, randomAccess: true), out _);
-        Assert.Single(conditioner.RandomAccessOffsets);
+        Assert.Single(conditioner.AccessPoints);
     }
 }

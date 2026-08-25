@@ -243,7 +243,7 @@ public class ProgramSpecificInformationTests
         var index = new StreamBootstrapIndex();
         var tables = new ProgramTableSnapshot([Pat(PmtPid)], [Pmt(0x1B)], 0);
 
-        index.Publish(tables, basePosition: 0, randomAccessOffsets: [376]);
+        index.Publish(tables, basePosition: 0, accessPoints: [new StreamAccessPoint(376, RandomAccessGuarantee.DvbRandomAccess)]);
         var join = index.CreateJoin(0);
 
         Assert.True(index.HasProgramTables);
@@ -258,7 +258,7 @@ public class ProgramSpecificInformationTests
         // there is no moment at which a reader can be sent somewhere it cannot be told about.
         var index = new StreamBootstrapIndex();
 
-        index.Publish(ProgramTableSnapshot.Empty, basePosition: 0, randomAccessOffsets: [188]);
+        index.Publish(ProgramTableSnapshot.Empty, basePosition: 0, accessPoints: [new StreamAccessPoint(188, RandomAccessGuarantee.DvbRandomAccess)]);
 
         Assert.False(index.HasProgramTables);
         Assert.Empty(index.CreateJoin(0).Tables);

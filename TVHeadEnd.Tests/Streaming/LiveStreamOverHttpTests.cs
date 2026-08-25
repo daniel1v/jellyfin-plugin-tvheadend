@@ -245,7 +245,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         await stream.Open(CancellationToken.None);
 
         Assert.False(stream.RequiresVideoReencode);
-        Assert.True(stream.SuitsDecodersNeedingIdr);
+        Assert.True(stream.OffersIdrJoins);
         Assert.True(OpenedSource(stream).SupportsDirectPlay);
     }
 
@@ -260,7 +260,7 @@ public sealed class LiveStreamOverHttpTests : IDisposable
         await stream.Open(CancellationToken.None);
 
         Assert.False(stream.RequiresVideoReencode);
-        Assert.True(stream.SuitsDecodersNeedingIdr);
+        Assert.True(stream.OffersIdrJoins);
         Assert.True(OpenedSource(stream).SupportsDirectPlay);
     }
 

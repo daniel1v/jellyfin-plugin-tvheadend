@@ -32,7 +32,7 @@ public class StreamBootstrapIndexTests
     {
         // The least delay a reader can safely have; everything recorded has already been written.
         var index = new StreamBootstrapIndex();
-        index.Publish(Tables(generation: 0), basePosition: 0, [1000, 5000, 3000]);
+        index.Publish(Tables(generation: 0), basePosition: 0, Points(0, 1000, 5000, 3000));
 
         Assert.Equal(5000, index.CreateJoin(0).Position);
         Assert.Equal(StreamJoinKind.AtPosition, index.CreateJoin(0).Kind);
@@ -42,7 +42,7 @@ public class StreamBootstrapIndexTests
     public void AccessPointsThatHaveBeenOverwrittenAreNotOffered()
     {
         var index = new StreamBootstrapIndex();
-        index.Publish(Tables(generation: 0), basePosition: 0, [1000, 2000]);
+        index.Publish(Tables(generation: 0), basePosition: 0, Points(0, 1000, 2000));
 
         // The ring has lapped past both. Those bytes still belong to the layout the tables
         // describe, so reading on from the oldest is sound and they go out in front.
@@ -56,7 +56,7 @@ public class StreamBootstrapIndexTests
     public void AccessPointsStillInsideTheWindowSurvivePruning()
     {
         var index = new StreamBootstrapIndex();
-        index.Publish(Tables(generation: 0), basePosition: 0, [1000, 8000]);
+        index.Publish(Tables(generation: 0), basePosition: 0, Points(0, 1000, 8000));
 
         Assert.Equal(8000, index.CreateJoin(5000).Position);
     }
@@ -66,7 +66,7 @@ public class StreamBootstrapIndexTests
     {
         // Without them the reader cannot map the elementary streams, whatever it joins at.
         var index = new StreamBootstrapIndex();
-        index.Publish(Tables(generation: 0), basePosition: 0, [500]);
+        index.Publish(Tables(generation: 0), basePosition: 0, Points(0, 500));
 
         var join = index.CreateJoin(0);
 
@@ -83,7 +83,7 @@ public class StreamBootstrapIndexTests
         // sent into the middle of a picture with nothing to map the streams by.
         var index = new StreamBootstrapIndex();
 
-        index.Publish(ProgramTableSnapshot.Empty, basePosition: 0, [1000]);
+        index.Publish(ProgramTableSnapshot.Empty, basePosition: 0, Points(0, 1000));
 
         Assert.False(index.HasProgramTables);
         Assert.Equal(StreamJoinKind.NotYet, index.CreateJoin(0).Kind);
@@ -95,9 +95,9 @@ public class StreamBootstrapIndexTests
         // The invariant the whole index exists for: whatever a reader is given, the tables and the
         // position it gets belong to the same programme.
         var index = new StreamBootstrapIndex();
-        index.Publish(Tables(generation: 0), basePosition: 0, [1000, 2000]);
+        index.Publish(Tables(generation: 0), basePosition: 0, Points(0, 1000, 2000));
 
-        index.Publish(Tables(generation: 1), basePosition: 3000, [500]);
+        index.Publish(Tables(generation: 1), basePosition: 3000, Points(3000, 500));
 
         Assert.Equal(3500, index.CreateJoin(0).Position);
     }
@@ -110,7 +110,7 @@ public class StreamBootstrapIndexTests
         // before, and putting the new tables in front of them is the pairing the index exists to
         // prevent. Saying so is the only honest answer.
         var index = new StreamBootstrapIndex();
-        index.Publish(Tables(generation: 0), basePosition: 0, [1000]);
+        index.Publish(Tables(generation: 0), basePosition: 0, Points(0, 1000));
 
         index.Publish(Tables(generation: 1), basePosition: 3000, null);
 
@@ -131,6 +131,21 @@ public class StreamBootstrapIndexTests
         index.Publish(Tables(generation: 0), basePosition: 0, null);
 
         Assert.Equal(StreamJoinKind.FromOldest, index.CreateJoin(0).Kind);
+    }
+
+    /// <summary>
+    /// Access points as the conditioner reports them: absolute positions, at the guarantee the
+    /// broadcast itself makes.
+    /// </summary>
+    private static StreamAccessPoint[] Points(long basePosition, params int[] offsets)
+    {
+        var points = new StreamAccessPoint[offsets.Length];
+        for (var index = 0; index < offsets.Length; index++)
+        {
+            points[index] = new StreamAccessPoint(basePosition + offsets[index], RandomAccessGuarantee.DvbRandomAccess);
+        }
+
+        return points;
     }
 
     private static ProgramTableSnapshot Tables(int generation)

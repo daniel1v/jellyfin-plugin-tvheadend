@@ -67,19 +67,30 @@ public class AndroidIdrTests
     {
         var conditioner = Start(H264, withIdr: true);
 
-        Assert.True(conditioner.StartAccessUnitCarriesIdr);
+        Assert.True(conditioner.HasIdrEntryPoint);
     }
 
     [Fact]
-    public void AStartingPictureWithNoIdrIsSettledWhenTheNextPictureBegins()
+    public void OneAccessPointWithoutAnIdrDoesNotSettleTheSearch()
     {
-        // The ARD case, measured: a valid DVB access point -- random access indicator set, a
-        // recovery point rather than an IDR -- which FFmpeg starts on and MediaCodec does not.
-        // Nothing waits on a timer; the next payload unit start is the proof that the first
-        // picture has been seen whole.
+        // A channel may mark random access on an open-GOP picture and on an IDR alternately, as ZDF
+        // does. Concluding from the first that there is no IDR-safe entry would re-encode it about
+        // a third of the time.
         var conditioner = Start(H264, withIdr: false);
 
-        Assert.False(conditioner.StartAccessUnitCarriesIdr);
+        Assert.Null(conditioner.HasIdrEntryPoint);
+    }
+
+    [Fact]
+    public void ThreeAccessPointsWithoutAnIdrSettleIt()
+    {
+        // The Das Erste case, measured: 41 signalled access points and no IDR among them. Three
+        // are examined and then the search concludes -- about this open, not about the channel.
+        var conditioner = Start(H264, withIdr: false);
+        Condition(conditioner, Concat(VideoAccessPoint(withIdr: false), NextPicture()), out _);
+        Condition(conditioner, Concat(VideoAccessPoint(withIdr: false), NextPicture()), out _);
+
+        Assert.False(conditioner.HasIdrEntryPoint);
     }
 
     [Fact]
@@ -91,7 +102,7 @@ public class AndroidIdrTests
         // "the question does not apply", which is what it always was.
         var conditioner = Start(Mpeg2Video, withIdr: false);
 
-        Assert.Null(conditioner.StartAccessUnitCarriesIdr);
+        Assert.Null(conditioner.HasIdrEntryPoint);
     }
 
     [Fact]
@@ -107,7 +118,7 @@ public class AndroidIdrTests
             Concat(Pat(), Pmt(H264), VideoPacket(startsUnit: true, randomAccess: false)),
             out _);
 
-        Assert.Null(conditioner.StartAccessUnitCarriesIdr);
+        Assert.Null(conditioner.HasIdrEntryPoint);
     }
 
     [Fact]
@@ -119,9 +130,11 @@ public class AndroidIdrTests
         var conditioner = new TransportStreamConditioner(TransportStreamConditioner.EventInformationTablePid);
 
         Condition(conditioner, Concat(Pat(), Pmt(H264), VideoAccessPoint(withIdr: false)), out _);
-        Condition(conditioner, VideoAccessPoint(withIdr: false), out _);
+        var second = Condition(conditioner, VideoAccessPoint(withIdr: false), out _);
 
-        Assert.Equal([0], conditioner.RandomAccessOffsets);
+        Assert.Equal(PacketLength, second);
+        Assert.Single(conditioner.AccessPoints);
+        Assert.Equal(RandomAccessGuarantee.DvbRandomAccess, conditioner.AccessPoints[0].Guarantee);
     }
 
     [Fact]
@@ -160,6 +173,17 @@ public class AndroidIdrTests
         Assert.False(forced.SupportsProbing);
         Assert.Equal(plain.Container, forced.Container);
         Assert.Equal(plain.MediaStreams.Count, forced.MediaStreams.Count);
+    }
+
+    /// <summary>
+    /// The start of the next picture, which is what ends the one before it.
+    /// </summary>
+    private static byte[] NextPicture()
+    {
+        var packet = VideoPacket(startsUnit: true, randomAccess: false);
+        byte[] nalUnits = [0x00, 0x00, 0x01, 0x09, 0x10, 0x00, 0x00, 0x01, 0x61, 0x88];
+        nalUnits.CopyTo(packet.AsSpan(4));
+        return packet;
     }
 
     private static TransportStreamConditioner Start(byte videoStreamType, bool withIdr)

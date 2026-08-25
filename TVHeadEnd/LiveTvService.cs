@@ -321,7 +321,10 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // And the other way round: a broadcast whose access point holds no IDR is a stream such a
         // decoder never starts on, however much of it is already buffered. It opens its own,
         // which is the same bytes with a media source that asks Jellyfin to re-encode them.
-        return !needsIdrToStart || stream.SuitsDecodersNeedingIdr;
+        // And the other way round: a broadcast whose entry points hold no IDR is a stream such a
+        // decoder never starts on, however much of it is already buffered. It opens its own, which
+        // is the same bytes with a media source that asks Jellyfin to re-encode them.
+        return !needsIdrToStart || stream.OffersIdrJoins;
     }
 
     /// <summary>

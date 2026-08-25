@@ -51,11 +51,23 @@ public sealed class TransportStreamConditioner
     /// </summary>
     private const byte H264StreamType = 0x1B;
 
+    /// <summary>
+    /// How many signalled access points are examined before this open concludes that it found no
+    /// IDR-safe entry. A statement about the search, not about the broadcaster.
+    /// </summary>
+    private const int MaximumExaminedAccessPoints = 3;
+
+    /// <summary>
+    /// How many payload unit starts a picture may span before it is taken as read. Only a bound:
+    /// the syntax normally ends the access unit first.
+    /// </summary>
+    private const int MaximumPayloadUnitsPerPicture = 1;
+
     private static readonly TimeSpan RandomAccessSearchTimeLimit = TimeSpan.FromSeconds(2);
 
     private readonly int _droppedPid;
     private readonly byte[] _partialPacket = new byte[TransportStreamPacket.Length];
-    private readonly List<int> _randomAccessOffsets = [];
+    private readonly List<StreamAccessPoint> _accessPoints = [];
 
     private readonly H264AccessUnitScanner _accessUnitScanner = new();
     private readonly PsiSectionAssembler _programAssociationSection = new();
@@ -67,8 +79,11 @@ public sealed class TransportStreamConditioner
     private int _partialPacketLength;
     private int _programMapTablePid = -1;
     private bool _started;
-    private bool _readingStartAccessUnit;
-    private int _videoUnitsSinceStart;
+    private long _outputPosition;
+    private long _chunkStart;
+    private long _pendingPointPosition = -1;
+    private int _pendingPointUnits;
+    private int _classifiedAccessPoints;
     private int _generationStartOffset = -1;
     private int _bytesInspected;
     private long _firstInspectedTimestamp;
@@ -129,7 +144,24 @@ public sealed class TransportStreamConditioner
     /// across channels.
     /// </para>
     /// </remarks>
-    public bool? StartAccessUnitCarriesIdr { get; private set; }
+    /// <summary>
+    /// Gets a value indicating whether an IDR-safe entry point was found among the access points
+    /// examined at the start, or <see langword="null"/> while that is still being established.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Bounded, and the bound is the whole meaning: the first few signalled access points are read,
+    /// and if none of them opens on an IDR the answer is no. That is a statement about this open,
+    /// not about the broadcaster -- a channel that mixes IDR and open-GOP access points, as ZDF
+    /// does, may well offer one a moment later, and the points that arrive afterwards are still
+    /// classified and published for readers that join later.
+    /// </para>
+    /// <para>
+    /// Null where the question does not apply: video that is not H.264, or a stream that began
+    /// somewhere other than a signalled access point.
+    /// </para>
+    /// </remarks>
+    public bool? HasIdrEntryPoint { get; private set; }
 
     /// <summary>
     /// Gets a value indicating whether the broadcaster has changed the program layout since the
@@ -173,7 +205,7 @@ public sealed class TransportStreamConditioner
     /// Gets the offsets within the destination of the last <see cref="Condition"/> call at which
     /// a decoder may start.
     /// </summary>
-    public IReadOnlyList<int> RandomAccessOffsets => _randomAccessOffsets;
+    public IReadOnlyList<StreamAccessPoint> AccessPoints => _accessPoints;
 
     /// <summary>
     /// Gets a value indicating whether both program tables have been captured whole.
@@ -241,8 +273,9 @@ public sealed class TransportStreamConditioner
     public int Condition(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         var written = 0;
-        _randomAccessOffsets.Clear();
+        _accessPoints.Clear();
         _generationStartOffset = -1;
+        _chunkStart = _outputPosition;
 
         if (_partialPacketLength > 0)
         {
@@ -267,7 +300,8 @@ public sealed class TransportStreamConditioner
                 var sync = source.IndexOf(TransportStreamPacket.SyncByte);
                 if (sync < 0)
                 {
-                    return written;
+                    source = default;
+                    break;
                 }
 
                 source = source[sync..];
@@ -285,6 +319,11 @@ public sealed class TransportStreamConditioner
 
         source.CopyTo(_partialPacket);
         _partialPacketLength = source.Length;
+
+        // The ring is written with exactly these bytes and nothing else, so counting them here
+        // keeps this the same origin the buffer counts positions from. That is what lets an access
+        // point found in one chunk be raised to a stronger guarantee in a later one.
+        _outputPosition += written;
         return written;
     }
 
@@ -324,12 +363,7 @@ public sealed class TransportStreamConditioner
         if (_started)
         {
             packet.CopyTo(destination);
-            if (isRandomAccessPoint)
-            {
-                _randomAccessOffsets.Add(destinationOffset);
-            }
-
-            ObserveStartAccessUnit(packet, pid);
+            NoteAccessPoint(packet, pid, isRandomAccessPoint, _chunkStart + destinationOffset);
             return TransportStreamPacket.Length;
         }
 
@@ -347,17 +381,6 @@ public sealed class TransportStreamConditioner
         _started = true;
         StartedOnRandomAccessPoint = isRandomAccessPoint;
 
-        // Whether the picture delivery begins with is one a decoder can start cold on. Asked only
-        // of H.264, and only when the broadcast said this was an access point at all.
-        if (isRandomAccessPoint && VideoStreamType == H264StreamType)
-        {
-            _readingStartAccessUnit = true;
-            _videoUnitsSinceStart = 0;
-            _accessUnitScanner.Reset();
-            _accessUnitScanner.Scan(TransportStreamPacket.ReadPayload(packet));
-            Settle();
-        }
-
         // The player needs the tables before it can make sense of the elementary streams, and
         // both were withheld along with everything else.
         var written = WriteProgramTables(destination);
@@ -369,10 +392,7 @@ public sealed class TransportStreamConditioner
         // the adaptation field says it is. Delivering from a guess is recoverable -- the first
         // seconds may not decode -- but storing it would hand every later reader the same bad
         // position for as long as it stays inside the window.
-        if (isRandomAccessPoint)
-        {
-            _randomAccessOffsets.Add(destinationOffset + written);
-        }
+        NoteAccessPoint(packet, pid, isRandomAccessPoint, _chunkStart + destinationOffset + written);
 
         return written + TransportStreamPacket.Length;
     }
@@ -381,43 +401,95 @@ public sealed class TransportStreamConditioner
     /// Follows the access unit delivery began at until it is possible to say whether it carried an
     /// IDR picture.
     /// </summary>
-    private void ObserveStartAccessUnit(ReadOnlySpan<byte> packet, int pid)
+    /// <summary>
+    /// Records a place a decoder may begin, and follows the picture there far enough to say
+    /// whether beginning there is worth more than the broadcast promised.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The point is published immediately at the guarantee the broadcast itself makes, because it
+    /// is true immediately and every ordinary decoder can use it. Reading its access unit takes
+    /// longer -- on the broadcasts measured the unit ends in the PES after the one the point is in
+    /// -- so if it proves to open on an IDR, the same position is published again at the stronger
+    /// guarantee. Nothing is held back and nothing is buffered a second time: the bytes are in the
+    /// ring either way, and only their worth is learned late.
+    /// </para>
+    /// <para>
+    /// One picture is followed at a time. A further access point arriving while one is still being
+    /// read ends that reading, which is correct: a new picture has begun, so the one before it is
+    /// as fully seen as it is going to be.
+    /// </para>
+    /// </remarks>
+    private void NoteAccessPoint(ReadOnlySpan<byte> packet, int pid, bool isRandomAccessPoint, long position)
     {
-        if (!_readingStartAccessUnit || pid != VideoPid)
+        if (isRandomAccessPoint)
+        {
+            _accessPoints.Add(new StreamAccessPoint(position, RandomAccessGuarantee.DvbRandomAccess));
+        }
+
+        if (VideoStreamType != H264StreamType || pid != VideoPid)
         {
             return;
         }
 
-        if (TransportStreamPacket.StartsPayloadUnit(packet))
+        if (isRandomAccessPoint)
         {
-            _videoUnitsSinceStart++;
+            FinishPendingPoint();
+            _pendingPointPosition = position;
+            _pendingPointUnits = 0;
+            _accessUnitScanner.Reset();
+        }
+        else if (_pendingPointPosition < 0)
+        {
+            return;
+        }
+        else if (TransportStreamPacket.StartsPayloadUnit(packet))
+        {
+            _pendingPointUnits++;
         }
 
         _accessUnitScanner.Scan(TransportStreamPacket.ReadPayload(packet));
-        Settle();
+
+        // An IDR settles it at once. Its absence has to be read to the end of the picture, and the
+        // payload unit count bounds that for a stream whose syntax cannot be followed.
+        if (_accessUnitScanner.Completed || _accessUnitScanner.CarriesIdr || _pendingPointUnits >= MaximumPayloadUnitsPerPicture)
+        {
+            FinishPendingPoint();
+        }
     }
 
     /// <summary>
-    /// Settles whether the picture delivery began at carried an IDR, once that can be said.
+    /// Concludes the picture being read, publishing its access point again if it opened on an IDR.
     /// </summary>
-    /// <remarks>
-    /// The scanner ends the access unit where the syntax ends it -- a second access unit delimiter,
-    /// or a slice that starts a new picture -- which on the broadcasts measured falls in the PES
-    /// after the one the entry point is in. The payload unit count is only a bound -- the next PES
-    /// begins a new picture in every broadcast measured -- so a stream
-    /// whose access unit never closes settles conservatively instead of leaving the open waiting.
-    /// </remarks>
-    private void Settle()
+    private void FinishPendingPoint()
     {
-        const int MaximumPayloadUnits = 1;
-
-        if (!_accessUnitScanner.Completed && _videoUnitsSinceStart < MaximumPayloadUnits)
+        if (_pendingPointPosition < 0)
         {
             return;
         }
 
-        StartAccessUnitCarriesIdr = _accessUnitScanner.CarriesIdr;
-        _readingStartAccessUnit = false;
+        if (_accessUnitScanner.CarriesIdr)
+        {
+            _accessPoints.Add(new StreamAccessPoint(_pendingPointPosition, RandomAccessGuarantee.Idr));
+        }
+
+        // Only the first few decide how this stream opens. Everything after them is still read and
+        // still published, for the readers that join later.
+        if (_classifiedAccessPoints < MaximumExaminedAccessPoints)
+        {
+            _classifiedAccessPoints++;
+
+            if (_accessUnitScanner.CarriesIdr)
+            {
+                HasIdrEntryPoint = true;
+            }
+            else if (_classifiedAccessPoints >= MaximumExaminedAccessPoints)
+            {
+                HasIdrEntryPoint = false;
+            }
+        }
+
+        _pendingPointPosition = -1;
     }
 
     private bool ShouldStartAt(ReadOnlySpan<byte> packet, int pid)
@@ -550,7 +622,8 @@ public sealed class TransportStreamConditioner
     /// </remarks>
     private void BeginNewProgramLayout()
     {
-        _randomAccessOffsets.Clear();
+        _accessPoints.Clear();
+        _pendingPointPosition = -1;
         ProgramLayoutGeneration++;
         ProgramLayoutChanged = true;
     }

@@ -36,7 +36,7 @@ public sealed class StreamBootstrapIndex
     private const int MaximumPoints = 512;
 
     private readonly object _gate = new();
-    private readonly Queue<long> _points = new();
+    private readonly Dictionary<long, RandomAccessGuarantee> _points = [];
 
     private byte[][] _programAssociationPackets = [];
     private byte[][] _programMapPackets = [];
@@ -79,11 +79,11 @@ public sealed class StreamBootstrapIndex
     /// </remarks>
     /// <param name="tables">The program tables valid for this chunk.</param>
     /// <param name="basePosition">The logical position the chunk was written at.</param>
-    /// <param name="randomAccessOffsets">Access point offsets within the chunk.</param>
+    /// <param name="accessPoints">The access points the chunk established, at absolute positions.</param>
     public void Publish(
         ProgramTableSnapshot tables,
         long basePosition,
-        IReadOnlyList<int>? randomAccessOffsets)
+        IReadOnlyList<StreamAccessPoint>? accessPoints)
     {
         ArgumentNullException.ThrowIfNull(tables);
 
@@ -116,19 +116,26 @@ public sealed class StreamBootstrapIndex
             _programAssociationPackets = [.. tables.ProgramAssociationPackets];
             _programMapPackets = [.. tables.ProgramMapPackets];
 
-            if (randomAccessOffsets is null)
+            if (accessPoints is null)
             {
                 return;
             }
 
-            foreach (var offset in randomAccessOffsets)
+            foreach (var point in accessPoints)
             {
-                if (_points.Count == MaximumPoints)
+                // A point already held can only gain: the same position is offered again when
+                // reading its picture proves it worth more than the broadcast promised.
+                if (_points.TryGetValue(point.Position, out var known) && known >= point.Guarantee)
                 {
-                    _points.Dequeue();
+                    continue;
                 }
 
-                _points.Enqueue(basePosition + offset);
+                if (known == default && _points.Count >= MaximumPoints && !_points.ContainsKey(point.Position))
+                {
+                    DropOldest();
+                }
+
+                _points[point.Position] = point.Guarantee;
             }
         }
     }
@@ -143,24 +150,27 @@ public sealed class StreamBootstrapIndex
     /// to make impossible, arrived at by using it in the obvious way.
     /// </remarks>
     /// <param name="oldestPosition">The oldest position the buffer still holds.</param>
+    /// <param name="required">The weakest guarantee this reader can begin on.</param>
     /// <returns>Where to start and what to send first.</returns>
-    public StreamJoin CreateJoin(long oldestPosition)
+    public StreamJoin CreateJoin(long oldestPosition, RandomAccessGuarantee required = RandomAccessGuarantee.DvbRandomAccess)
     {
         lock (_gate)
         {
-            while (_points.Count > 0 && _points.Peek() < oldestPosition)
-            {
-                _points.Dequeue();
-            }
+            Prune(oldestPosition);
 
             long? position = null;
             foreach (var candidate in _points)
             {
-                // The newest one: a late reader wants the least delay it can safely have, and
-                // everything recorded has by definition already been written.
-                if (position is null || candidate > position)
+                // The newest one that is worth enough: a late reader wants the least delay it can
+                // safely have, and everything recorded has by definition already been written.
+                if (candidate.Value < required)
                 {
-                    position = candidate;
+                    continue;
+                }
+
+                if (position is null || candidate.Key > position)
+                {
+                    position = candidate.Key;
                 }
             }
 
@@ -175,9 +185,13 @@ public sealed class StreamBootstrapIndex
             // scrolled past. Sending a reader there anyway is how it would be handed the new
             // tables in front of the previous programme, which is the pairing this whole index
             // exists to prevent.
-            return oldestPosition >= _generationStart && _programAssociationPackets.Length > 0
-                ? StreamJoin.FromOldest(CreateBootstrapPrefixLocked())
-                : StreamJoin.NotYet;
+            // Reading on from the oldest bytes is only ever an ordinary random access: nobody
+            // read the picture there, so it cannot answer for anything stronger.
+            return required == RandomAccessGuarantee.DvbRandomAccess
+                && oldestPosition >= _generationStart
+                && _programAssociationPackets.Length > 0
+                    ? StreamJoin.FromOldest(CreateBootstrapPrefixLocked())
+                    : StreamJoin.NotYet;
         }
     }
 
@@ -189,6 +203,45 @@ public sealed class StreamBootstrapIndex
     /// Only reachable through <see cref="CreateJoin"/>, and deliberately so. Offering the tables
     /// on their own is what let a caller take them separately from the position they belong to.
     /// </remarks>
+    private void Prune(long oldestPosition)
+    {
+        List<long>? gone = null;
+        foreach (var point in _points)
+        {
+            if (point.Key < oldestPosition)
+            {
+                (gone ??= []).Add(point.Key);
+            }
+        }
+
+        if (gone is null)
+        {
+            return;
+        }
+
+        foreach (var position in gone)
+        {
+            _points.Remove(position);
+        }
+    }
+
+    private void DropOldest()
+    {
+        var oldest = long.MaxValue;
+        foreach (var point in _points)
+        {
+            if (point.Key < oldest)
+            {
+                oldest = point.Key;
+            }
+        }
+
+        if (oldest != long.MaxValue)
+        {
+            _points.Remove(oldest);
+        }
+    }
+
     private byte[] CreateBootstrapPrefixLocked()
     {
         var count = _programAssociationPackets.Length + _programMapPackets.Length;

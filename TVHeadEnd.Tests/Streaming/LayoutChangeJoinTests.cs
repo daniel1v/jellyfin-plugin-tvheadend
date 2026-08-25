@@ -123,7 +123,7 @@ public sealed class LayoutChangeJoinTests : IDisposable
 
         await buffer.Write(
             destination.AsMemory(0, written),
-            conditioner.RandomAccessOffsets,
+            conditioner.AccessPoints,
             conditioner.TakeProgramTables(),
             CancellationToken.None);
     }

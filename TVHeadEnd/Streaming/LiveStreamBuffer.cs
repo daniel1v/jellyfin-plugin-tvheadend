@@ -57,6 +57,16 @@ namespace TVHeadEnd.Streaming
         public StreamBootstrapIndex? Bootstrap { get; set; }
 
         /// <summary>
+        /// Gets or sets the weakest guarantee a reader of this buffer may begin on.
+        /// </summary>
+        /// <remarks>
+        /// One property, and it says nothing about who is reading. What a given decoder needs is
+        /// settled outside the streaming layer; all that reaches here is which kind of entry point
+        /// its readers are to be given.
+        /// </remarks>
+        public RandomAccessGuarantee RequiredGuarantee { get; set; }
+
+        /// <summary>
         /// Gets how many bytes have been written.
         /// </summary>
         public long WritePosition => _ring.WritePosition;
@@ -72,13 +82,13 @@ namespace TVHeadEnd.Streaming
         /// Appends to the buffer, recording the access points the chunk contains.
         /// </summary>
         /// <param name="data">The bytes to append.</param>
-        /// <param name="randomAccessOffsets">Where inside the chunk a decoder may start.</param>
+        /// <param name="accessPoints">Where inside the chunk a decoder may start.</param>
         /// <param name="tables">The program tables valid for this chunk.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>A task that completes once the bytes are readable.</returns>
         public async ValueTask Write(
             ReadOnlyMemory<byte> data,
-            IReadOnlyList<int>? randomAccessOffsets,
+            IReadOnlyList<StreamAccessPoint>? accessPoints,
             ProgramTableSnapshot tables,
             CancellationToken cancellationToken)
         {
@@ -93,7 +103,7 @@ namespace TVHeadEnd.Streaming
 
             // Published only once the bytes are readable, and as one pair, so a reader is never
             // sent to a position whose tables it has not been given.
-            Bootstrap?.Publish(tables, basePosition, randomAccessOffsets);
+            Bootstrap?.Publish(tables, basePosition, accessPoints);
         }
 
         /// <summary>
@@ -128,15 +138,15 @@ namespace TVHeadEnd.Streaming
             // Taken as one state. Wherever the reader ends up it is given that state's program
             // tables first: duplicating the ones already in the buffer costs a decoder nothing,
             // and arriving without them is what it cannot recover from.
-            var join = Bootstrap.CreateJoin(_ring.OldestPosition);
+            var join = Bootstrap.CreateJoin(_ring.OldestPosition, RequiredGuarantee);
 
             // NotYet opens a reader that waits: every byte held belongs to a programme the tables
             // in force do not describe, and it asks again on every read until an access point of
             // the current layout exists. Failing the open instead would send Jellyfin to a second
             // subscription for a stream that is about to be perfectly joinable.
             var reader = join.Kind == StreamJoinKind.AtPosition
-                ? _ring.OpenReaderAt(join.Position, Bootstrap)
-                : _ring.OpenReaderFromStart(Bootstrap, join.Kind == StreamJoinKind.NotYet);
+                ? _ring.OpenReaderAt(join.Position, Bootstrap, RequiredGuarantee)
+                : _ring.OpenReaderFromStart(Bootstrap, RequiredGuarantee, join.Kind == StreamJoinKind.NotYet);
 
             // The tables go in front only when this join has somewhere for them to describe. A
             // waiting reader receives the ones belonging to the join it eventually takes.

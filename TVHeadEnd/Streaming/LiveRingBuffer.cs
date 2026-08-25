@@ -166,13 +166,17 @@ namespace TVHeadEnd.Streaming
         /// to move it to the oldest bytes still present.
         /// </param>
         /// <returns>A stream over the buffer.</returns>
+        /// <param name="required">The weakest guarantee this reader may begin on.</param>
         /// <param name="waitingForJoin">
         /// Whether this reader has nowhere safe to begin yet and must wait for one, rather than
         /// reading on from the oldest bytes.
         /// </param>
-        internal Stream OpenReaderFromStart(StreamBootstrapIndex? bootstrap, bool waitingForJoin = false)
+        internal Stream OpenReaderFromStart(
+            StreamBootstrapIndex? bootstrap,
+            RandomAccessGuarantee required = RandomAccessGuarantee.DvbRandomAccess,
+            bool waitingForJoin = false)
         {
-            return new RingReader(_path, this, AlignToPacket(OldestPosition), bootstrap, waitingForJoin);
+            return new RingReader(_path, this, AlignToPacket(OldestPosition), bootstrap, required, waitingForJoin);
         }
 
         /// <summary>
@@ -183,13 +187,17 @@ namespace TVHeadEnd.Streaming
         /// <param name="bootstrap">
         /// The index the reader re-joins through if the writer laps it.
         /// </param>
+        /// <param name="required">The weakest guarantee this reader may begin on.</param>
         /// <returns>A stream over the buffer.</returns>
-        internal Stream OpenReaderAt(long position, StreamBootstrapIndex bootstrap)
+        internal Stream OpenReaderAt(
+            long position,
+            StreamBootstrapIndex bootstrap,
+            RandomAccessGuarantee required = RandomAccessGuarantee.DvbRandomAccess)
         {
             ArgumentNullException.ThrowIfNull(bootstrap);
 
             var clamped = Math.Clamp(position, OldestPosition, WritePosition);
-            return new RingReader(_path, this, AlignToPacket(clamped), bootstrap);
+            return new RingReader(_path, this, AlignToPacket(clamped), bootstrap, required);
         }
 
         private static long AlignToPacket(long position) => position - (position % TransportStreamPacketSize);
@@ -202,6 +210,7 @@ namespace TVHeadEnd.Streaming
             private readonly LiveRingBuffer _buffer;
             private readonly FileStream _file;
             private readonly StreamBootstrapIndex? _bootstrap;
+            private readonly RandomAccessGuarantee _required;
 
             private long _position;
             private bool _waitingForJoin;
@@ -213,11 +222,13 @@ namespace TVHeadEnd.Streaming
                 LiveRingBuffer buffer,
                 long start,
                 StreamBootstrapIndex? bootstrap,
+                RandomAccessGuarantee required = RandomAccessGuarantee.DvbRandomAccess,
                 bool waitingForJoin = false)
             {
                 _buffer = buffer;
                 _position = start;
                 _bootstrap = bootstrap;
+                _required = required;
                 _waitingForJoin = waitingForJoin;
                 // Unbuffered: a read-ahead buffer would keep serving bytes the writer has
                 // already overwritten once it laps this reader.
@@ -343,7 +354,7 @@ namespace TVHeadEnd.Streaming
                 }
 
                 var oldest = _buffer.OldestPosition;
-                var join = _bootstrap.CreateJoin(oldest);
+                var join = _bootstrap.CreateJoin(oldest, _required);
                 if (join.Kind == StreamJoinKind.NotYet)
                 {
                     return false;
@@ -411,7 +422,7 @@ namespace TVHeadEnd.Streaming
                     return;
                 }
 
-                var join = _bootstrap.CreateJoin(oldest);
+                var join = _bootstrap.CreateJoin(oldest, _required);
 
                 if (join.Kind == StreamJoinKind.NotYet)
                 {

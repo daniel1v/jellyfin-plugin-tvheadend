@@ -176,17 +176,32 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     public bool StartedOnConfirmedRandomAccessPoint => _conditioner?.StartedOnRandomAccessPoint ?? false;
 
     /// <summary>
-    /// Gets a value indicating whether a decoder that will not start without an IDR picture can
-    /// be handed this broadcast as it is.
+    /// Gets a value indicating whether a decoder that will not start without an IDR picture can be
+    /// handed this stream.
     /// </summary>
     /// <remarks>
     /// Two ways to be true and they say the same thing: the video is not H.264, so the question
-    /// does not arise, or the picture delivery starts on was found to carry an IDR. Undetermined
-    /// counts as no.
+    /// does not arise, or this stream is publishing entry points that were read and found to open
+    /// on an IDR. Undetermined counts as no.
     /// </remarks>
-    public bool SuitsDecodersNeedingIdr
+    public bool OffersIdrJoins
         => _conditioner is { } conditioner
-        && (conditioner.VideoStreamType != H264StreamType || conditioner.StartAccessUnitCarriesIdr == true);
+        && (conditioner.VideoStreamType != H264StreamType
+            || JoinGuarantee == RandomAccessGuarantee.Idr);
+
+    /// <summary>
+    /// Gets the guarantee this running stream offers the readers it hands out.
+    /// </summary>
+    /// <remarks>
+    /// The contract, not the history. It is <see cref="RandomAccessGuarantee.Idr"/> only while this
+    /// stream is genuinely publishing IDR-safe entry points, which is what a later reader or one
+    /// the writer has lapped will be given -- the fact that the first access point happened to open
+    /// on an IDR says nothing about where the next reader lands.
+    /// </remarks>
+    public RandomAccessGuarantee JoinGuarantee
+        => _conditioner?.HasIdrEntryPoint == true
+            ? RandomAccessGuarantee.Idr
+            : RandomAccessGuarantee.DvbRandomAccess;
 
     /// <summary>
     /// Gets a value indicating whether Jellyfin has to re-encode this stream's video for the
@@ -302,6 +317,12 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
     public Stream GetStream()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // Read fresh each time. A stream that can offer IDR-safe entry points offers them to every
+        // reader, whoever opened it: a decoder that does not need them loses nothing by being given
+        // one, and a reader that joins later -- or after the writer laps it -- must not be able to
+        // land on a weaker point than the stream is capable of.
+        Buffer.RequiredGuarantee = JoinGuarantee;
         return Buffer.OpenReader();
     }
 
@@ -377,7 +398,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         => !_clientNeedsIdr
         || conditioner.VideoStreamType != H264StreamType
         || !conditioner.StartedOnRandomAccessPoint
-        || conditioner.StartAccessUnitCarriesIdr is not null;
+        || conditioner.HasIdrEntryPoint is not null;
 
     private void LogPlayback(TransportStreamConditioner conditioner)
     {
@@ -385,19 +406,20 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
         {
             _logger.LogDebug(
                 "Live TV: channel {ChannelId} ({ChannelName}) plays as delivered; "
-                + "videoStreamType=0x{VideoStreamType:X2} startAccessUnitCarriesIdr={CarriesIdr} clientNeedsIdr={ClientNeedsIdr}",
+                + "videoStreamType=0x{VideoStreamType:X2} idrEntryPoint={HasIdr} joinGuarantee={Guarantee} clientNeedsIdr={ClientNeedsIdr}",
                 ChannelId,
                 ChannelName ?? "<unknown>",
                 conditioner.VideoStreamType,
-                conditioner.StartAccessUnitCarriesIdr?.ToString() ?? "n/a",
+                conditioner.HasIdrEntryPoint?.ToString() ?? "n/a",
+                JoinGuarantee,
                 _clientNeedsIdr);
             return;
         }
 
         _logger.LogInformation(
             "Live TV: channel {ChannelId} ({ChannelName}) signals random access without an IDR picture and this "
-            + "client's decoder needs one; the broadcast is buffered untouched and Jellyfin is asked to re-encode "
-            + "the video rather than copy it",
+            + "client's decoder needs one in the first few it offered; the broadcast is buffered untouched "
+            + "and Jellyfin is asked to re-encode the video rather than copy it",
             ChannelId,
             ChannelName ?? "<unknown>");
     }
@@ -476,7 +498,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                     // found in the same chunk, so a reader never sees one without the other.
                     await Buffer.Write(
                         conditionedBuffer.AsMemory(0, conditioned),
-                        conditioner.RandomAccessOffsets,
+                        conditioner.AccessPoints,
                         conditioner.TakeProgramTables(),
                         cancellationToken).ConfigureAwait(false);
 
@@ -490,7 +512,7 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                     {
                         RequiresVideoReencode = _clientNeedsIdr
                             && conditioner.VideoStreamType == H264StreamType
-                            && conditioner.StartAccessUnitCarriesIdr == false;
+                            && conditioner.HasIdrEntryPoint == false;
 
                         LogPlayback(conditioner);
                         _ready.TrySetResult();

@@ -129,7 +129,7 @@ public sealed class RingBufferRejoinTests : IDisposable
         // The tables travel with the chunk, as they do from the conditioner. An access point
         // offered without them is one no reader could be told how to decode, and is not kept.
         var packet = VideoPacket(randomAccess: true);
-        await buffer.Write(packet, [0], Tables(), CancellationToken.None);
+        await buffer.Write(packet, [new StreamAccessPoint(buffer.WritePosition, RandomAccessGuarantee.DvbRandomAccess)], Tables(), CancellationToken.None);
         _ = bootstrap;
         return packet.Length;
     }

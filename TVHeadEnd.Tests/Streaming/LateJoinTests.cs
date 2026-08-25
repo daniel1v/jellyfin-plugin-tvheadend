@@ -155,7 +155,7 @@ public sealed class LateJoinTests : IDisposable
 
         await buffer.Write(
             output.AsMemory(0, length),
-            conditioner.RandomAccessOffsets,
+            conditioner.AccessPoints,
             conditioner.TakeProgramTables(),
             CancellationToken.None);
     }
