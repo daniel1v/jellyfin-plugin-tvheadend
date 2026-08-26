@@ -177,6 +177,32 @@ public class ArtworkTests
         Assert.StartsWith(endpoint.BaseUrl, endpoint.CreateApiUrl(path!), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ForgettingStoredArtworkNeedsAnAdministrator()
+    {
+        // It deletes images from the library. Every other route this plugin serves is anonymous
+        // because Jellyfin fetches it without a session; this one is asked for by a person.
+        var policy = typeof(TvHeadendArtworkResetController)
+            .GetCustomAttributes(typeof(Microsoft.AspNetCore.Authorization.AuthorizeAttribute), false)
+            .Cast<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>()
+            .Single()
+            .Policy;
+
+        Assert.Equal(MediaBrowser.Common.Api.Policies.RequiresElevation, policy);
+    }
+
+    [Fact]
+    public void ForgettingStoredArtworkIsNotSomethingAGetCanDo()
+    {
+        // A reset that a link could trigger is a reset that a crawler can trigger.
+        var method = typeof(TvHeadendArtworkResetController)
+            .GetMethod(nameof(TvHeadendArtworkResetController.ResetRecordingArtwork));
+
+        Assert.NotNull(method);
+        Assert.Single(method!.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpPostAttribute), false));
+        Assert.Empty(method.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpGetAttribute), false));
+    }
+
     private static T Attribute<T>()
         where T : Attribute
     {

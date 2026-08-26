@@ -70,10 +70,15 @@ public sealed class TvheadendGuide
         var events = reply.GetMapList("events");
 
         var endpoint = _connection.HttpEndpoint;
+
+        // Read once for the whole window rather than per entry: every programme on this channel
+        // carries the same logo, and the catalog lookup is not free.
+        var icon = _connection.Channels.Get(channelId)?.Icon;
+
         var programs = new List<ProgramInfo>(events.Count);
         foreach (var entry in events)
         {
-            var program = Describe(entry, endpoint);
+            var program = Describe(entry, endpoint, icon);
             if (program is null)
             {
                 continue;
@@ -97,7 +102,7 @@ public sealed class TvheadendGuide
         return programs;
     }
 
-    private ProgramInfo? Describe(HtspMessage entry, TvheadendHttpEndpoint endpoint)
+    private ProgramInfo? Describe(HtspMessage entry, TvheadendHttpEndpoint endpoint, string? icon)
     {
         var start = entry.GetInt64("start");
         var stop = entry.GetInt64("stop");
@@ -143,6 +148,12 @@ public sealed class TvheadendGuide
             program.ImageUrl = _artwork.AddressFor(image, endpoint);
             program.HasImage = !string.IsNullOrEmpty(program.ImageUrl);
         }
+
+        // The channel's own logo, in the slot meant for a logo. A programme carries five image
+        // fields where a recording carries one, so this needs no letterboxing and displaces
+        // nothing: a broadcast EPG supplies no artwork of its own, and an entry that has some
+        // keeps it as its primary picture regardless.
+        program.LogoImageUrl = _artwork.AddressFor(icon, endpoint);
 
         if (entry.GetInt32("contentType") is { } contentType)
         {

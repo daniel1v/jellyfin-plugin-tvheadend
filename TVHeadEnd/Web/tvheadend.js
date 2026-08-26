@@ -23,7 +23,24 @@ export default function (view, params) {
         });
     });
 
+    view.querySelector('#btnResetArtwork').addEventListener('click', function () {
+        Dashboard.showLoadingMsg();
+        ApiClient.ajax({
+            type: 'POST',
+            url: ApiClient.getUrl('TVHeadend/Artwork/Reset'),
+            dataType: 'json'
+        }).then(function (result) {
+            Dashboard.hideLoadingMsg();
+            Dashboard.alert('Forgot the artwork of ' + result.Cleared + ' of ' + result.Total +
+                ' recordings. It is fetched again the next time the recordings are listed.');
+        }, function () {
+            Dashboard.hideLoadingMsg();
+            Dashboard.alert('The recording artwork could not be reset. See the server log.');
+        });
+    });
+
     view.querySelector('.TVHclientConfigurationForm').addEventListener('submit', function (e) {
+
         e.preventDefault();
         Dashboard.showLoadingMsg();
         const form = this;

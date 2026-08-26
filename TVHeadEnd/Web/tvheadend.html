@@ -58,6 +58,20 @@
                         <span>Save</span>
                     </button>
                 </div>
+                <div style="margin-top:2em">
+                    <h3>Recording artwork</h3>
+                    <button is="emby-button" type="button" id="btnResetArtwork" class="raised block">
+                        <span>Forget stored recording artwork</span>
+                    </button>
+                    <div class="fieldDescription">
+                        Jellyfin gives a recording a picture only when it has none, so the first one
+                        it is given is the one it keeps. Use this after an upgrade that changed how
+                        artwork is published, or if a recording is showing a picture it should not:
+                        the pictures are forgotten and fetched again on the next listing. Live
+                        channels and guide entries do not need it; they correct themselves.
+                    </div>
+                </div>
+
             </form>
         </div>
     </div>
