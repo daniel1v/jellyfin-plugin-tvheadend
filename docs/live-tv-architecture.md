@@ -84,6 +84,18 @@ stream that means FFmpeg reads two hundred seconds of broadcast before writing i
 segment, so the client waits, Jellyfin gives up waiting for the playlist, kills FFmpeg and starts
 again. Every channel, for ever. It is not a tuning knob; live TV does not play without it.
 
+It is a ceiling and not a wait, which is worth knowing before anyone tries to shorten it. FFmpeg
+returns as soon as it has described the streams, so the two seconds are spent only when it cannot.
+Measured on 2026-08-26: the first HLS segment was written after 1,772 ms at 100 ms, 1,807 ms at
+250 ms, 1,998 ms at 500 ms and 1,481 ms at 1,000 ms -- noise, with no trend in it.
+
+Lowering it does have an effect, just not that one. Below roughly a quarter of a second FFmpeg has
+not seen an AC-3 frame and cannot state its sample rate, and a stream it is asked to *copy* rather
+than re-encode has no parameters to write a header from: `sample rate not set`, then `Could not
+write header (incorrect codec parameters ?)`, and the client is handed a 500 instead of a
+playlist. The threshold moves by channel -- ZDF failed at 50 ms and worked at 100, Das Erste
+failed at 100 and worked at 250 -- so it is not a number to sail close to.
+
 ## Random access
 
 Two different things, kept apart:
@@ -245,11 +257,35 @@ exactly as TVHeadend delivered it either way.
 
 The middleware is registered as an ordinary `IStartupFilter` and keys on nothing but the
 `LiveStreamId` already in the URL: no client detection, no channel names, no session state, no
-cache. Every other request, including every other plugin's, passes through untouched.
+cache. Every other request, including every other plugin's, passes through untouched. It answers
+one other question as well -- see [How long a viewer waits](#how-long-a-viewer-waits) -- which is
+why it is named for the requests it adjusts rather than for either rule.
 
 Two viewers of such a channel who need different things get two subscriptions, because one media
 source cannot both offer and withhold direct play. A channel whose H.264 does carry IDR pictures,
 and everything that is not H.264, is shared by everyone as before.
+
+## How long a viewer waits
+
+Where direct play is not possible Jellyfin remuxes to HLS, and it holds the playlist back until a
+minimum number of segments have been written. For a segmented live stream being copied its
+defaults are three segments of three seconds: nine seconds of broadcast before anything appears.
+That is not a guess -- a cold start measured 9.2 s, and a request stating those values explicitly
+still measures 9.4 s today.
+
+Both are ordinary query parameters of Jellyfin's own HLS controller, `MinSegments` and
+`SegmentLength`. So on a video playlist request naming a live stream this plugin opened, the same
+middleware sets them to one. Measured after the change: 1.9 s on ZDF, 2.5 s on Das Erste, 2.3 s on
+RTL, against 9.4 s before.
+
+Only where the client said nothing. A client that states either value is stating it for a reason
+-- Jellyfin gives Apple devices six-second segments by its own rules -- and trading one client's
+playback for another's startup is not this plugin's decision. An explicit value is left exactly as
+it arrived, and a client that states one of the two is not assumed to have meant the other.
+
+Only the playlists, too. Segment requests are not adjusted: by the time one is fetched the playlist
+naming it has already been released. Radio takes Jellyfin's audio route and is left alone, because
+the nine seconds being cut here is the wait for video segments.
 
 ## Recordings
 
@@ -292,6 +328,6 @@ build HLS inside the plugin. The file route is closed in any case: the server se
 from its static video endpoint only when the request carries a `LiveStreamId`, and this client
 omits it, so that route delivers the buffer file, which ends.
 
-The remaining cost is startup latency rather than quality. Jellyfin's HLS path waits for several
-segments before releasing the playlist, which is several seconds on a live channel; the fallback
-itself copies both video and audio, so what the viewer sees is the broadcast unaltered.
+The remaining cost is startup latency rather than quality: the fallback copies both video and
+audio, so what the viewer sees is the broadcast unaltered. Most of that latency has since been
+taken out of the HLS path -- see [How long a viewer waits](#how-long-a-viewer-waits).
