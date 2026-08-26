@@ -97,12 +97,13 @@ public class LiveMediaSourceTests
     }
 
     [Fact]
-    public void TheSourceIsPublishedAtTheAddressThatKeepsRunning()
+    public void TheClientIsGivenTheFileAndJellyfinTheAddress()
     {
-        // Measured: a client sent to the buffer file is served a file, which ends -- 5,434 bytes in
-        // 47 ms and a clean 200, which the player reads as a finished medium. The live stream
-        // address does not end, because it is served by this plugin waiting for what has not
-        // been written yet.
+        // Two readers, two addresses, which is the separation Jellyfin already draws. The client
+        // gets the buffer as a file, because that is what puts Jellyfin's static video endpoint on
+        // its direct stream provider path -- this plugin's own reader, which waits for what has
+        // not been written yet. Jellyfin's own reader takes the encoder address, because
+        // AttachMediaSourceInfo prefers EncoderPath and EncoderProtocol whenever both are set.
         var source = LiveMediaSource.CreateOpened(
             ItemId,
             "Das Erste HD",
@@ -111,9 +112,11 @@ public class LiveMediaSourceTests
             Description(),
             requiresVideoReencode: false);
 
-        Assert.Equal(MediaProtocol.Http, source.Protocol);
-        Assert.Equal("http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts", source.Path);
+        Assert.Equal(MediaProtocol.File, source.Protocol);
+        Assert.Equal("/buffers/tvheadend-abc.ts", source.Path);
+
         Assert.Equal(MediaProtocol.Http, source.EncoderProtocol);
+        Assert.Equal("http://localhost:8096/LiveTv/LiveStreamFiles/abc/stream.ts", source.EncoderPath);
     }
 
     [Fact]

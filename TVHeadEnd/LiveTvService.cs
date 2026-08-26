@@ -44,6 +44,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     private readonly TvheadendGuide _guide;
     private readonly ChannelItemIds _itemIds;
     private readonly PlaybackClient _client;
+    private readonly OpenLiveStreams _openStreams;
 
     private readonly ILogger<LiveTvService> _logger;
 
@@ -57,6 +58,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <param name="configurationManager">The Jellyfin configuration manager.</param>
     /// <param name="applicationHost">The Jellyfin application host.</param>
     /// <param name="httpContextAccessor">The request in flight, for the client name.</param>
+    /// <param name="openStreams">Where an opened stream is recorded, so a request naming only
+    /// its media source can be answered with the live stream it stands for.</param>
     public LiveTvService(
         ILoggerFactory loggerFactory,
         TvheadendConnection connection,
@@ -64,7 +67,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         IHttpClientFactory httpClientFactory,
         IConfigurationManager configurationManager,
         IServerApplicationHost applicationHost,
-        IHttpContextAccessor httpContextAccessor)
+        IHttpContextAccessor httpContextAccessor,
+        OpenLiveStreams openStreams)
     {
         ArgumentNullException.ThrowIfNull(loggerFactory);
         ArgumentNullException.ThrowIfNull(connection);
@@ -73,6 +77,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         _connection = connection;
         _itemIds = new ChannelItemIds(libraryManager);
         _client = new PlaybackClient(httpContextAccessor);
+        _openStreams = openStreams;
 
         var bufferDirectory = LiveBufferDirectory.Resolve(configurationManager);
         LiveBufferDirectory.RemoveOrphaned(bufferDirectory, _logger);
@@ -165,6 +170,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
 
         if (reusable is not null)
         {
+            _openStreams.Register(GetMediaSourceId(channelId), reusable);
+
             if (reusable.Consumers.Acquire(consumer))
             {
                 _logger.LogInformation(
@@ -192,6 +199,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // Only once it is open. A stream that failed to open is never registered, so a failed
         // attempt cannot leave a viewer behind holding one.
         opened.Consumers.Acquire(consumer);
+        _openStreams.Register(GetMediaSourceId(channelId), opened);
         return opened;
     }
 

@@ -34,6 +34,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // It exists for a single measured case: a live stream opened for a decoder that will not
         // start without an IDR picture has to be re-encoded rather than copied, and the request
         // parameter that says so is the only place that can be stated.
+        // The one place a request naming only a media source can learn which live stream that
+        // is. Shared by the service that opens streams and the middleware that answers for them,
+        // and holding none of them alive.
+        serviceCollection.AddSingleton<OpenLiveStreams>();
+
         serviceCollection.AddSingleton<IStartupFilter, LivePlaybackStartupFilter>();
     }
 }

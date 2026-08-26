@@ -54,6 +54,8 @@ public sealed class LivePlaybackRequestMiddleware
     private const string AllowVideoStreamCopyParameter = "allowVideoStreamCopy";
     private const string MinSegmentsParameter = "MinSegments";
     private const string SegmentLengthParameter = "SegmentLength";
+    private const string MediaSourceIdParameter = "MediaSourceId";
+    private const string StaticParameter = "static";
 
     /// <summary>
     /// The playlists Jellyfin holds back until enough segments exist. Segment requests are not
@@ -61,6 +63,7 @@ public sealed class LivePlaybackRequestMiddleware
     /// </summary>
     private static readonly string[] _hlsPlaylists = ["/master.m3u8", "/main.m3u8", "/live.m3u8"];
 
+    private readonly OpenLiveStreams _openStreams;
     private readonly RequestDelegate _next;
     private readonly ILogger<LivePlaybackRequestMiddleware> _logger;
 
@@ -69,13 +72,20 @@ public sealed class LivePlaybackRequestMiddleware
     /// </summary>
     /// <param name="next">The rest of the pipeline.</param>
     /// <param name="logger">The logger.</param>
-    public LivePlaybackRequestMiddleware(RequestDelegate next, ILogger<LivePlaybackRequestMiddleware> logger)
+    /// <param name="openStreams">Which live stream a media source identifier stands for.</param>
+    public LivePlaybackRequestMiddleware(
+        RequestDelegate next,
+        ILogger<LivePlaybackRequestMiddleware> logger,
+        OpenLiveStreams openStreams)
     {
         ArgumentNullException.ThrowIfNull(next);
         ArgumentNullException.ThrowIfNull(logger);
 
+        ArgumentNullException.ThrowIfNull(openStreams);
+
         _next = next;
         _logger = logger;
+        _openStreams = openStreams;
     }
 
     /// <summary>
@@ -89,12 +99,81 @@ public sealed class LivePlaybackRequestMiddleware
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(mediaSourceManager);
 
+        SupplyLiveStreamId(context.Request, mediaSourceManager);
+
         if (ResolveOwnStream(context.Request, mediaSourceManager) is { } stream)
         {
             Adjust(context.Request, stream);
         }
 
         return _next(context);
+    }
+
+    /// <summary>
+    /// Whether this is a request for the transport stream itself rather than a playlist.
+    /// </summary>
+    private static bool IsStaticVideoRequest(HttpRequest request)
+    {
+        var path = request.Path.Value;
+
+        return !string.IsNullOrEmpty(path)
+            && path.Contains("/videos/", StringComparison.OrdinalIgnoreCase)
+            && path.EndsWith("/stream", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(request.Query[StaticParameter].ToString(), "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Gives a static request the identifier of the live stream it is asking for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Jellyfin serves a live stream from this endpoint only when the request names one, because
+    /// that is what lets it reach the stream through its direct stream provider. Without it there
+    /// is no provider to ask, so it serves the buffer as an ordinary file, which ends at whatever
+    /// had been written. Some clients direct play a file source without carrying the identifier
+    /// across, and this supplies it.
+    /// </para>
+    /// <para>
+    /// Only where it is certain. The media source named by the request must be one this plugin
+    /// currently has a stream open for, that stream must have been given an identifier, and
+    /// Jellyfin must still resolve that identifier to the very same stream. Anything short of
+    /// that and the request goes on exactly as it arrived -- an identifier guessed wrong would
+    /// hand a viewer somebody else's channel.
+    /// </para>
+    /// </remarks>
+    private void SupplyLiveStreamId(HttpRequest request, IMediaSourceManager mediaSourceManager)
+    {
+        if (!IsStaticVideoRequest(request)
+            || !string.IsNullOrEmpty(request.Query[LiveStreamIdParameter].ToString()))
+        {
+            return;
+        }
+
+        var stream = _openStreams.Find(request.Query[MediaSourceIdParameter].ToString());
+        var liveStreamId = stream?.MediaSource?.LiveStreamId;
+        if (stream is null || string.IsNullOrEmpty(liveStreamId))
+        {
+            return;
+        }
+
+        // The identifier has to still mean this stream. It is Jellyfin that hands them out and
+        // Jellyfin that closes streams, so its register is the only thing that can say so.
+        if (!ReferenceEquals(mediaSourceManager.GetLiveStreamInfo(liveStreamId), stream))
+        {
+            return;
+        }
+
+        var parameters = request.Query
+            .SelectMany(pair => pair.Value.Select(value => new KeyValuePair<string, string?>(pair.Key, value)))
+            .ToList();
+
+        parameters.Add(new KeyValuePair<string, string?>(LiveStreamIdParameter, liveStreamId));
+        request.QueryString = QueryString.Create(parameters);
+
+        _logger.LogDebug(
+            "Live TV: {Path} named a live source without its stream; supplied {LiveStreamId}",
+            request.Path.Value,
+            liveStreamId);
     }
 
     /// <summary>

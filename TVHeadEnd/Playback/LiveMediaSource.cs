@@ -175,20 +175,25 @@ public static class LiveMediaSource
             // indices FFmpeg will give them. Nothing here is ever probed.
             SupportsProbing = false,
 
-            // Measured: published as a local file, Jellyfin answers a client's direct play request
-            // by serving that file, and a file ends. One fetch delivered 5,434 bytes in 47 ms --
-            // exactly what stood in the ring at that instant -- and closed with 200, which the
-            // player reads as a finished medium and answers by asking again with direct play
-            // switched off. The same broadcast fetched over the live stream address ran 19 MB in
-            // 12 s without pausing, because that route goes through this plugin's direct stream
-            // provider, which waits for what has not been written yet instead of stopping at the
-            // end of the file.
+            // Two addresses for two readers, which is the separation Jellyfin already draws.
             //
-            // So the address published is the one that keeps running. The buffer file stays where
-            // it is and the server still reads it directly through the provider; what changes is
-            // only which door a client is sent to.
-            Path = streamUrl,
-            Protocol = MediaProtocol.Http,
+            // The client is given the buffer as a file, because that is what puts Jellyfin's
+            // static video endpoint on its direct stream provider path: it reads the live stream
+            // through this plugin's own reader, which waits for what has not been written yet.
+            // Published as an HTTP address instead, the client is sent to fetch the transport
+            // stream itself, and the clients that matter do not manage it.
+            //
+            // A file was published once before and failed, because the request arrived without a
+            // live stream identifier: with none, Jellyfin has no provider to ask and serves the
+            // ring file itself, which ends at whatever had been written -- measured at 5,434 bytes
+            // in 47 ms. That is fixed where it is caused, in LivePlaybackRequestMiddleware, which
+            // supplies the identifier of the running stream. The ring file is untouched.
+            //
+            // Jellyfin's own reader takes the encoder address, because AttachMediaSourceInfo
+            // prefers EncoderPath and EncoderProtocol whenever both are set. So FFmpeg goes over
+            // HTTP as it always did, and only the door the client is sent to has changed.
+            Path = mediaPath,
+            Protocol = MediaProtocol.File,
             EncoderPath = streamUrl,
             EncoderProtocol = MediaProtocol.Http,
             RequiredHttpHeaders = new Dictionary<string, string>(),

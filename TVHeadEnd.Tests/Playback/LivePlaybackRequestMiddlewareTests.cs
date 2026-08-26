@@ -182,7 +182,101 @@ public class LivePlaybackRequestMiddlewareTests
         Assert.Single(context.Request.Query["allowVideoStreamCopy"]);
     }
 
-    private static async Task Invoke(HttpContext context)
+    [Fact]
+    public async Task AStaticRequestForOneOfOurLiveSourcesIsGivenItsStream()
+    {
+        // The whole point of publishing the buffer as a file. Jellyfin serves a live stream from
+        // this endpoint only when the request names one -- without it there is no provider to ask
+        // and it serves the ring file, which ends at whatever had been written.
+        var stream = LiveStream(requiresVideoReencode: false);
+        stream.MediaSource.LiveStreamId = ForcedId;
+
+        var open = new OpenLiveStreams();
+        open.Register("source-1", stream);
+
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&ApiKey=secret");
+
+        await Invoke(context, open, new FakeMediaSourceManager(
+            new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = stream }));
+
+        Assert.Equal(ForcedId, context.Request.Query["LiveStreamId"]);
+        Assert.Equal("secret", context.Request.Query["ApiKey"]);
+        Assert.Equal("source-1", context.Request.Query["MediaSourceId"]);
+    }
+
+    [Fact]
+    public async Task AStaticRequestThatAlreadyNamesItsStreamIsLeftAlone()
+    {
+        var stream = LiveStream(requiresVideoReencode: false);
+        stream.MediaSource.LiveStreamId = ForcedId;
+
+        var open = new OpenLiveStreams();
+        open.Register("source-1", stream);
+
+        var context = Request($"/Videos/1/stream?static=true&MediaSourceId=source-1&LiveStreamId={PlainId}");
+
+        await Invoke(context, open, new FakeMediaSourceManager(
+            new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = stream }));
+
+        Assert.Equal(PlainId, context.Request.Query["LiveStreamId"]);
+        Assert.Single(context.Request.Query["LiveStreamId"]);
+    }
+
+    [Fact]
+    public async Task AStaticRequestForASourceNothingIsOpenForIsLeftAlone()
+    {
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1");
+
+        await Invoke(context, new OpenLiveStreams(), Streams());
+
+        Assert.Equal("?static=true&MediaSourceId=source-1", context.Request.QueryString.Value);
+    }
+
+    [Fact]
+    public async Task AnIdentifierJellyfinNoLongerAgreesWithIsNotSupplied()
+    {
+        // Jellyfin hands identifiers out and Jellyfin closes streams, so its own register is the
+        // only thing that can say an identifier still means this stream. Guessing wrong here
+        // would hand a viewer somebody else's channel.
+        var ours = LiveStream(requiresVideoReencode: false);
+        ours.MediaSource.LiveStreamId = ForcedId;
+
+        var somebodyElses = LiveStream(requiresVideoReencode: false);
+
+        var open = new OpenLiveStreams();
+        open.Register("source-1", ours);
+
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1");
+
+        await Invoke(context, open, new FakeMediaSourceManager(
+            new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = somebodyElses }));
+
+        Assert.Equal("?static=true&MediaSourceId=source-1", context.Request.QueryString.Value);
+    }
+
+    [Fact]
+    public async Task APlaylistRequestIsNotGivenAStreamIdentifier()
+    {
+        // Only the static route is short of one. A playlist request that lacks it lacks it for
+        // some other reason, and this is not the place to decide what.
+        var stream = LiveStream(requiresVideoReencode: false);
+        stream.MediaSource.LiveStreamId = ForcedId;
+
+        var open = new OpenLiveStreams();
+        open.Register("source-1", stream);
+
+        var context = Request("/videos/1/live.m3u8?MediaSourceId=source-1");
+
+        await Invoke(context, open, new FakeMediaSourceManager(
+            new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = stream }));
+
+        Assert.Equal("?MediaSourceId=source-1", context.Request.QueryString.Value);
+    }
+
+    private static Task Invoke(HttpContext context)
+        => Invoke(context, new OpenLiveStreams(), Streams());
+
+    private static async Task Invoke(HttpContext context, OpenLiveStreams open, IMediaSourceManager manager)
     {
         var called = false;
         var middleware = new LivePlaybackRequestMiddleware(
@@ -191,9 +285,10 @@ public class LivePlaybackRequestMiddlewareTests
                 called = true;
                 return Task.CompletedTask;
             },
-            NullLogger<LivePlaybackRequestMiddleware>.Instance);
+            NullLogger<LivePlaybackRequestMiddleware>.Instance,
+            open);
 
-        await middleware.Invoke(context, Streams());
+        await middleware.Invoke(context, manager);
 
         Assert.True(called, "The request must always continue down the pipeline.");
     }
