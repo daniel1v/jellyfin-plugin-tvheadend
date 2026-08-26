@@ -148,14 +148,22 @@ public sealed class TvheadendGuide
         if (entry.GetString("image") is { Length: > 0 } image)
         {
             program.ImageUrl = _artwork.AddressFor(image, endpoint);
-            program.HasImage = !string.IsNullOrEmpty(program.ImageUrl);
         }
 
-        // The channel's own logo, in the slot meant for a logo. A programme carries five image
-        // fields where a recording carries one, so this needs no letterboxing and displaces
-        // nothing: a broadcast EPG supplies no artwork of its own, and an entry that has some
-        // keeps it as its primary picture regardless.
-        program.LogoImageUrl = _artwork.AddressFor(icon, endpoint);
+        // Otherwise the channel's logo, padded, in both slots a card might ask for. Jellyfin's
+        // live TV cards are built with "preferThumb", so a programme with only a primary image
+        // still shows the placeholder in galleries like "On Now" -- which is exactly what
+        // happened when only the logo slot was filled. The logo slot is deliberately not used:
+        // it is where a programme's own logo belongs, and the channel's is not that.
+        if (string.IsNullOrEmpty(program.ImageUrl))
+        {
+            var padded = _artwork.PosterAddressFor(icon, null, endpoint);
+
+            program.ImageUrl = padded;
+            program.ThumbImageUrl = padded;
+        }
+
+        program.HasImage = !string.IsNullOrEmpty(program.ImageUrl);
 
         if (entry.GetInt32("contentType") is { } contentType)
         {

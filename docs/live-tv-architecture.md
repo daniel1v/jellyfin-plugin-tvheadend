@@ -320,33 +320,51 @@ All three go through the same publisher, and all three are decided by the same r
 
 Broadcast DVB EIT has no field for a picture, so on an over-the-air guide there is nothing to
 publish -- measured against a real server: 84 DVR entries and 300 EPG events, none carrying an
-image. A recording falls back to its channel's logo, which is at least true in that it says which
-broadcaster the recording came from.
+image. A recording and a guide entry fall back to the logo of the channel they came from, which is
+at least true in that it says which broadcaster it was. A setting turns that off.
 
-**It is letterboxed on the way out.** A TVHeadend logo is 400x240, landscape at 1.67:1, and
-Jellyfin draws a recording's primary image as a 2:3 poster. Published as it stood, every tile was a
-small landscape picture blown up into a portrait frame. There is no way to say "this is a logo,
-letterbox it" -- `ChannelItemInfo` carries one field and Jellyfin makes it `ImageType.Primary` --
-so the letterboxing happens here and Jellyfin receives something already the right shape.
+**The logo is padded into a square before it is served.** Jellyfin draws an item's picture at
+whatever shape the view wants -- a tall poster here, a wide thumbnail there -- and fills the frame
+with it, so a 400x240 logo handed over as it stands is enlarged to the size of the tile. A square
+survives both: a 2:3 crop keeps the middle two-thirds of the width, a 16:9 crop the middle
+nine-sixteenths of the height, and the logo is drawn well inside both. It uses 55 per cent of the
+width and 45 per cent of the height at most, so a 400x240 logo becomes a 727x727 square occupying
+18 per cent of its area. Nothing is enlarged; the margin grows and Jellyfin scales the whole down.
+
+All 124 channel logos on the test server are exactly 400x240. The wide and tall pictures a user
+sees are the frames, not the logos, which is why no single aspect ratio could have worked.
 
 That is what the second route is for. `/TVHeadend/Artwork/{token}` serves the picture as it is, for
-a channel that wants its logo as a logo; `/TVHeadend/Artwork/{token}/poster` pads it first. The
-same picture can be published both ways, and the token still names only a path.
+a channel that wants its logo as a logo; `/TVHeadend/Artwork/{token}/poster` pads it first.
 
-Nothing is scaled. The canvas grows around the picture at its native size -- 400x240 becomes
-400x600 with the logo centred -- and Jellyfin scales that down for whatever the client asked for.
-Enlarging a 400 pixel logo to fill a poster was half of what looked wrong. The padding takes its
-colour from the picture's own corner pixel so the join does not show, and stays transparent where
-that pixel is.
+### Which slots get filled
 
-The drawing uses the SkiaSharp the server already loads: the plugin compiles against it and does
-not ship it, so no native library is carried in the plugin zip and there is never a second copy in
-the process. If a future server carries a version the plugin cannot bind to, the padding fails and
-the original picture is served instead. A cosmetic improvement must not be able to take the
-artwork down with it.
+| | Slots available | What is published |
+|---|---|---|
+| Channel | `ImageUrl` | the logo, unpadded |
+| Guide entry | `ImageUrl`, `ThumbImageUrl`, `LogoImageUrl`, `BackdropImageUrl` | its own artwork as primary; failing that the padded square as **both primary and thumb** |
+| Recording | `ImageUrl` only | its own artwork; failing that the padded square |
 
-`fanartImage` is read from the DVR entry and goes nowhere: `ChannelItemInfo` has no second image
-field to put it in.
+The thumb matters. Jellyfin's live TV cards are built with `preferThumb`, so a programme carrying
+only a primary image still shows the placeholder in galleries like "On Now" -- which is what
+happened when only the logo slot was filled. The logo slot is deliberately left empty: that is
+where a programme's *own* logo belongs, and the channel's is not that.
+
+A recording has one slot and no choice, which is also why `fanartImage` is read from the DVR entry
+and goes nowhere.
+
+### Getting a changed picture to an item that has one
+
+A guide entry needs nothing. `GuideManager.UpdateImage` compares the stored path against the new
+address, replaces it when they differ, and removes it when the plugin stops publishing one, so
+channels and programmes correct themselves on the next refresh.
+
+A recording cannot. `ChannelManager` gives a channel item an image only when it has none, so the
+first picture a recording is given is the one it keeps. The settings page has a button that forgets
+them, which also discards the cached listing -- without that, Jellyfin serves the listing from
+cache for up to three hours, never asks the plugin, and the recordings sit there with no picture
+at all.
+
 
 ### The credential rule
 
