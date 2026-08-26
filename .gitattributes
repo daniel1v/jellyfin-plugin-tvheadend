@@ -1,5 +1,10 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Auto detect text files, and check them out with LF on every platform.
+#
+# Without "eol=lf" a Windows checkout converts to CRLF, which contradicts .editorconfig
+# ("end_of_line = lf") and made "dotnet format --verify-no-changes" report 12,626 ENDOFLINE
+# errors -- every one of them the checkout, none of them the code. A check that always fails
+# checks nothing, so every real formatting mistake went past it.
+* text=auto eol=lf
 
 # Custom for Visual Studio
 *.cs     diff=csharp

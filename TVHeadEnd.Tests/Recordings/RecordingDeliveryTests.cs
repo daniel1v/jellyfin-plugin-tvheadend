@@ -231,10 +231,12 @@ public class RecordingDeliveryTests
         Assert.True(now > stored);
 
         // ...and then never again, because the recording has not changed and neither has the
-        // revision. A second listing computes the same value, which is not later than the stored
-        // one, so the item is left alone.
-        Assert.False(now > now);
-        Assert.Equal(now, RecordingsChannel.PublishedDateFor(recordingChanged));
+        // revision. The rewrite stores what the channel published, and the next listing publishes
+        // the same value again -- not later than the stored one, so the item is left alone.
+        var nowStored = RecordingsChannel.PublishedDateFor(recordingChanged);
+        Assert.Equal(now, nowStored);
+        Assert.False(RecordingsChannel.PublishedDateFor(recordingChanged) > nowStored);
+
     }
 
     [Fact]
