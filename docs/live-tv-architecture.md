@@ -320,23 +320,19 @@ All three go through the same publisher, and all three are decided by the same r
 
 Broadcast DVB EIT has no field for a picture, so on an over-the-air guide there is nothing to
 publish -- measured against a real server: 84 DVR entries and 300 EPG events, none carrying an
-image. A recording falls back to its channel's logo rather than to a blank tile. The logo is at
-least true, in that it says which broadcaster the recording came from, and it is not a poster
-invented for the programme.
+image. Those items are published without one, and Jellyfin shows what it shows for anything else
+without a picture.
 
-It sticks. Jellyfin's channel manager sets an item's image only when the item has none --
-`if (!string.IsNullOrEmpty(info.ImageUrl) && !item.HasImage(ImageType.Primary))` -- so once the
-logo is stored, artwork arriving later does not replace it on that item. Clearing the image is
-what makes it look again.
+Falling back to the channel's logo was tried and removed. The idea was sound and the shape was
+not: a TVHeadend channel logo is 400x240, and Jellyfin renders a recording's primary image as a
+2:3 poster, so every tile became a small landscape picture blown up into a portrait frame. There
+is no way to say "this is a logo, letterbox it" -- `ChannelItemInfo` carries one field, `ImageUrl`,
+and Jellyfin makes it `ImageType.Primary`. Making it fit would mean composing a poster-shaped
+image in the plugin, which needs an image library shipped with it. No picture is better than a
+bad one.
 
-The same clause is also why an existing recording picks artwork up at all: it sets `forceUpdate`
-itself, independently of the modification date the schema revision moves, so no revision is needed
-for a picture to appear.
-
-Programmes are deliberately not given the fallback. Jellyfin already shows the channel's logo
-beside a guide entry, so putting the same image on the entry itself would fill the guide with
-repetition and make it look as though the artwork were there.
-
+That single field is also why `fanartImage` is read from the DVR entry and goes nowhere: there is
+no second image field to put it in.
 
 ### The credential rule
 

@@ -1,8 +1,6 @@
 using System;
 using System.Linq;
 using System.Reflection;
-using MediaBrowser.Controller;
-using Microsoft.Extensions.Logging.Abstractions;
 using TVHeadEnd.Api;
 using Xunit;
 
@@ -168,43 +166,6 @@ public class ArtworkTests
 
         Assert.NotNull(path);
         Assert.StartsWith(endpoint.BaseUrl, endpoint.CreateApiUrl(path!), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void TheFallbackIsUsedOnlyWhereTheItemNamesNothing()
-    {
-        // Broadcast DVB EIT has no field for a picture, so a recording made from it has none and
-        // the library is a wall of blank tiles. The channel's logo is at least true: it says
-        // which broadcaster this came from, rather than a poster invented for the programme.
-        var artwork = new TvheadendArtwork(UnusedHost.Create(), NullLogger.Instance);
-        var endpoint = Endpoint();
-
-        // Both references are external here, so they come back verbatim and the choice between
-        // them is the only thing under test.
-        const string Own = "https://art.example/tatort.png";
-        const string Logo = "https://picons.example/ard.png";
-
-        Assert.Equal(Own, artwork.AddressFor(Own, Logo, endpoint));
-        Assert.Equal(Logo, artwork.AddressFor(null, Logo, endpoint));
-        Assert.Equal(Logo, artwork.AddressFor(string.Empty, Logo, endpoint));
-        Assert.Null(artwork.AddressFor(null, null, endpoint));
-    }
-
-    /// <summary>
-    /// Never called: the references above are external, so no address on this server is built.
-    /// </summary>
-    /// <remarks>
-    /// Generated rather than written out. IServerApplicationHost is wide, none of it is reachable
-    /// from what is under test here, and a hand-written stub of it would be longer than every test
-    /// in this file put together.
-    /// </remarks>
-    private class UnusedHost : DispatchProxy
-    {
-        public static IServerApplicationHost Create()
-            => Create<IServerApplicationHost, UnusedHost>();
-
-        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
-            => throw new NotSupportedException(targetMethod?.Name);
     }
 
     private static T Attribute<T>()

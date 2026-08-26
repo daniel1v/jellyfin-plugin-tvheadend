@@ -333,12 +333,11 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // address like the recordings in it.
         foreach (var recording in recordings)
         {
-            // The channel's logo where the recording has no picture of its own, which with a
-            // broadcast EPG is every recording: DVB EIT has no field for one.
-            recording.ImageUrl = _artwork.AddressFor(
-                recording.ImageReference,
-                _connection.Channels.Get(recording.ChannelId)?.Icon,
-                endpoint);
+            // Only what the recording itself names. Falling back to the channel's logo was tried
+            // and looked wrong: a logo is 400x240, and Jellyfin renders a recording's primary
+            // image as a 2:3 poster, so every tile was a small landscape picture blown up into a
+            // portrait frame. No picture is better than a bad one.
+            recording.ImageUrl = _artwork.AddressFor(recording.ImageReference, endpoint);
             recording.HasImage = !string.IsNullOrEmpty(recording.ImageUrl);
         }
 

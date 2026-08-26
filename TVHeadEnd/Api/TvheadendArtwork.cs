@@ -80,30 +80,6 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
-        /// The address to publish for an image, falling back to a second reference where the
-        /// first names nothing.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// What the fallback is for: an EPG that carries no artwork. Broadcast DVB EIT has no
-        /// field for a picture, so a recording made from it has none either, and a library of
-        /// blank tiles is the result. The channel's own logo is at least true -- it says which
-        /// broadcaster this came from -- and it is not a poster invented for the programme.
-        /// </para>
-        /// <para>
-        /// It sticks, and that is worth knowing. Jellyfin's channel manager sets an item's image
-        /// only when the item has none, so once the logo is stored, artwork that arrives later
-        /// does not replace it on that item.
-        /// </para>
-        /// </remarks>
-        /// <param name="reference">The image the item itself names.</param>
-        /// <param name="fallback">What to fall back on, typically the channel's logo.</param>
-        /// <param name="endpoint">The TVHeadend endpoint the references are relative to.</param>
-        /// <returns>The address, or <see langword="null"/> when neither names anything.</returns>
-        public string? AddressFor(string? reference, string? fallback, TvheadendHttpEndpoint endpoint)
-            => AddressFor(reference, endpoint) ?? AddressFor(fallback, endpoint);
-
-        /// <summary>
         /// The path a reference names on the TVHeadend server, or <see langword="null"/> when it
         /// names something on another host.
         /// </summary>
