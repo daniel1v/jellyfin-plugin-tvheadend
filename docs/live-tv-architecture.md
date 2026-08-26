@@ -334,14 +334,20 @@ width and 45 per cent of the height at most, so a 400x240 logo becomes a 727x727
 All 124 channel logos on the test server are exactly 400x240. The wide and tall pictures a user
 sees are the frames, not the logos, which is why no single aspect ratio could have worked.
 
-That is what the second route is for. `/TVHeadend/Artwork/{token}` serves the picture as it is, for
-a channel that wants its logo as a logo; `/TVHeadend/Artwork/{token}/poster` pads it first.
+That is what the second route is for. `/TVHeadend/Artwork/{token}` serves a picture as it is, which
+is what a broadcaster's own artwork wants; `/TVHeadend/Artwork/{token}/poster` pads it into the
+square, which is what a logo wants -- including a channel's own, since Jellyfin draws that edge to
+edge in its tile and a logo filling its frame reads as a mistake rather than as a logo.
+
+The path still says "poster" from when padding meant a 2:3 frame. Changing it would change every
+published address, and a recording keeps the first picture it is given, so the rename would cost
+everybody a reset to buy a better word.
 
 ### Which slots get filled
 
 | | Slots available | What is published |
 |---|---|---|
-| Channel | `ImageUrl` | the logo, unpadded |
+| Channel | `ImageUrl` | the logo, padded |
 | Guide entry | `ImageUrl`, `ThumbImageUrl`, `LogoImageUrl`, `BackdropImageUrl` | its own artwork as primary; failing that the padded square as **both primary and thumb** |
 | Recording | `ImageUrl` only | its own artwork; failing that the padded square |
 

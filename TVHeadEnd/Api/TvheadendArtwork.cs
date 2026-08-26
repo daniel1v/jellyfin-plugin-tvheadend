@@ -72,7 +72,7 @@ namespace TVHeadEnd.Api
         /// <param name="fallback">What to fall back on, typically the channel's logo.</param>
         /// <param name="endpoint">The TVHeadend endpoint the references are relative to.</param>
         /// <returns>The address, or <see langword="null"/> when neither names anything.</returns>
-        public string? PosterAddressFor(string? reference, string? fallback, TvheadendHttpEndpoint endpoint)
+        public string? PaddedAddressFor(string? reference, string? fallback, TvheadendHttpEndpoint endpoint)
             => AddressFor(reference, endpoint, asPoster: true)
                 ?? AddressFor(fallback, endpoint, asPoster: true);
 
@@ -100,7 +100,7 @@ namespace TVHeadEnd.Api
 
                 return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
                     + (asPoster
-                        ? TvHeadendImagesController.PosterPathFor(token)
+                        ? TvHeadendImagesController.PaddedPathFor(token)
                         : TvHeadendImagesController.ImagePathFor(token));
             }
             catch (Exception exception)

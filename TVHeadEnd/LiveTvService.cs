@@ -121,7 +121,13 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         foreach (var channel in channels)
         {
             var known = _connection.Channels.Get(channel.Id);
-            channel.ImageUrl = _artwork.AddressFor(known?.Icon, endpoint);
+            // Padded, like every other place a logo stands in a picture frame. Jellyfin draws a
+            // channel's image edge to edge in its tile, and a logo that fills its frame reads as a
+            // mistake rather than as a logo. The address changes with the padding, and
+            // GuideManager replaces a channel image whose path has changed, so this needs nothing
+            // of anybody.
+            channel.ImageUrl = _artwork.PaddedAddressFor(known?.Icon, null, endpoint);
+
             channel.HasImage = !string.IsNullOrEmpty(channel.ImageUrl);
         }
 
@@ -340,7 +346,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             // logo handed over as it stands is a landscape picture blown up into a portrait frame.
             var logo = borrowLogos ? _connection.Channels.Get(recording.ChannelId)?.Icon : null;
 
-            recording.ImageUrl = _artwork.PosterAddressFor(recording.ImageReference, logo, endpoint);
+            recording.ImageUrl = _artwork.PaddedAddressFor(recording.ImageReference, logo, endpoint);
 
             recording.HasImage = !string.IsNullOrEmpty(recording.ImageUrl);
         }

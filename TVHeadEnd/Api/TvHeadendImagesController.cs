@@ -71,16 +71,24 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
-        /// The route artwork is served from when it has to fill a poster.
+        /// The route artwork is served from when it has to be padded into a square first.
         /// </summary>
         /// <remarks>
-        /// A separate address rather than a flag on the token, so that the same picture can be
-        /// published both ways: a channel wants its logo as a logo, and a recording that borrows
-        /// that logo wants it letterboxed. The token still names only a path.
+        /// <para>
+        /// A separate address rather than a flag on the token, so the same picture can be
+        /// published both ways: a broadcaster's own artwork is served as it is, and a logo
+        /// standing in for artwork is padded. The token still names only a path.
+        /// </para>
+        /// <para>
+        /// The path still ends in "poster", from when padding meant a 2:3 frame rather than a
+        /// square. Changing it would change every published address, and a recording keeps the
+        /// first picture it is given -- so the rename would cost everybody a reset to buy a better
+        /// word.
+        /// </para>
         /// </remarks>
         /// <param name="token">The unguessable name of the image.</param>
         /// <returns>The path, relative to the server root.</returns>
-        public static string PosterPathFor(string token)
+        public static string PaddedPathFor(string token)
         {
             ArgumentException.ThrowIfNullOrEmpty(token);
 
@@ -198,7 +206,7 @@ namespace TVHeadEnd.Api
         {
             try
             {
-                return PosterCanvas.Pad(body);
+                return SquareCanvas.Pad(body);
             }
             catch (Exception exception)
             {

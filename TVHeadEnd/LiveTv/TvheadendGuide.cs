@@ -157,7 +157,7 @@ public sealed class TvheadendGuide
         // it is where a programme's own logo belongs, and the channel's is not that.
         if (string.IsNullOrEmpty(program.ImageUrl))
         {
-            var padded = _artwork.PosterAddressFor(icon, null, endpoint);
+            var padded = _artwork.PaddedAddressFor(icon, null, endpoint);
 
             program.ImageUrl = padded;
             program.ThumbImageUrl = padded;

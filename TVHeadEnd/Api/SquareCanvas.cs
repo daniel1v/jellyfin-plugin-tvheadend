@@ -25,7 +25,7 @@ namespace TVHeadEnd.Api
     /// margin that grows, and Jellyfin scales the whole down for whatever it is drawing.
     /// </para>
     /// </remarks>
-    internal static class PosterCanvas
+    internal static class SquareCanvas
     {
         /// <summary>
         /// How much of the square's width the picture may use.

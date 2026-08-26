@@ -119,7 +119,7 @@ public class ArtworkTests
             .ToArray();
 
         Assert.Contains(TvHeadendImagesController.ImagePathFor("{token}"), served);
-        Assert.Contains(TvHeadendImagesController.PosterPathFor("{token}"), served);
+        Assert.Contains(TvHeadendImagesController.PaddedPathFor("{token}"), served);
     }
 
 
