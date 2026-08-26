@@ -6,18 +6,25 @@
 .DESCRIPTION
     Reads every package detail from build.yaml so the zip, the meta.json inside it and the
     manifest entry cannot drift apart. Run it after bumping the version in build.yaml and
-    Directory.Build.props, then create the GitHub release with the zip it leaves in dist/:
+    Directory.Build.props:
 
-        pwsh tools/release.ps1
-        gh release create v<version> dist/tvheadend_<version>.zip --repo <owner>/<repo>
+        & .\tools\release.ps1 -Publish
         git commit -am "Publish <version>" && git push
 
     The checksum Jellyfin verifies is the MD5 of the zip, so the manifest has to be written
     after the zip is final. Passing -SkipBuild reuses an existing Release build.
+
+    -Publish creates the GitHub release itself. Every release this fork makes is an alpha and
+    is marked as a GitHub prerelease, which is the only place the word can live: Jellyfin parses
+    a manifest version with Version.Parse, so it cannot carry a "-alpha" suffix. The flag is set
+    here rather than typed each time, because a flag that has to be remembered is one that
+    eventually is not.
+
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
+    [switch]$Publish,
     [string]$RepositoryUrl = 'https://github.com/daniel1v/jellyfin-plugin-tvheadend'
 )
 
@@ -118,3 +125,25 @@ Write-Json $manifestPath $manifest -AsArray
 Write-Output "Paket:    $zip"
 Write-Output "MD5:      $checksum"
 Write-Output "Manifest: $manifestPath (Version $version an erster Stelle)"
+
+if ($Publish) {
+    $repoSlug = ($RepositoryUrl -replace '^https://github\.com/', '')
+
+    # Through a file, not an argument. Windows PowerShell re-splits the arguments it hands a
+    # native program, so the quotation marks inside a changelog arrive as argument boundaries and
+    # gh is asked to do something nobody wrote.
+    $notes = Join-Path $dist "notes_$version.md"
+    [System.IO.File]::WriteAllText($notes, $changelog, (New-Object System.Text.UTF8Encoding($false)))
+
+    # Always a prerelease. This fork ships alphas, and the manifest cannot say so itself.
+    & gh release create "v$version" $zip `
+        --repo $repoSlug `
+        --title "TVHeadend $version (alpha)" `
+        --notes-file $notes `
+        --prerelease
+    if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+
+    Write-Output "Release:  $RepositoryUrl/releases/tag/v$version (alpha)"
+}
+
+

@@ -1,19 +1,33 @@
-name: "TVHeadend"
+name: "TVHeadend (alpha)"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
 version: "14.0.0.0"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 owner: "daniel1v"
-overview: "Manage TVHeadend from Jellyfin"
-description: "Manage TVHeadend from Jellyfin. This fork reworks live TV and recording delivery so both play on the official Jellyfin Android app."
+overview: "Manage TVHeadend from Jellyfin -- alpha builds"
+description: "Manage TVHeadend from Jellyfin. This fork reworks live TV and recording delivery so both play on the official Jellyfin Android app. Alpha: expect breakage, and read the changelog before installing."
 category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
   - "Tvheadend.Htsp.dll"
 changelog: |-
-  Fixes 13.2.0.0, which does not play at all on a server with hardware acceleration configured.
+  The first alpha, and a fresh start. Every earlier release of this fork has been withdrawn: each one was broken in a way that was only found after publishing, and leaving them installable served nobody. From here the releases are alphas and are marked as such -- they are what is being worked on, not what has been proven.
 
-  The media source named its container as both spellings at once, "mpegts,ts", so that client device profiles split over the two would each match. Jellyfin hands the container of a media source straight to FFmpeg as "-f" whenever hardware acceleration is configured, and does not check it -- so FFmpeg was asked to open the stream with a demuxer that does not exist: "Unknown input format: 'mpegts,ts'", and every channel and every recording failed to start. Without hardware acceleration the argument is never added, which is why this survived testing.
+  Nothing in this build has been through a real playback test on a production server. It is offered so that failures can be found, not because they are believed to be gone.
 
-  The container is now named once, as "mpegts". That is what FFprobe reports, what this plugin's own transport stream check already used, and a demuxer FFmpeg has. A client whose device profile lists only "ts" no longer matches on the container and is given a remux instead of direct play -- worse for that client, where the alternative was nothing playing for anyone.
+  Since the withdrawn 13.2.1.0:
+
+  Channel logos appear at all. TVHeadend serves them behind the same authentication as everything else, and Jellyfin fetches an image URL with an HTTP client that knows nothing of TVHeadend, so every channel was blank. The earlier attempt at a fix put the credentials in the URL, which cannot work -- HttpClient ignores the userinfo component of a URI and sends no Authorization header for it -- and all it achieved was writing the TVHeadend password into Jellyfin's database as an image path and into the log on every failed fetch. Logos are now fetched by the plugin and served from an address on Jellyfin, which needs no credentials. Existing servers have their stored passwords replaced on the next guide refresh.
+
+  Live TV and recordings are published the same way, as a file to the client and an address to Jellyfin. Both name Protocol=File with a path, and both carry EncoderProtocol=Http with the address the server actually reads from -- Jellyfin's own live stream URL for a channel, this plugin's proxy for a recording. Jellyfin ranks a direct-played file above everything else, so a channel and a recording now stand on the same footing as any other item in the library. Seeking in a recording is unchanged: the request forwards the client's Range header upstream and returns the upstream status and headers unaltered.
+
+  MPEG-TS is named once, as "ts". It was "mpegts" for recordings and "ts" for live TV, which a client comparing strings has no way to reconcile, and "ts" is what Jellyfin's own probe normaliser produces for every other file on the server. It survives the FFmpeg "-f" argument that a hardware-accelerated server adds, because Jellyfin translates it on the way through -- GetInputFormat maps "ts" to "mpegts", so what FFmpeg is asked for is "-f mpegts".
+
+  Clients that spell the container the other way still match. A device profile listing only "mpegts" never matched a source saying "ts", so the profile the client sent is widened to say both -- on the two routes that weigh a profile against a source, for this plugin's own channels and recordings only, and never for anything else in the library.
+
+  A recording's address no longer claims a container. It is ".../stream" rather than ".../stream.ts", because TVHeadend's DVR profile decides what a recording is and a WebTV setting makes it Matroska. The content type is TVHeadend's own where it states one rather than "video/mp2t" regardless. The old address still answers, on the same code, because it is written into media sources people already have.
+
+  Some clients ask for a live stream without naming it. Jellyfin can only serve one through its stream provider when the request carries the live stream identifier, and without it the buffer file is served instead -- which ends wherever it happened to be. The identifier is now supplied from a registry of what is open, keyed by media source and device, and only where exactly one stream answers: one channel can have several open at once, one per viewer whose profile needs its own rendering.
+
+  Stored recordings are migrated by a monotone marker rather than a fixed future date. The old scheme masked genuine TVHeadend updates until the date was reached and did nothing at all for an installation that arrived after it.
