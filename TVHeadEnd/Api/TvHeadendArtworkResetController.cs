@@ -1,6 +1,8 @@
 using System;
+using System.IO;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Api;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
@@ -42,18 +44,22 @@ namespace TVHeadEnd.Api
     public class TvHeadendArtworkResetController : ControllerBase
     {
         private readonly ILibraryManager _libraryManager;
+        private readonly IApplicationPaths _applicationPaths;
         private readonly ILogger<TvHeadendArtworkResetController> _logger;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TvHeadendArtworkResetController"/> class.
         /// </summary>
         /// <param name="libraryManager">Jellyfin's library.</param>
+        /// <param name="applicationPaths">Where Jellyfin keeps its cache.</param>
         /// <param name="logger">The logger.</param>
         public TvHeadendArtworkResetController(
             ILibraryManager libraryManager,
+            IApplicationPaths applicationPaths,
             ILogger<TvHeadendArtworkResetController> logger)
         {
             _libraryManager = libraryManager;
+            _applicationPaths = applicationPaths;
             _logger = logger;
         }
 
@@ -102,12 +108,53 @@ namespace TVHeadEnd.Api
                 }
             }
 
+            // Half a reset without this. Jellyfin caches a channel's listing on disk for three
+            // hours, and while that cache stands it never asks the plugin, so nothing re-supplies
+            // the picture that was just forgotten -- the recordings sit there with no image at all
+            // until the cache ages out. Measured once: images cleared at 22:40, cache valid until
+            // 01:20.
+            DiscardCachedListing(channelId);
+
             _logger.LogInformation(
                 "TVHeadend: cleared the artwork of {Cleared} of {Total} recordings; it is fetched again on the next listing",
                 cleared,
                 items.Count);
 
             return new ArtworkResetResult { Cleared = cleared, Total = items.Count };
+        }
+
+        /// <summary>
+        /// Throws away the listing Jellyfin has cached for this plugin's channel.
+        /// </summary>
+        /// <remarks>
+        /// There is no API for it: <c>IChannelManager</c> offers no way to say "ask again", and
+        /// the cache is keyed by a path the channel manager builds privately. What is deleted is
+        /// the directory belonging to this plugin's own channel and nothing else, and it is a
+        /// cache, so the worst a mistake here can cost is one listing being rebuilt.
+        /// </remarks>
+        private void DiscardCachedListing(Guid channelId)
+        {
+            var cached = Path.Combine(
+                _applicationPaths.CachePath,
+                "channels",
+                channelId.ToString("N", System.Globalization.CultureInfo.InvariantCulture));
+
+            try
+            {
+                if (Directory.Exists(cached))
+                {
+                    Directory.Delete(cached, recursive: true);
+                    _logger.LogInformation("TVHeadend: discarded the cached recordings listing so it is built again");
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // The pictures are still gone, and the listing will age out by itself within three
+                // hours. Worth saying so, because until then the recordings have no image.
+                _logger.LogWarning(
+                    exception,
+                    "TVHeadend: the cached recordings listing could not be discarded; artwork returns when it expires");
+            }
         }
     }
 }
