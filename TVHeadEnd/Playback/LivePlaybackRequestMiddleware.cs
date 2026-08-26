@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Http;
@@ -94,11 +98,12 @@ public sealed class LivePlaybackRequestMiddleware
     /// <param name="context">The request.</param>
     /// <param name="mediaSourceManager">Jellyfin's register of open live streams.</param>
     /// <returns>A task that completes when the request has been handled.</returns>
-    public Task Invoke(HttpContext context, IMediaSourceManager mediaSourceManager)
+    public async Task Invoke(HttpContext context, IMediaSourceManager mediaSourceManager)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(mediaSourceManager);
 
+        await WidenTransportStreamCapabilities(context).ConfigureAwait(false);
         SupplyLiveStreamId(context.Request, mediaSourceManager);
 
         if (ResolveOwnStream(context.Request, mediaSourceManager) is { } stream)
@@ -106,7 +111,119 @@ public sealed class LivePlaybackRequestMiddleware
             Adjust(context.Request, stream);
         }
 
-        return _next(context);
+        await _next(context).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Lets a client that spells MPEG-TS the other way match this plugin's live sources.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The media source names one container and Jellyfin compares literally, so a profile that
+    /// lists only the other spelling never matches and never direct plays. Rather than making the
+    /// source claim two containers -- which it is not, and which reached FFmpeg once as
+    /// "-f mpegts,ts" and played nothing -- the profile the client sent is widened to say both.
+    /// </para>
+    /// <para>
+    /// Only the capabilities that describe what the client can take: its direct play profiles, its
+    /// container profiles and the container-bound codec profiles. Transcoding profiles are left
+    /// alone, because there the container names what the client wants produced, not what it can
+    /// read. And only for this plugin's own items -- everything else in the library passes through
+    /// with the profile exactly as it was sent.
+    /// </para>
+    /// </remarks>
+    private async Task WidenTransportStreamCapabilities(HttpContext context)
+    {
+        // Taken from the request scope rather than the method signature, so that the ownership
+        // question costs a test nothing: Jellyfin's library is a hundred members wide and a fake
+        // of it would be larger than everything it is here to answer. Where there is no scope
+        // there is no library, and nothing is rewritten.
+        var libraryManager = context.RequestServices?.GetService(typeof(ILibraryManager)) as ILibraryManager;
+        var request = context.Request;
+
+        if (libraryManager is null
+            || !request.Path.HasValue
+            || !request.Path.Value.EndsWith("/PlaybackInfo", StringComparison.OrdinalIgnoreCase)
+            || !TvheadendItems.IsOurs(libraryManager, ItemIdOf(request.Path.Value)))
+        {
+            return;
+        }
+
+        request.EnableBuffering();
+        request.Body.Position = 0;
+
+        JsonNode? body;
+        try
+        {
+            body = await JsonNode.ParseAsync(request.Body).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            // Not something this understands, so not something it may rewrite.
+            request.Body.Position = 0;
+            return;
+        }
+
+        request.Body.Position = 0;
+
+        if (body?["DeviceProfile"] is not JsonObject profile || !Widen(profile))
+        {
+            return;
+        }
+
+        var rewritten = Encoding.UTF8.GetBytes(body.ToJsonString());
+        request.Body = new MemoryStream(rewritten);
+        request.ContentLength = rewritten.Length;
+
+        _logger.LogDebug(
+            "Live TV: {Path} named one of ours; both spellings of the transport stream accepted",
+            request.Path.Value);
+    }
+
+    /// <summary>
+    /// The item a playback question is about, from the route it was asked on.
+    /// </summary>
+    private static Guid ItemIdOf(string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        // .../Items/{itemId}/PlaybackInfo
+        return segments.Length >= 2 && Guid.TryParse(segments[^2], out var itemId) ? itemId : default;
+    }
+
+    /// <summary>
+    /// Widens every input capability of one profile, and reports whether anything changed.
+    /// </summary>
+    private static bool Widen(JsonObject profile)
+    {
+        var changed = false;
+
+        foreach (var capability in new[] { "DirectPlayProfiles", "ContainerProfiles", "CodecProfiles" })
+        {
+            if (profile[capability] is not JsonArray entries)
+            {
+                continue;
+            }
+
+            foreach (var entry in entries)
+            {
+                if (entry is not JsonObject stated || stated["Container"] is not JsonValue container)
+                {
+                    continue;
+                }
+
+                var widened = TransportStreamAliases.Widen(container.GetValue<string?>());
+                if (widened is null || string.Equals(widened, container.GetValue<string?>(), StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                stated["Container"] = widened;
+                changed = true;
+            }
+        }
+
+        return changed;
     }
 
     /// <summary>
