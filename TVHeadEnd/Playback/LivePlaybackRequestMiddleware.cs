@@ -97,13 +97,16 @@ public sealed class LivePlaybackRequestMiddleware
     /// </summary>
     /// <param name="context">The request.</param>
     /// <param name="mediaSourceManager">Jellyfin's register of open live streams.</param>
+    /// <param name="libraryManager">Jellyfin's library, which answers whose an item is.</param>
     /// <returns>A task that completes when the request has been handled.</returns>
-    public async Task Invoke(HttpContext context, IMediaSourceManager mediaSourceManager)
+    public async Task Invoke(HttpContext context, IMediaSourceManager mediaSourceManager, ILibraryManager libraryManager)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(mediaSourceManager);
+        ArgumentNullException.ThrowIfNull(libraryManager);
 
-        await WidenTransportStreamCapabilities(context).ConfigureAwait(false);
+        await WidenTransportStreamCapabilities(context, libraryManager).ConfigureAwait(false);
+
         SupplyLiveStreamId(context.Request, mediaSourceManager);
 
         if (ResolveOwnStream(context.Request, mediaSourceManager) is { } stream)
@@ -132,17 +135,12 @@ public sealed class LivePlaybackRequestMiddleware
     /// with the profile exactly as it was sent.
     /// </para>
     /// </remarks>
-    private async Task WidenTransportStreamCapabilities(HttpContext context)
+    private async Task WidenTransportStreamCapabilities(HttpContext context, ILibraryManager libraryManager)
     {
-        // Taken from the request scope rather than the method signature, so that the ownership
-        // question costs a test nothing: Jellyfin's library is a hundred members wide and a fake
-        // of it would be larger than everything it is here to answer. Where there is no scope
-        // there is no library, and nothing is rewritten.
-        var libraryManager = context.RequestServices?.GetService(typeof(ILibraryManager)) as ILibraryManager;
         var request = context.Request;
 
-        if (libraryManager is null
-            || !request.Path.HasValue
+        if (!request.Path.HasValue
+
             || !request.Path.Value.EndsWith("/PlaybackInfo", StringComparison.OrdinalIgnoreCase)
             || !TvheadendItems.IsOurs(libraryManager, ItemIdOf(request.Path.Value)))
         {

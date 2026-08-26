@@ -1,9 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -273,11 +278,79 @@ public class LivePlaybackRequestMiddlewareTests
         Assert.Equal("?MediaSourceId=source-1", context.Request.QueryString.Value);
     }
 
+    [Fact]
+    public async Task ThePlaybackProfileOfOneOfOurChannelsIsWidened()
+    {
+        // Two names for one container, and a source can only carry one of them, so the profile is
+        // the side that has to say both.
+        var body = await PlaybackInfo(Channel(TvheadendItems.ServiceName), "{\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"ts\"}]}}");
+
+        Assert.Contains("mpegts", body, StringComparison.Ordinal);
+        Assert.Contains("ts", body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    public async Task AnItemTheLibraryDoesNotKnowIsLeftCompletelyAlone(BaseItem? item)
+    {
+        // The library answering nothing is not an invitation to guess. Everything else in it --
+        // a film, an episode, another tuner's channel -- reaches Jellyfin with the profile its
+        // client sent, byte for byte.
+        const string Sent = "{\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"ts\"}]}}";
+
+        Assert.Equal(Sent, await PlaybackInfo(item, Sent));
+    }
+
+    [Fact]
+    public async Task AnotherTunersChannelIsLeftCompletelyAlone()
+    {
+        // It is a live channel, which is the closest thing in the library to one of ours, and it
+        // is still not ours. The service that produced it is what decides, and nothing else.
+        const string Sent = "{\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"ts\"}]}}";
+
+        Assert.Equal(Sent, await PlaybackInfo(Channel("SomeOtherTuner"), Sent));
+    }
+
+    [Fact]
+    public async Task AFilmIsLeftCompletelyAlone()
+    {
+        const string Sent = "{\"DeviceProfile\":{\"ContainerProfiles\":[{\"Container\":\"mpegts\"}]}}";
+
+        Assert.Equal(Sent, await PlaybackInfo(new Movie(), Sent));
+    }
+
+    /// <summary>
+    /// Runs a PlaybackInfo request for whatever the library says the item is, and returns the
+    /// body as the rest of the pipeline sees it.
+    /// </summary>
+    private static async Task<string> PlaybackInfo(BaseItem? item, string sent)
+    {
+        var context = Request($"/Items/{Guid.NewGuid():N}/PlaybackInfo");
+        context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(sent));
+
+        await Invoke(context, new OpenLiveStreams(), Streams(), FakeLibrary.Returning(item));
+
+        context.Request.Body.Position = 0;
+        using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static LiveTvChannel Channel(string serviceName)
+        => new() { ServiceName = serviceName };
+
     private static Task Invoke(HttpContext context)
         => Invoke(context, new OpenLiveStreams(), Streams());
 
-    private static async Task Invoke(HttpContext context, OpenLiveStreams open, IMediaSourceManager manager)
+    private static Task Invoke(HttpContext context, OpenLiveStreams open, IMediaSourceManager manager)
+        => Invoke(context, open, manager, FakeLibrary.Returning(null));
+
+    private static async Task Invoke(
+        HttpContext context,
+        OpenLiveStreams open,
+        IMediaSourceManager manager,
+        ILibraryManager library)
     {
+
         var called = false;
         var middleware = new LivePlaybackRequestMiddleware(
             _ =>
@@ -288,7 +361,7 @@ public class LivePlaybackRequestMiddlewareTests
             NullLogger<LivePlaybackRequestMiddleware>.Instance,
             open);
 
-        await middleware.Invoke(context, manager);
+        await middleware.Invoke(context, manager, library);
 
         Assert.True(called, "The request must always continue down the pipeline.");
     }
@@ -325,6 +398,29 @@ public class LivePlaybackRequestMiddlewareTests
         context.Request.Path = split < 0 ? pathAndQuery : pathAndQuery[..split];
         context.Request.QueryString = split < 0 ? QueryString.Empty : new QueryString(pathAndQuery[split..]);
         return context;
+    }
+
+    /// <summary>
+    /// Answers the one library question this plugin asks, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// ILibraryManager is a hundred members wide and only one of them is reachable from here, so
+    /// it is generated rather than written out: every other member answers with its default and
+    /// would fail loudly if the middleware ever started calling it.
+    /// </remarks>
+    private class FakeLibrary : DispatchProxy
+    {
+        private BaseItem? _item;
+
+        public static ILibraryManager Returning(BaseItem? item)
+        {
+            var proxy = Create<ILibraryManager, FakeLibrary>();
+            ((FakeLibrary)(object)proxy!)._item = item;
+            return proxy;
+        }
+
+        protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name == nameof(ILibraryManager.GetItemById) ? _item : null;
     }
 
     /// <summary>

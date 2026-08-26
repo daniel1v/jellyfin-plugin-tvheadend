@@ -82,7 +82,7 @@ public class RecordingsChannelTests
     {
         var placeholder = RecordingsChannel.BuildPlaceholderSource("1312160563");
 
-        Assert.Equal("mpegts", placeholder.Container);
+        Assert.Equal("ts", placeholder.Container);
         Assert.Null(placeholder.Path);
         Assert.Null(placeholder.RunTimeTicks);
     }

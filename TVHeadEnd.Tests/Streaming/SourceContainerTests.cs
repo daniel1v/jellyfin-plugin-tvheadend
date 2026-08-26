@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Text;
+using MediaBrowser.Controller.MediaEncoding;
 using TVHeadEnd.Streaming;
 using Xunit;
 
@@ -69,25 +70,50 @@ public class SourceContainerTests
     [InlineData("mpegts")]
     [InlineData("ts")]
     [InlineData("TS")]
-    public void TheTransportStreamIsReportedUnderBothItsSpellings(string probed)
+    [InlineData("MPEGTS")]
+    public void TheTransportStreamIsReportedUnderOneName(string probed)
     {
-        // FFprobe says one, Android's device profile says the other, and Jellyfin compares them
-        // as plain strings.
-        Assert.Equal("mpegts", SourceContainer.Describe(probed, "mpegts"));
+        // FFprobe says one, Jellyfin's own probe normaliser says the other, and the comparison
+        // against a device profile is a plain string one. Whichever arrives, one leaves -- and it
+        // is the one Jellyfin itself produces for every other file on the server.
+        Assert.Equal("ts", SourceContainer.Describe(probed, "ts"));
+    }
+
+    [Fact]
+    public void TheNameIsOneFfmpegAcceptsAsAnInputFormat()
+    {
+        // Jellyfin passes the container of a media source to FFmpeg as "-f" whenever the server
+        // has hardware acceleration configured. It survives that because Jellyfin translates it
+        // on the way through; naming a spelling FFmpeg has no demuxer for is what broke playback
+        // outright on such a server once already.
+        Assert.Equal("mpegts", EncodingHelper.GetInputFormat(SourceContainer.TransportStream));
+        Assert.DoesNotContain(',', SourceContainer.TransportStream);
+    }
+
+    [Fact]
+    public void ARecordingAndALiveChannelNameTheSameContainerTheSameWay()
+    {
+        // Two paths described the same broadcast differently, and a client comparing strings has
+        // no way to know they meant the same thing.
+        Assert.Equal(TVHeadEnd.Playback.LiveMediaSource.Container, SourceContainer.TransportStream);
     }
 
     [Fact]
     public void AnyOtherContainerIsReportedAsFound()
     {
-        Assert.Equal("matroska,webm", SourceContainer.Describe("matroska,webm", "mpegts"));
+        // Only MPEG-TS has two spellings worth reconciling. Everything else is reported as the
+        // analysis found it, including the Matroska a TVHeadend WebTV profile writes.
+        Assert.Equal("matroska,webm", SourceContainer.Describe("matroska,webm", "ts"));
+        Assert.Equal("mp4", SourceContainer.Describe("mp4", "ts"));
     }
 
     [Fact]
     public void AnAnalysisThatFoundNothingLeavesTheAssumptionInPlace()
     {
-        Assert.Equal("mpegts", SourceContainer.Describe(null, "mpegts"));
-        Assert.Equal("mpegts", SourceContainer.Describe(string.Empty, "mpegts"));
+        Assert.Equal("ts", SourceContainer.Describe(null, "ts"));
+        Assert.Equal("ts", SourceContainer.Describe(string.Empty, "ts"));
     }
+
 
     private static byte[] TransportStream(int packets, int startOffset)
     {

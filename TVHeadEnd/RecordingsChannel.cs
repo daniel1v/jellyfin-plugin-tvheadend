@@ -55,8 +55,14 @@ namespace TVHeadEnd
         /// a constant on purpose -- anything derived from the current time would rewrite every
         /// recording on every listing.
         /// </para>
+        /// <para>
+        /// The date sits a little ahead of the release that carries it, because the comparison is
+        /// a strict one against the stored date and the stored date can be TVHeadend's. A
+        /// recording written by the outgoing version on the day of the change would otherwise
+        /// carry a later date than the revision and be the one recording the migration misses.
+        /// </para>
         /// </remarks>
-        private static readonly DateTime MediaSourceSchemaRevisionUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
+        private static readonly DateTime MediaSourceSchemaRevisionUtc = new(2026, 8, 27, 0, 0, 0, DateTimeKind.Utc);
 
         private readonly ILogger<LiveTvService> _logger;
         private readonly TvheadendConnection _connection;
@@ -403,7 +409,9 @@ namespace TVHeadEnd
         /// <returns><see langword="true"/> when the sample described the recording.</returns>
         private async Task<bool> DescribeRecording(string id, MediaSourceInfo source, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrEmpty(source.Path))
+            // The address, not the name. Path is the virtual file the client is told about and
+            // is always set; whether the recording can be reached at all is EncoderPath.
+            if (string.IsNullOrEmpty(source.EncoderPath))
             {
                 return false;
             }
@@ -604,45 +612,109 @@ namespace TVHeadEnd
                 Id = "tvheadend-recording-" + id,
                 Type = MediaSourceType.Placeholder,
                 Protocol = MediaProtocol.Http,
-                Container = "mpegts",
+
+                // The starting assumption, which the analysis replaces with whatever the
+                // recording turns out to be. Written under the one name this plugin gives
+                // MPEG-TS rather than spelled out, so it cannot drift from the live path.
+                Container = SourceContainer.TransportStream,
                 MediaStreams = [],
             };
         }
 
+        /// <summary>
+        /// The source a recording is published as: a file to the client, an address to Jellyfin.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The same split live TV uses. A client is told the plainest thing there is -- a whole,
+        /// seekable file it may play as it stands -- while the server reaches the bytes over the
+        /// proxy this plugin serves. <c>EncodingHelper.AttachMediaSourceInfo</c> prefers
+        /// <c>EncoderPath</c> and <c>EncoderProtocol</c> whenever both are set, so
+        /// <c>state.InputProtocol</c> becomes HTTP and a static request is answered by
+        /// <c>GetStaticRemoteStreamResult</c>, which forwards the client's Range header upstream
+        /// and returns the upstream status, Content-Range, Content-Length and Accept-Ranges
+        /// unaltered. Seeking therefore works exactly as it did.
+        /// </para>
+        /// <para>
+        /// Saying <c>File</c> is not decoration: <c>StreamBuilder.SortMediaSources</c> ranks a
+        /// direct-played file above everything else, and this is what puts a recording and a
+        /// channel on the same footing as any other item in the library.
+        /// </para>
+        /// </remarks>
         private MediaSourceInfo BuildRecordingMediaSource(string id)
+            => BuildRecordingSource(id, BuildRecordingUrl(id));
+
+        /// <inheritdoc cref="BuildRecordingMediaSource"/>
+        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="url">The address this plugin serves the recording from.</param>
+        /// <returns>The source.</returns>
+        internal static MediaSourceInfo BuildRecordingSource(string id, string url)
         {
-            var path = BuildRecordingPath(id);
+            ArgumentException.ThrowIfNullOrEmpty(id);
 
             return new MediaSourceInfo
             {
-                Path = path,
-                Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
+                Path = VirtualRecordingPath(id),
+                Protocol = MediaProtocol.File,
+                EncoderPath = url,
+                EncoderProtocol = MediaProtocol.Http,
                 Id = RecordingMediaSourceId(id),
-                Container = "mpegts",
+
+                // Replaced by whatever the sample turns out to be. TVHeadend's DVR profile
+                // decides the container, and a server on one of the WebTV profiles writes
+                // Matroska, so this is a starting point rather than a claim.
+                Container = SourceContainer.TransportStream,
                 AnalyzeDurationMs = 2000,
                 MediaStreams = [],
             };
         }
 
         /// <summary>
-        /// Builds the address a client is given for a recording: this plugin's own endpoint, not
+        /// The name a recording carries as a file, for a file nobody opens.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The recording lives on the TVHeadend server, so there is no local file to name and
+        /// none is invented. Nothing on this server reads it: <c>MediaSourceInfo.Path</c> is a
+        /// plain property, <c>StreamBuilder</c> never looks at it, and the one place that would
+        /// have -- <c>AttachMediaSourceInfo</c> -- takes <c>EncoderPath</c> instead. It exists so
+        /// that a source claiming to be a file says which file it means, in logs and in a
+        /// playback report.
+        /// </para>
+        /// <para>
+        /// Deliberately not shaped like a real path. A client configured for direct file access
+        /// resolves what it is given against its own filesystem, and a plausible-looking path is
+        /// exactly the one that could accidentally resolve to something else.
+        /// </para>
+        /// </remarks>
+        private static string VirtualRecordingPath(string id)
+            => "TVHeadend/Recordings/" + id;
+
+        /// <summary>
+        /// Builds the address Jellyfin fetches a recording from: this plugin's own endpoint, not
         /// TVHeadend's.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// TVHeadend drops the connection when FFmpeg seeks back to the start after analysing the
         /// stream, and Jellyfin has no way to tell FFmpeg not to. Serving the recording here
         /// turns every seek into a fresh request upstream, which TVHeadend answers reliably, and
         /// puts recordings where live TV already is.
+        /// </para>
+        /// <para>
+        /// The address says nothing about the container, because at the point it is built nothing
+        /// knows it: TVHeadend's DVR profile decides that, and the answer arrives with the
+        /// analysis. The old <c>stream.ts</c> spelling claimed MPEG-TS of every recording,
+        /// including the Matroska a WebTV profile writes.
+        /// </para>
         /// </remarks>
-        private string BuildRecordingPath(string id)
+        private string BuildRecordingUrl(string id)
         {
             try
             {
                 var secret = EnsureAccessSecret();
                 return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
-                    + "/TVHeadend/Recordings/"
-                    + Api.RecordingAccessToken.Create(id, secret)
-                    + "/stream.ts";
+                    + Api.TvHeadendRecordingsController.StreamPathFor(Api.RecordingAccessToken.Create(id, secret));
             }
             catch (Exception ex)
             {

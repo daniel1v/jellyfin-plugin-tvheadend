@@ -297,8 +297,89 @@ nothing else. It is explicitly **not** used to conclude that the recording lacks
 bounded probe cannot establish an absence, and an earlier version used exactly that inference to
 withhold direct play and serve a re-encode for whole recordings.
 
-HEAD and GET therefore describe the same resource identically: one route, proxying TVHeadend,
-advertising the same length and the same range support to both.
+HEAD and GET therefore describe the same resource identically: one method, proxying TVHeadend,
+advertising the same length, the same range support and the same content type to both.
+
+The address a recording is served from says nothing about its container -- `/TVHeadend/Recordings/{token}/stream`. What a recording actually is follows TVHeadend's DVR profile, which a WebTV
+setting makes Matroska, and the answer arrives with the analysis long after the address is built.
+The older `.../stream.ts` spelling still answers, on the same method rather than a second one,
+because it is written into media sources people already have.
+
+The content type is TVHeadend's own where it states one, and `application/octet-stream` where it
+does not. `video/mp2t` unconditionally was the same overstatement the `.ts` was.
+
+## One contract for live TV and recordings
+
+Both publish the same shape:
+
+| | Live TV | Recording |
+|---|---|---|
+| `Protocol` | `File` | `File` |
+| `Path` | the ring buffer file | `TVHeadend/Recordings/{id}`, a name for a file nobody opens |
+| `EncoderProtocol` | `Http` | `Http` |
+| `EncoderPath` | Jellyfin's own live stream URL | this plugin's recording proxy |
+| `Container` | `ts` | whatever the analysis found, `ts` for MPEG-TS |
+
+The split is what lets one media source say two true things at once. A client is told the plainest
+thing there is -- a whole, seekable file it may play as it stands -- while the server reaches the
+bytes over HTTP. `EncodingHelper.AttachMediaSourceInfo` prefers `EncoderPath` and `EncoderProtocol`
+whenever both are set, so `state.InputProtocol` becomes HTTP and Jellyfin never tries to open the
+path itself.
+
+Saying `File` is not decoration. `StreamBuilder.SortMediaSources` ranks a direct-played file above
+everything else -- *"nothing beats direct playing a file"* is the comment in Jellyfin's own source
+-- and this is what puts a channel and a recording on the same footing as any other item in the
+library.
+
+For a recording the request lands in `GetStaticRemoteStreamResult`, which forwards the client's
+`Range` header upstream and returns the upstream status, `Content-Range`, `Content-Length` and
+`Accept-Ranges` unaltered, so seeking behaves exactly as it did. For live TV it lands one branch
+earlier, on `ProgressiveFileStream(liveStreamInfo.GetStream())` -- see [Naming the stream a client
+did not](#naming-the-stream-a-client-did-not).
+
+The path a recording carries is deliberately not shaped like a real one. Nothing on this server
+reads it, but a client configured for direct file access resolves what it is given against its own
+filesystem, and a plausible-looking path is the one that could accidentally resolve to something
+else.
+
+## Naming the stream a client did not
+
+A static video request reaches `ProgressiveFileStream` only when `state.DirectStreamProvider` is
+set, and `StreamingHelpers.GetStreamingState` sets that in one branch only: the one taken when the
+request names a `LiveStreamId`. Some clients send only the media source. Without the identifier
+Jellyfin has no provider, falls through, and serves the ring buffer file directly -- which ends at
+whatever had been written when it was opened.
+
+So the middleware supplies it, from a registry of which live stream a media source identifier
+stands for, written when the stream is opened or reused. Two things have to agree before anything
+is added: the registry has to hold a stream for that media source, and
+`mediaSourceManager.GetLiveStreamInfo` has to return *the same object* for the identifier that
+stream carries. Not an equal one -- the same one. Nothing is inferred from a client name, a user
+agent, a channel name or the order things happened in, and the references are weak, so an entry
+never keeps a tuner open.
+
+## Two spellings of one container
+
+MPEG-TS is `ts` to Jellyfin's probe normaliser and to Android TV, and `mpegts` to FFprobe and to
+the mobile app. The comparison between a device profile and a media source is a literal string one,
+and a source can carry only one name -- so the profile is the side that has to say both.
+
+On a `PlaybackInfo` request for one of this plugin's own items, the device profile the client sent
+gains the missing spelling: direct play profiles, container profiles and the container-bound codec
+profiles. Transcoding profiles are left alone, because there the container names what the client
+wants produced rather than what it can read. A list already naming both, naming neither, or written
+as a negative list is untouched, and every other item in the library passes through with the profile
+exactly as its client sent it.
+
+Whose an item is comes from the library -- a live channel records the service that produced it --
+and never from the request. A display name, a path fragment or a prefix would all be coincidences
+waiting to happen.
+
+The source itself is `ts` and stays `ts`. It reaches FFmpeg as `-f` whenever the server has
+hardware acceleration configured, and Jellyfin translates it on the way through:
+`EncodingHelper.GetInputFormat` maps `ts` to `mpegts`. Naming both at once was tried and broke
+playback outright on such a server -- `-f mpegts,ts` is not a demuxer.
+
 
 ## Known external issues
 

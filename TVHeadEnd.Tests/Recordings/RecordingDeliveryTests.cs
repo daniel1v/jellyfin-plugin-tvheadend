@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Recordings;
@@ -54,25 +55,141 @@ public class RecordingDeliveryTests
     }
 
     [Fact]
-    public void TheRecordingEndpointHasOneRouteForHeadAndGet()
+    public void EveryRouteToARecordingAnswersWithTheSameMethodForHeadAndGet()
     {
-        // Both verbs land on the same method, so they cannot describe the resource differently.
+        // Both verbs land on the same method for every route it has, so they cannot describe the
+        // resource differently -- which is the whole reason a second implementation was refused
+        // for the neutral URL.
+        Assert.Equal(GetRoutes(), HeadRoutes());
+    }
+
+    [Fact]
+    public void ARecordingIsServedFromAnAddressThatClaimsNoContainer()
+    {
+        // TVHeadend's DVR profile decides what a recording is, and the answer arrives with the
+        // analysis -- long after the address is built. The ".ts" on the end asserted MPEG-TS of
+        // every recording, including the Matroska a WebTV profile writes.
+        var published = TVHeadEnd.Api.TvHeadendRecordingsController.StreamPathFor("token");
+
+        Assert.Equal("/TVHeadend/Recordings/token/stream", published);
+
+        // And it is a route the controller actually serves, prefix included, rather than a
+        // string that merely looks like one.
+        Assert.Contains("/TVHeadend/Recordings/{token}/stream", GetRoutes());
+
+    }
+
+    [Fact]
+    public void TheOldContainerSpecificAddressStillAnswers()
+    {
+        // It is written into media sources people already have, and a stored recording that
+        // stopped playing would be a worse outcome than a name that overstates its container.
+        Assert.Contains("/TVHeadend/Recordings/{token}/stream.ts", GetRoutes());
+        Assert.Contains("/TVHeadend/Recordings/{token}/stream.ts", HeadRoutes());
+
+    }
+
+    [Fact]
+    public void ARecordingIsAFileToTheClientAndAnAddressToJellyfin()
+    {
+        // The same split live TV uses. EncodingHelper.AttachMediaSourceInfo prefers EncoderPath
+        // and EncoderProtocol whenever both are set, so the server fetches over HTTP while the
+        // client is told the plainest thing there is: a whole file it may play as it stands.
+        var source = RecordingsChannel.BuildRecordingSource("867835561", "http://host:8096/TVHeadend/Recordings/t/stream");
+
+        Assert.Equal(MediaProtocol.File, source.Protocol);
+        Assert.False(string.IsNullOrEmpty(source.Path));
+
+        Assert.Equal(MediaProtocol.Http, source.EncoderProtocol);
+        Assert.Equal("http://host:8096/TVHeadend/Recordings/t/stream", source.EncoderPath);
+    }
+
+    [Fact]
+    public void TheFileARecordingNamesIsNotOneAnybodyCouldOpenByAccident()
+    {
+        // Nothing on the server reads it -- AttachMediaSourceInfo takes EncoderPath instead --
+        // but a client configured for direct file access resolves what it is given against its
+        // own filesystem. A path that looks real is the one that could resolve to something else.
+        var source = RecordingsChannel.BuildRecordingSource("867835561", "http://host:8096/x");
+
+        Assert.DoesNotContain("://", source.Path, StringComparison.Ordinal);
+        Assert.False(System.IO.Path.IsPathRooted(source.Path));
+    }
+
+    [Fact]
+    public void ARecordingStartsOutNamedTheWayALiveChannelIs()
+    {
+        // The starting assumption only; DescribeFromSample replaces it with whatever the sample
+        // turned out to be. What matters is that the two paths spell the one container alike.
+        var source = RecordingsChannel.BuildRecordingSource("867835561", "http://host:8096/x");
+
+        Assert.Equal("ts", source.Container);
+        Assert.Equal(TVHeadEnd.Playback.LiveMediaSource.Container, source.Container);
+    }
+
+    [Theory]
+    [InlineData("video/MP2T", "video/MP2T")]
+    [InlineData("application/octet-stream", "application/octet-stream")]
+    [InlineData("video/x-matroska", "video/x-matroska")]
+    public void WhatTvheadendCallsARecordingIsWhatTheClientIsTold(string upstream, string expected)
+    {
+        // TVHeadend stored it, so TVHeadend gets to say what it is. Answering "video/mp2t"
+        // regardless was a claim about a container this endpoint never inspects.
+        Assert.Equal(expected, TVHeadEnd.Api.TvHeadendRecordingsController.DescribeContent(Answer(upstream)));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("text/html")]
+    public void ARecordingTvheadendDidNotDescribeIsPassedOnAsBytes(string? upstream)
+    {
+        // Nothing is invented from nothing, and a server answering a byte range with a document
+        // is describing an error page rather than a recording. Jellyfin's
+        // GetStaticRemoteStreamResult falls back to exactly this value itself.
+        Assert.Equal("application/octet-stream", TVHeadEnd.Api.TvHeadendRecordingsController.DescribeContent(Answer(upstream)));
+    }
+
+    private static System.Net.Http.HttpResponseMessage Answer(string? contentType)
+    {
+        var response = new System.Net.Http.HttpResponseMessage
+        {
+            Content = new System.Net.Http.ByteArrayContent([0x47]),
+        };
+
+        response.Content.Headers.ContentType = contentType is null
+            ? null
+            : System.Net.Http.Headers.MediaTypeHeaderValue.Parse(contentType);
+
+        return response;
+    }
+
+    private static string[] GetRoutes() => Templates<Microsoft.AspNetCore.Mvc.HttpGetAttribute>(a => a.Template);
+
+    private static string[] HeadRoutes() => Templates<Microsoft.AspNetCore.Mvc.HttpHeadAttribute>(a => a.Template);
+
+    private static string[] Templates<T>(Func<T, string?> template)
+        where T : Attribute
+    {
         var method = typeof(TVHeadEnd.Api.TvHeadendRecordingsController)
             .GetMethod(nameof(TVHeadEnd.Api.TvHeadendRecordingsController.GetRecording));
 
         Assert.NotNull(method);
 
-        var get = method!.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpGetAttribute), false);
-        var head = method.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpHeadAttribute), false);
+        // Read off the class rather than written out again here: a test that repeats the prefix
+        // would keep passing if the controller moved.
+        var prefix = typeof(TVHeadEnd.Api.TvHeadendRecordingsController)
+            .GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.RouteAttribute), false)
+            .Cast<Microsoft.AspNetCore.Mvc.RouteAttribute>()
+            .Single()
+            .Template;
 
-        Assert.Single(get);
-        Assert.Single(head);
+        return [.. method!.GetCustomAttributes(typeof(T), false)
+            .Cast<T>()
+            .Select(attribute => "/" + prefix + "/" + (template(attribute) ?? string.Empty))
+            .Order(StringComparer.Ordinal)];
 
-        var getTemplate = ((Microsoft.AspNetCore.Mvc.HttpGetAttribute)get[0]).Template;
-        var headTemplate = ((Microsoft.AspNetCore.Mvc.HttpHeadAttribute)head[0]).Template;
-
-        Assert.Equal(getTemplate, headTemplate);
     }
+
 
     [Fact]
     public void NothingReEncodesARecordingOnTheWayToTheClient()
@@ -155,7 +272,7 @@ public class RecordingDeliveryTests
         => new()
         {
             Id = "recording-1",
-            Container = "mpegts",
+            Container = "ts",
             SupportsDirectPlay = true,
             SupportsDirectStream = true,
             SupportsTranscoding = true,

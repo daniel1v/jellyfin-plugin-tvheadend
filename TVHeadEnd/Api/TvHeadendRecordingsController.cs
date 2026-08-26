@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Mime;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -53,13 +54,36 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
+        /// The route a recording is served from, for the token that names it.
+        /// </summary>
+        /// <param name="token">The unguessable name of the recording.</param>
+        /// <returns>The path, relative to the server root.</returns>
+        public static string StreamPathFor(string token)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(token);
+
+            return "/TVHeadend/Recordings/" + token + "/stream";
+        }
+
+        /// <summary>
         /// Streams a recording.
         /// </summary>
+        /// <remarks>
+        /// Two routes, one method. The neutral one is what recordings are published under: what a
+        /// recording actually contains is TVHeadend's DVR profile to decide, and a <c>.ts</c> on
+        /// the end asserted MPEG-TS of every recording including the Matroska a WebTV profile
+        /// writes. The old spelling stays reachable because it is already stored in media sources
+        /// somebody has, and it answers identically -- the same method, not a second one that
+        /// could drift from it.
+        /// </remarks>
         /// <param name="token">The unguessable name of the recording.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The recording.</returns>
+        [HttpGet("Recordings/{token}/stream")]
+        [HttpHead("Recordings/{token}/stream")]
         [HttpGet("Recordings/{token}/stream.ts")]
         [HttpHead("Recordings/{token}/stream.ts")]
+
         [AllowAnonymous]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status206PartialContent)]
@@ -153,17 +177,57 @@ namespace TVHeadEnd.Api
                 Response.Headers.ContentRange = contentRange.ToString();
             }
 
+            // Settled once, and stated by both verbs. A HEAD that omitted it described a
+            // different representation than the GET beside it -- the same divergence the single
+            // route exists to prevent.
+            var contentType = DescribeContent(response);
+
             if (HttpMethods.IsHead(Request.Method))
             {
+                Response.ContentType = contentType;
                 response.Dispose();
                 return new EmptyResult();
             }
 
             var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            return new FileStreamResult(new UpstreamStream(body, response), "video/mp2t")
+            return new FileStreamResult(new UpstreamStream(body, response), contentType)
             {
                 EnableRangeProcessing = false,
             };
+        }
+
+        /// <summary>
+        /// What to call the bytes being passed on.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// TVHeadend knows what it stored, so its answer is preferred over anything worked out
+        /// here. Where it says nothing the honest answer is that these are bytes: the recording
+        /// was <c>video/mp2t</c> unconditionally before, which is a claim about a container the
+        /// DVR profile decides and this endpoint never inspects.
+        /// </para>
+        /// <para>
+        /// Nothing downstream is worse off for the generic answer. Jellyfin's
+        /// <c>GetStaticRemoteStreamResult</c> passes whatever arrives straight to the client and
+        /// already falls back to the same value, and every decision about the container is made
+        /// from the media source, which carries the analysed one.
+        /// </para>
+        /// </remarks>
+        /// <param name="response">The answer TVHeadend gave.</param>
+        /// <returns>The media type to state to the client.</returns>
+        internal static string DescribeContent(HttpResponseMessage response)
+        {
+            var stated = response.Content.Headers.ContentType?.MediaType;
+
+            // A server answering a byte range with a document is describing an error page, not a
+            // recording, and repeating that to the client would only spread the confusion.
+            if (string.IsNullOrEmpty(stated)
+                || stated.StartsWith("text/", StringComparison.OrdinalIgnoreCase))
+            {
+                return MediaTypeNames.Application.Octet;
+            }
+
+            return response.Content.Headers.ContentType!.ToString();
         }
 
         /// <summary>
