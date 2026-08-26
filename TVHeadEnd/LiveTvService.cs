@@ -326,6 +326,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
 
         var recordings = _connection.Dvr.GetRecordings();
         var endpoint = _connection.HttpEndpoint;
+        var borrowLogos = Plugin.Instance.Configuration.UseChannelLogoWhereArtworkIsMissing;
 
         // Here rather than in the mapper, which is a pure projection of one HTSP message and has
         // neither this server's address nor its secret. This is also the only place every
@@ -337,10 +338,9 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             // broadcast EPG is every recording: DVB EIT has no field for one. Published as a
             // poster, because Jellyfin draws a recording's primary image as one and a 400x240
             // logo handed over as it stands is a landscape picture blown up into a portrait frame.
-            recording.ImageUrl = _artwork.PosterAddressFor(
-                recording.ImageReference,
-                _connection.Channels.Get(recording.ChannelId)?.Icon,
-                endpoint);
+            var logo = borrowLogos ? _connection.Channels.Get(recording.ChannelId)?.Icon : null;
+
+            recording.ImageUrl = _artwork.PosterAddressFor(recording.ImageReference, logo, endpoint);
 
             recording.HasImage = !string.IsNullOrEmpty(recording.ImageUrl);
         }

@@ -58,8 +58,23 @@
                         <span>Save</span>
                     </button>
                 </div>
+                <div class="checkboxContainer">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" id="chkUseChannelLogoWhereArtworkIsMissing" />
+                        <span>Use the channel logo where there is no artwork</span>
+                    </label>
+                    <div class="fieldDescription">
+                        Broadcast listings carry no pictures at all, so without this a recording is
+                        a blank tile and a guide entry has nothing beside it. The channel logo at
+                        least says which broadcaster the programme came from, and it never replaces
+                        artwork that does exist. On a recording it is letterboxed onto a poster
+                        rather than stretched. Turning this off stops it being published; anything
+                        that already took a logo keeps it until the artwork is forgotten below.
+                    </div>
+                </div>
                 <div style="margin-top:2em">
                     <h3>Recording artwork</h3>
+
                     <button is="emby-button" type="button" id="btnResetArtwork" class="raised block">
                         <span>Forget stored recording artwork</span>
                     </button>

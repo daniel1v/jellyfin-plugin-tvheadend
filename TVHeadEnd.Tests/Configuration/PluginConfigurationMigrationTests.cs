@@ -7,6 +7,15 @@ namespace TVHeadEnd.Tests.Configuration;
 public class PluginConfigurationMigrationTests
 {
     [Fact]
+    public void BorrowingTheChannelLogoIsOnUntilSomebodyTurnsItOff()
+    {
+        // A server upgrading into this has no such element in its stored configuration, and the
+        // serialiser leaves an absent element at whatever the constructor set. On is the useful
+        // default: on a broadcast listing the alternative is a wall of blank tiles.
+        Assert.True(new PluginConfiguration().UseChannelLogoWhereArtworkIsMissing);
+    }
+
+    [Fact]
     public void TheOldProfileSettingBecomesTheDvrProfile()
     {
         // It always named a TVHeadend DVR configuration. The rename is what makes the new stream

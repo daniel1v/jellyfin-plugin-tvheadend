@@ -18,6 +18,12 @@ export default function (view, params) {
             page.querySelector('#txtPostPadding').value = config.Post_Padding || '0';
             page.querySelector('#selChannelType').value = config.ChannelType || 'Ignore';
             page.querySelector('#chkHideRecordingsChannel').checked = config.HideRecordingsChannel || false;
+
+            // Absent means a configuration written before this setting existed, and the plugin
+            // defaults it on, so the box has to agree rather than reading absence as "off".
+            page.querySelector('#chkUseChannelLogoWhereArtworkIsMissing').checked =
+                config.UseChannelLogoWhereArtworkIsMissing !== false;
+
             page.querySelector('#txtLiveBufferSizeMegabytes').value = config.LiveBufferSizeMegabytes || '512';
             Dashboard.hideLoadingMsg();
         });
@@ -55,6 +61,9 @@ export default function (view, params) {
             config.Pre_Padding = form.querySelector('#txtPrePadding').value;
             config.Post_Padding = form.querySelector('#txtPostPadding').value;
             config.ChannelType = form.querySelector('#selChannelType').value;
+            config.UseChannelLogoWhereArtworkIsMissing =
+                form.querySelector('#chkUseChannelLogoWhereArtworkIsMissing').checked;
+
             config.HideRecordingsChannel = form.querySelector('#chkHideRecordingsChannel').checked;
             config.LiveBufferSizeMegabytes = form.querySelector('#txtLiveBufferSizeMegabytes').value;
             ApiClient.updatePluginConfiguration(TVHclientConfigurationPageVar.pluginUniqueId, config).then(Dashboard.processPluginConfigurationUpdateResult);

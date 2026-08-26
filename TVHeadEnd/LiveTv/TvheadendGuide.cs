@@ -73,7 +73,9 @@ public sealed class TvheadendGuide
 
         // Read once for the whole window rather than per entry: every programme on this channel
         // carries the same logo, and the catalog lookup is not free.
-        var icon = _connection.Channels.Get(channelId)?.Icon;
+        var icon = Plugin.Instance.Configuration.UseChannelLogoWhereArtworkIsMissing
+            ? _connection.Channels.Get(channelId)?.Icon
+            : null;
 
         var programs = new List<ProgramInfo>(events.Count);
         foreach (var entry in events)

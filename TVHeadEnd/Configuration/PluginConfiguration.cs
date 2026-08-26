@@ -34,6 +34,7 @@ public class PluginConfiguration : BasePluginConfiguration
         Post_Padding = 0;
         ChannelType = "Ignore";
         HideRecordingsChannel = false;
+        UseChannelLogoWhereArtworkIsMissing = true;
         LiveBufferSizeMegabytes = 512;
         RecordingAccessSecret = string.Empty;
     }
@@ -111,6 +112,28 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets a value indicating whether the recordings channel is hidden.
     /// </summary>
     public bool HideRecordingsChannel { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether a recording or guide entry with no artwork of its
+    /// own borrows the logo of the channel it came from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On over-the-air listings there is nothing else to show: broadcast DVB EIT has no field for
+    /// a picture, so nothing that comes from it has one. The channel's logo at least says which
+    /// broadcaster the programme came from, and it never displaces artwork that does exist.
+    /// </para>
+    /// <para>
+    /// A matter of taste, so it is a setting rather than a decision made here. On by default,
+    /// because the alternative on such a listing is a wall of blank tiles. A server whose EPG
+    /// carries real artwork loses nothing by leaving it on and nothing by turning it off.
+    /// </para>
+    /// <para>
+    /// Turning it off stops it being published; the recordings that already took a logo keep it
+    /// until the artwork is forgotten, which is what the reset in the settings page is for.
+    /// </para>
+    /// </remarks>
+    public bool UseChannelLogoWhereArtworkIsMissing { get; set; }
 
     /// <summary>
     /// Gets or sets the size of the buffer each running channel occupies on disk.
