@@ -287,6 +287,33 @@ Only the playlists, too. Segment requests are not adjusted: by the time one is f
 naming it has already been released. Radio takes Jellyfin's audio route and is left alone, because
 the nine seconds being cut here is the wait for video segments.
 
+## Channel logos
+
+TVHeadend serves them from `/imagecache/N`, behind the same authentication as everything else it
+serves. Jellyfin is handed an image URL and fetches it with an HTTP client of its own, which knows
+nothing of TVHeadend -- so it received 401 and every channel was blank. Measured against a real
+server: anonymous 401, authenticated 200 and 4,971 bytes for the same path.
+
+Credentials in the URL do not fix it, although an earlier version tried. **`HttpClient` ignores the
+userinfo component of a URI** and sends no `Authorization` header for it, so
+`http://user:pass@host/imagecache/1` fails with exactly the same 401. What it did achieve was
+writing the TVHeadend password into Jellyfin's database as an image path, and into the log on every
+failed fetch.
+
+So the logo is fetched here instead. A channel publishes `/TVHeadend/Channels/{token}/image`, which
+is on Jellyfin and needs no credentials; this plugin then asks TVHeadend for it with the header it
+uses everywhere else. Because the published address differs from the stored one, Jellyfin replaces
+the old path on the next guide refresh -- which is also what clears the stored passwords.
+
+The token names the channel and nothing else. The icon is looked up from the HTSP catalog by that
+identifier, so no part of a request can choose the address this server fetches from. The route is
+anonymous because Jellyfin's image pipeline carries no session, exactly as the recordings route is,
+and an unguessable address is what stands in for one.
+
+One rule on top: the TVHeadend header is attached only when the resolved address is on the
+TVHeadend endpoint. A channel icon can be an absolute URL an EPG provider supplied, pointing
+anywhere at all, and those go out bare.
+
 ## Recordings
 
 A separate path, and deliberately less clever than it was.

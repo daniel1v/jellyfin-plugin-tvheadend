@@ -45,6 +45,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     private readonly ChannelItemIds _itemIds;
     private readonly PlaybackClient _client;
     private readonly OpenLiveStreams _openStreams;
+    private readonly IServerApplicationHost _applicationHost;
 
     private readonly ILogger<LiveTvService> _logger;
 
@@ -78,6 +79,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         _itemIds = new ChannelItemIds(libraryManager);
         _client = new PlaybackClient(httpContextAccessor);
         _openStreams = openStreams;
+        _applicationHost = applicationHost;
 
         var bufferDirectory = LiveBufferDirectory.Resolve(configurationManager);
         LiveBufferDirectory.RemoveOrphaned(bufferDirectory, _logger);
@@ -117,11 +119,49 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         foreach (var channel in channels)
         {
             var known = _connection.Channels.Get(channel.Id);
-            channel.ImageUrl = endpoint.ResolveImageUrl(known?.Icon);
+            channel.ImageUrl = BuildChannelImageUrl(channel.Id, known?.Icon);
             channel.HasImage = !string.IsNullOrEmpty(channel.ImageUrl);
         }
 
         return channels;
+    }
+
+    /// <summary>
+    /// Builds the address a channel's logo is served from: this plugin's own endpoint, not
+    /// TVHeadend's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Jellyfin fetches an image URL with an HTTP client of its own, which knows nothing of
+    /// TVHeadend. A server that requires authentication answers that with 401 and the channel has
+    /// no logo. Credentials in the URL do not help -- HttpClient ignores the userinfo component
+    /// entirely -- and all an earlier attempt at that achieved was writing the TVHeadend password
+    /// into Jellyfin's database as an image path.
+    /// </para>
+    /// <para>
+    /// Pointing at this plugin instead means the fetch that needs the credentials is made by the
+    /// code that has them. A channel with no icon gets no address, so Jellyfin shows what it
+    /// shows for anything else without one.
+    /// </para>
+    /// </remarks>
+    private string? BuildChannelImageUrl(string channelId, string? icon)
+    {
+        if (string.IsNullOrEmpty(icon) || string.IsNullOrEmpty(channelId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var secret = Api.TvheadendAccessSecret.Ensure(_logger);
+            return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
+                + Api.TvHeadendImagesController.ImagePathFor(Api.TvheadendAccessToken.Create(channelId, secret));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Live TV: could not build a logo address for channel {ChannelId}", channelId);
+            return null;
+        }
     }
 
     /// <summary>

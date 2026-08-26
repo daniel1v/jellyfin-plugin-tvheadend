@@ -83,7 +83,6 @@ namespace TVHeadEnd
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _applicationHost;
         private readonly RecordingDescriber _describer;
-        private readonly object _secretLock = new();
 
         // A finished recording never changes, so what an analysis found holds for as long as the
         // server runs. Without this every listing of a folder would analyse its contents again.
@@ -559,33 +558,6 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Gets the secret the addresses of recordings are derived from, creating it the first
-        /// time it is needed. It has to survive restarts, because Jellyfin stores the address it
-        /// produced on the item.
-        /// </summary>
-        private string EnsureAccessSecret()
-        {
-            var configuration = Plugin.Instance.Configuration;
-            if (!string.IsNullOrEmpty(configuration.RecordingAccessSecret))
-            {
-                return configuration.RecordingAccessSecret;
-            }
-
-            lock (_secretLock)
-            {
-                configuration = Plugin.Instance.Configuration;
-                if (string.IsNullOrEmpty(configuration.RecordingAccessSecret))
-                {
-                    configuration.RecordingAccessSecret = Api.RecordingAccessToken.CreateSecret();
-                    Plugin.Instance.SaveConfiguration();
-                    _logger.LogInformation("TVHeadend recordings: created the secret their addresses are derived from");
-                }
-
-                return configuration.RecordingAccessSecret;
-            }
-        }
-
-        /// <summary>
         /// The identifier a client sends back as MediaSourceId, derived from the recording so it
         /// is the same on every call and after a restart.
         /// </summary>
@@ -750,9 +722,9 @@ namespace TVHeadEnd
         {
             try
             {
-                var secret = EnsureAccessSecret();
+                var secret = Api.TvheadendAccessSecret.Ensure(_logger);
                 return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
-                    + Api.TvHeadendRecordingsController.StreamPathFor(Api.RecordingAccessToken.Create(id, secret));
+                    + Api.TvHeadendRecordingsController.StreamPathFor(Api.TvheadendAccessToken.Create(id, secret));
             }
             catch (Exception ex)
             {

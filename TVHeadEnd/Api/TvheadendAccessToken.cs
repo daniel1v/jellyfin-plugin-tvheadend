@@ -6,24 +6,30 @@ using System.Text;
 namespace TVHeadEnd.Api
 {
     /// <summary>
-    /// Names a recording in a way that cannot be guessed.
+    /// Names a TVHeadend resource in a way that cannot be guessed.
     /// </summary>
     /// <remarks>
-    /// The endpoint that serves recordings has to be reachable without a session, because FFmpeg
-    /// fetches from it and Jellyfin stores the address on the item; its own live stream endpoint
-    /// works the same way. What protects that one is the address itself -- an unguessable
-    /// identifier. A TVHeadend recording identifier is a small number, so it is accompanied by a
-    /// tag derived from a secret only the server knows, which turns enumeration back into
-    /// guessing.
+    /// <para>
+    /// The endpoints this plugin serves have to be reachable without a session: FFmpeg fetches a
+    /// recording, and Jellyfin fetches a channel image from its own image pipeline, neither of
+    /// them carrying one. Jellyfin's own live stream endpoint works the same way. What protects
+    /// those is the address itself -- an unguessable one.
+    /// </para>
+    /// <para>
+    /// A TVHeadend identifier is a small number, so it is accompanied by a tag derived from a
+    /// secret only the server knows, which turns enumeration back into guessing. The identifier
+    /// is the only thing the token carries: nothing a caller sends can name a URL, so no request
+    /// this plugin makes can be steered by one.
+    /// </para>
     /// </remarks>
-    internal static class RecordingAccessToken
+    internal static class TvheadendAccessToken
     {
         private const int TagLength = 16;
 
         /// <summary>
-        /// Builds the token naming a recording.
+        /// Builds the token naming a resource.
         /// </summary>
-        /// <param name="recordingId">The TVHeadend recording identifier.</param>
+        /// <param name="recordingId">The TVHeadend identifier.</param>
         /// <param name="secret">The server's secret.</param>
         /// <returns>The token.</returns>
         public static string Create(string recordingId, string secret)
@@ -35,11 +41,11 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
-        /// Reads the recording out of a token, refusing one that was not built from the secret.
+        /// Reads the identifier out of a token, refusing one that was not built from the secret.
         /// </summary>
         /// <param name="token">The token from the request.</param>
         /// <param name="secret">The server's secret.</param>
-        /// <param name="recordingId">The recording named by the token.</param>
+        /// <param name="recordingId">The resource named by the token.</param>
         /// <returns>Whether the token was genuine.</returns>
         public static bool TryRead(string? token, string secret, out string recordingId)
         {

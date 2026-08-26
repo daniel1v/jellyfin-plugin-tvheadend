@@ -90,7 +90,7 @@ namespace TVHeadEnd.Api
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<ActionResult> GetRecording(string token, CancellationToken cancellationToken)
         {
-            if (!RecordingAccessToken.TryRead(token, Plugin.Instance.Configuration.RecordingAccessSecret, out var recordingId))
+            if (!TvheadendAccessToken.TryRead(token, Plugin.Instance.Configuration.RecordingAccessSecret, out var recordingId))
             {
                 return NotFound();
             }
