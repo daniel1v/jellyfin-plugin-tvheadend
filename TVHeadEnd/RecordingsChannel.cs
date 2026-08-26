@@ -65,7 +65,7 @@ namespace TVHeadEnd
         /// between here and the database. Raise it by one per change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 1;
+        private const int MediaSourceSchemaRevision = 2;
 
         /// <summary>
         /// The floor every recording's modification date is lifted to, unchanged since 13.2.x.
@@ -131,10 +131,25 @@ namespace TVHeadEnd
 
         /// <summary>
         /// Gets the version of this channel's contents. It forms part of the path Jellyfin caches
-        /// a channel's listing under, so raising it discards that cache and the plugin is asked
+        /// a channel's listing under, so changing it discards that cache and the plugin is asked
         /// again.
         /// </summary>
-        public string DataVersion => "9";
+        /// <remarks>
+        /// <para>
+        /// Derived from <see cref="MediaSourceSchemaRevision"/> rather than typed separately,
+        /// because the two answer the same question and were getting different answers. A listing
+        /// is cached for three hours under a path built from this string, and the cache key the
+        /// channel supplies follows TVHeadend's recordings rather than the plugin -- so an upgrade
+        /// that changed how a recording is described was invisible until the cache aged out,
+        /// with nothing to say so. Measured: a listing cached at 18:34 was still being served at
+        /// 21:29, two hours after the version that would have changed it was installed.
+        /// </para>
+        /// <para>
+        /// One number now governs both halves of an upgrade reaching existing recordings: this
+        /// discards the cached listing, and the published date rewrites the items already stored.
+        /// </para>
+        /// </remarks>
+        public string DataVersion => "9." + MediaSourceSchemaRevision.ToString(CultureInfo.InvariantCulture);
 
         public string HomePageUrl
         {

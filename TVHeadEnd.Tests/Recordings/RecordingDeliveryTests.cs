@@ -223,9 +223,12 @@ public class RecordingDeliveryTests
         // a recording is described reaches existing recordings only through this date.
         var recordingChanged = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
 
-        // What 13.2.x stored for it: the floor, with no revision on top.
-        var stored = PublishedBy(recordingChanged, revision: 0);
-        var now = PublishedBy(recordingChanged, revision: 1);
+        // What the version before this one stored for it, and what this one publishes. Derived
+        // rather than written out, so raising the revision does not need this test edited -- the
+        // property under test is the step, not the number.
+        var stored = PublishedBy(recordingChanged, SchemaRevision() - 1);
+        var now = PublishedBy(recordingChanged, SchemaRevision());
+
 
         // Once...
         Assert.True(now > stored);
@@ -266,7 +269,9 @@ public class RecordingDeliveryTests
         // here for a recording TVHeadend wrote long after the release that introduced it.
         var wroteMuchLater = new DateTime(2028, 5, 4, 9, 30, 0, DateTimeKind.Utc);
 
-        Assert.True(PublishedBy(wroteMuchLater, revision: 1) > PublishedBy(wroteMuchLater, revision: 0));
+        Assert.True(
+            PublishedBy(wroteMuchLater, SchemaRevision())
+            > PublishedBy(wroteMuchLater, SchemaRevision() - 1));
     }
 
     [Fact]
@@ -276,7 +281,7 @@ public class RecordingDeliveryTests
         // counted from, and the floor is what gives it one.
         var ancient = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
-        Assert.Equal(PublishedBy(DateFloor(), revision: 1), RecordingsChannel.PublishedDateFor(ancient));
+        Assert.Equal(PublishedBy(DateFloor(), SchemaRevision()), RecordingsChannel.PublishedDateFor(ancient));
     }
 
     [Fact]
@@ -309,6 +314,24 @@ public class RecordingDeliveryTests
         Assert.Equal(
             TimeSpan.FromSeconds(revision),
             RecordingsChannel.PublishedDateFor(DateFloor()) - DateFloor());
+    }
+
+    [Fact]
+    public void RaisingTheRevisionAlsoDiscardsTheCachedListing()
+    {
+        // Both halves of an upgrade reaching existing recordings, from one number. Jellyfin caches
+        // a channel's listing for three hours under a path built from DataVersion, and the cache
+        // key this channel supplies follows TVHeadend's recordings rather than the plugin -- so a
+        // version that changed how a recording is described used to be invisible until the cache
+        // aged out, with nothing to say so. Measured once: a listing cached at 18:34 was still
+        // being served at 21:29, two hours after the change was installed.
+        var channel = (RecordingsChannel)System.Runtime.CompilerServices.RuntimeHelpers
+            .GetUninitializedObject(typeof(RecordingsChannel));
+
+        Assert.Contains(
+            SchemaRevision().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            channel.DataVersion,
+            StringComparison.Ordinal);
     }
 
     private static int SchemaRevision()
