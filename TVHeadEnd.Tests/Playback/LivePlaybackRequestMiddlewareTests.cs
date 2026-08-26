@@ -17,11 +17,11 @@ namespace TVHeadEnd.Tests.Playback;
 /// The one step this plugin adds to Jellyfin's request pipeline.
 /// </summary>
 /// <remarks>
-/// It exists to say <c>allowVideoStreamCopy=false</c> for one stream, and its whole risk is saying
-/// it for anything else. Most of what is below is therefore about the requests it must leave
-/// exactly as they arrived.
+/// It adjusts the streaming requests Jellyfin makes for a live stream this plugin opened, and its
+/// whole risk is adjusting anything else. Most of what is below is therefore about the requests it
+/// must leave exactly as they arrived.
 /// </remarks>
-public class ForcedVideoReencodeMiddlewareTests
+public class LivePlaybackRequestMiddlewareTests
 {
     private const string ForcedId = "live-forced";
     private const string PlainId = "live-plain";
@@ -58,19 +58,78 @@ public class ForcedVideoReencodeMiddlewareTests
     }
 
     [Fact]
-    public async Task ARequestNamingOneOfOurStreamsThatPlaysAsDeliveredIsUntouched()
+    public async Task ARequestForOneOfOurStreamsThatIsNotAPlaylistIsUntouched()
+    {
+        // The segment counts belong to the playlist Jellyfin holds back. A request for the
+        // transport stream itself is not held back by anything and gains nothing here.
+        var context = Request($"/videos/1/stream.ts?LiveStreamId={PlainId}&static=true");
+
+        await Invoke(context);
+
+        Assert.Equal($"?LiveStreamId={PlainId}&static=true", context.Request.QueryString.Value);
+    }
+
+    [Fact]
+    public async Task APlaylistForOneOfOurStreamsThatPlaysAsDeliveredKeepsItsCopy()
     {
         var context = Request($"/videos/1/live.m3u8?LiveStreamId={PlainId}&allowVideoStreamCopy=true");
 
         await Invoke(context);
 
-        Assert.Equal($"?LiveStreamId={PlainId}&allowVideoStreamCopy=true", context.Request.QueryString.Value);
+        // The stream plays as delivered, so nothing is said about copying it either way.
+        Assert.Equal("true", context.Request.Query["allowVideoStreamCopy"]);
+    }
+
+    [Theory]
+    [InlineData("/videos/1/master.m3u8")]
+    [InlineData("/videos/1/main.m3u8")]
+    [InlineData("/videos/1/live.m3u8")]
+    public async Task APlaylistThatAsksForNothingIsGivenTheShortestWait(string path)
+    {
+        // Jellyfin holds a playlist back until a minimum number of segments exist, and for a
+        // segmented live stream being copied its defaults are three segments of three seconds --
+        // nine seconds of broadcast before a viewer sees anything.
+        var context = Request($"{path}?LiveStreamId={PlainId}&ApiKey=secret");
+
+        await Invoke(context);
+
+        Assert.Equal("1", context.Request.Query["MinSegments"]);
+        Assert.Equal("1", context.Request.Query["SegmentLength"]);
+        Assert.Equal("secret", context.Request.Query["ApiKey"]);
+        Assert.Equal(PlainId, context.Request.Query["LiveStreamId"]);
+    }
+
+    [Fact]
+    public async Task APlaylistThatAsksForParticularSegmentsKeepsThem()
+    {
+        // A client that states these is stating them for a reason -- Jellyfin gives Apple devices
+        // six-second segments by its own rules -- and trading its playback for another client's
+        // startup is not this plugin's call to make.
+        var context = Request($"/videos/1/master.m3u8?LiveStreamId={PlainId}&MinSegments=2&SegmentLength=6");
+
+        await Invoke(context);
+
+        Assert.Equal("2", context.Request.Query["MinSegments"]);
+        Assert.Equal("6", context.Request.Query["SegmentLength"]);
+        Assert.Single(context.Request.Query["MinSegments"]);
+        Assert.Single(context.Request.Query["SegmentLength"]);
+    }
+
+    [Fact]
+    public async Task OneStatedValueDoesNotSpeakForTheOther()
+    {
+        var context = Request($"/videos/1/master.m3u8?LiveStreamId={PlainId}&SegmentLength=6");
+
+        await Invoke(context);
+
+        Assert.Equal("6", context.Request.Query["SegmentLength"]);
+        Assert.Equal("1", context.Request.Query["MinSegments"]);
     }
 
     [Fact]
     public async Task AStreamThatHasToBeReEncodedGainsTheRefusal()
     {
-        var context = Request($"/videos/1/live.m3u8?LiveStreamId={ForcedId}&ApiKey=secret&VideoCodec=h264");
+        var context = Request($"/videos/1/stream.ts?LiveStreamId={ForcedId}&ApiKey=secret&VideoCodec=h264");
 
         await Invoke(context);
 
@@ -80,6 +139,20 @@ public class ForcedVideoReencodeMiddlewareTests
         Assert.Equal(ForcedId, context.Request.Query["LiveStreamId"]);
         Assert.Equal("secret", context.Request.Query["ApiKey"]);
         Assert.Equal("h264", context.Request.Query["VideoCodec"]);
+    }
+
+    [Fact]
+    public async Task APlaylistForAStreamThatHasToBeReEncodedGetsBothRules()
+    {
+        // The two questions are unrelated and a request can need answers to both.
+        var context = Request($"/videos/1/live.m3u8?LiveStreamId={ForcedId}&ApiKey=secret");
+
+        await Invoke(context);
+
+        Assert.Equal("false", context.Request.Query["allowVideoStreamCopy"]);
+        Assert.Equal("1", context.Request.Query["MinSegments"]);
+        Assert.Equal("1", context.Request.Query["SegmentLength"]);
+        Assert.Equal("secret", context.Request.Query["ApiKey"]);
     }
 
     [Theory]
@@ -112,13 +185,13 @@ public class ForcedVideoReencodeMiddlewareTests
     private static async Task Invoke(HttpContext context)
     {
         var called = false;
-        var middleware = new ForcedVideoReencodeMiddleware(
+        var middleware = new LivePlaybackRequestMiddleware(
             _ =>
             {
                 called = true;
                 return Task.CompletedTask;
             },
-            NullLogger<ForcedVideoReencodeMiddleware>.Instance);
+            NullLogger<LivePlaybackRequestMiddleware>.Instance);
 
         await middleware.Invoke(context, Streams());
 

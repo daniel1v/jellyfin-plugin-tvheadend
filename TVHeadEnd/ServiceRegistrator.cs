@@ -34,6 +34,6 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // It exists for a single measured case: a live stream opened for a decoder that will not
         // start without an IDR picture has to be re-encoded rather than copied, and the request
         // parameter that says so is the only place that can be stated.
-        serviceCollection.AddSingleton<IStartupFilter, ForcedVideoReencodeStartupFilter>();
+        serviceCollection.AddSingleton<IStartupFilter, LivePlaybackStartupFilter>();
     }
 }

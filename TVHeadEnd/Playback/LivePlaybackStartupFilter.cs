@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 namespace TVHeadEnd.Playback;
 
 /// <summary>
-/// Puts <see cref="ForcedVideoReencodeMiddleware"/> into Jellyfin's request pipeline.
+/// Puts <see cref="LivePlaybackRequestMiddleware"/> into Jellyfin's request pipeline.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -20,7 +20,7 @@ namespace TVHeadEnd.Playback;
 /// was settled when it was opened.
 /// </para>
 /// </remarks>
-public sealed class ForcedVideoReencodeStartupFilter : IStartupFilter
+public sealed class LivePlaybackStartupFilter : IStartupFilter
 {
     /// <inheritdoc />
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
@@ -29,7 +29,7 @@ public sealed class ForcedVideoReencodeStartupFilter : IStartupFilter
 
         return builder =>
         {
-            builder.UseMiddleware<ForcedVideoReencodeMiddleware>();
+            builder.UseMiddleware<LivePlaybackRequestMiddleware>();
             next(builder);
         };
     }

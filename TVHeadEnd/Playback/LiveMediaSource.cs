@@ -50,17 +50,22 @@ public static class LiveMediaSource
     /// the playlist, kills FFmpeg and starts again -- on every channel, for ever.
     /// </para>
     /// <para>
-    /// Two seconds is enough here because the source is a conditioned transport stream that
-    /// begins with its program tables and an access point, which is exactly what FFmpeg needs to
-    /// see.
+    /// One millisecond, which is as close to none as this can say. Zero would not mean none: an
+    /// unset value is what falls back to the server-wide default, so the smallest positive number
+    /// is the way to ask for no analysis at all.
     /// </para>
     /// <para>
-    /// Measured on the test server rather than assumed, on 2026-08-19: with this value ZDF's HLS
-    /// playlist was ready 3.4 s after the request, and with it removed the same request took
-    /// 200,008 ms -- the server-wide default of 200M, to the millisecond.
+    /// Nothing is lost by it, because the stream FFmpeg is handed does not need looking for. The
+    /// conditioner delivers program tables first and then an access point the join guarantee has
+    /// already vouched for, so what FFmpeg would spend the time discovering is in front of it from
+    /// the first byte. Time spent analysing a live stream is time the viewer waits.
+    /// </para>
+    /// <para>
+    /// Measured on the test server rather than assumed, on 2026-08-19: removed entirely, one
+    /// request took 200,008 ms -- the server-wide default of 200M, to the millisecond.
     /// </para>
     /// </remarks>
-    private const int AnalyzeDurationMs = 2000;
+    private const int AnalyzeDurationMs = 1;
 
     /// <summary>
     /// Builds the source offered during playback negotiation, before anything is opened.
