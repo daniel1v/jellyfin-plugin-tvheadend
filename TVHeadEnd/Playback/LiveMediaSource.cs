@@ -50,22 +50,27 @@ public static class LiveMediaSource
     /// the playlist, kills FFmpeg and starts again -- on every channel, for ever.
     /// </para>
     /// <para>
-    /// One millisecond, which is as close to none as this can say. Zero would not mean none: an
-    /// unset value is what falls back to the server-wide default, so the smallest positive number
-    /// is the way to ask for no analysis at all.
+    /// Two seconds, and not less. It is tempting to read this as two seconds added to every start,
+    /// and it is not: FFmpeg returns as soon as it has described the streams, so the value is a
+    /// ceiling rather than a wait. Measured on the test server on 2026-08-26 -- first HLS segment
+    /// written after 1,772 ms at 100 ms, 1,807 ms at 250 ms, 1,998 ms at 500 ms and 1,481 ms at
+    /// 1,000 ms. There is no trend in that, only noise: lowering it buys nothing.
     /// </para>
     /// <para>
-    /// Nothing is lost by it, because the stream FFmpeg is handed does not need looking for. The
-    /// conditioner delivers program tables first and then an access point the join guarantee has
-    /// already vouched for, so what FFmpeg would spend the time discovering is in front of it from
-    /// the first byte. Time spent analysing a live stream is time the viewer waits.
+    /// What it does buy is a failure. Below roughly a quarter of a second FFmpeg has not seen an
+    /// AC-3 frame yet, so it cannot state the sample rate, and a stream it is asked to copy rather
+    /// than re-encode has no parameters to write a header from: <c>sample rate not set</c>, then
+    /// <c>Could not write header (incorrect codec parameters ?)</c>, and the client gets a 500.
+    /// The threshold moves by channel -- ZDF failed at 50 ms and worked at 100 ms, Das Erste
+    /// failed at 100 ms and worked at 250 ms -- so it is not a number to sail close to.
     /// </para>
     /// <para>
-    /// Measured on the test server rather than assumed, on 2026-08-19: removed entirely, one
-    /// request took 200,008 ms -- the server-wide default of 200M, to the millisecond.
+    /// Without any value at all one request took 200,008 ms: the server-wide default of 200M, to
+    /// the millisecond. That is the failure this exists to prevent, and it is why the value is
+    /// stated rather than left to the server.
     /// </para>
     /// </remarks>
-    private const int AnalyzeDurationMs = 1;
+    private const int AnalyzeDurationMs = 2000;
 
     /// <summary>
     /// Builds the source offered during playback negotiation, before anything is opened.
