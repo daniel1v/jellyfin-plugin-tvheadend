@@ -4,113 +4,100 @@
         <div class="content-primary">
             <form class="TVHclientConfigurationForm">
 
-                <div class="verticalSection">
-                    <h2 class="sectionTitle">Server</h2>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="text" id="txtTVH_ServerName" label="Hostname or IP address" />
-                    </div>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="text" id="txtUserName" label="Username" />
-                        <div class="fieldDescription">An ordinary TVHeadend streaming account is enough. No administrator rights are needed.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="password" id="txtPassword" label="Password" />
-                    </div>
-                    <details>
-                        <summary>Ports</summary>
-                        <div class="inputContainer" style="margin-top:1em">
-                            <input is="emby-input" type="text" id="txtHTTP_Port" label="HTTP port" />
-                            <div class="fieldDescription">Carries the broadcast itself. Default 9981.</div>
-                        </div>
-                        <div class="inputContainer">
-                            <input is="emby-input" type="text" id="txtHTSP_Port" label="HTSP port" />
-                            <div class="fieldDescription">Carries the channel list, the guide and the DVR. Default 9982.</div>
-                        </div>
-                    </details>
+                <h2 class="sectionTitle">Server</h2>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtTVH_ServerName" label="Hostname or IP address" />
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtUserName" label="Username" />
+                    <div class="fieldDescription">An ordinary TVHeadend streaming account is enough. No administrator rights are needed.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="password" id="txtPassword" label="Password" />
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtHTTP_Port" label="HTTP port" />
+                    <div class="fieldDescription">Carries the broadcast itself. Default 9981.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtHTSP_Port" label="HTSP port" />
+                    <div class="fieldDescription">Carries the channel list, the guide and the DVR. Default 9982.</div>
                 </div>
 
-                <div class="verticalSection">
-                    <h2 class="sectionTitle">Recording</h2>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="text" id="txtDvrProfile" label="TVHeadend DVR configuration" />
-                        <div class="fieldDescription">Leave empty to use the TVHeadend default.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="text" id="txtPriority" label="Priority" />
-                        <div class="fieldDescription">0 important, 1 high, 2 normal, 3 low, 4 unimportant. 5 leaves it to the TVHeadend DVR configuration, which is the default.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="text" id="txtPrePadding" label="Padding before, in seconds" />
-                    </div>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="text" id="txtPostPadding" label="Padding after, in seconds" />
-                        <div class="fieldDescription">TVHeadend stores padding in whole minutes, so both values are rounded down and anything below 60 seconds has no effect.</div>
-                    </div>
+                <h2 class="sectionTitle">Recording</h2>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtDvrProfile" label="TVHeadend DVR configuration" />
+                    <div class="fieldDescription">Leave empty to use the TVHeadend default.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtPriority" label="Priority" />
+                    <div class="fieldDescription">0 important, 1 high, 2 normal, 3 low, 4 unimportant. 5 leaves it to the TVHeadend DVR configuration, which is the default.</div>
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtPrePadding" label="Padding before, in seconds" />
+                </div>
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" id="txtPostPadding" label="Padding after, in seconds" />
+                    <div class="fieldDescription">TVHeadend stores padding in whole minutes, so both values are rounded down and anything below 60 seconds has no effect.</div>
                 </div>
 
-                <div class="verticalSection">
-                    <h2 class="sectionTitle">Channels and artwork</h2>
-                    <div class="selectContainer">
-                        <select is="emby-select" id="selChannelType" label="Treat channels tagged &quot;Other&quot; as">
-                            <option>TV</option>
-                            <option>Radio</option>
-                            <option>Ignore</option>
-                        </select>
-                    </div>
-                    <div class="checkboxContainer">
-                        <label>
-                            <input is="emby-checkbox" type="checkbox" id="chkUseChannelLogoWhereArtworkIsMissing" />
-                            <span>Use the channel logo where there is no artwork</span>
-                        </label>
-                        <div class="fieldDescription">
-                            Broadcast listings carry no pictures at all, so without this a recording is a blank
-                            tile and a guide entry has nothing beside it. The channel logo at least says which
-                            broadcaster the programme came from, and it never replaces artwork that does exist.
-                            On a recording it is letterboxed onto a poster rather than stretched.
-                        </div>
-                    </div>
-                    <div class="checkboxContainer">
-                        <label>
-                            <input is="emby-checkbox" type="checkbox" id="chkHideRecordingsChannel" />
-                            <span>Hide the TVHeadend Recordings channel</span>
-                        </label>
+                <h2 class="sectionTitle">Channels and artwork</h2>
+                <div class="selectContainer">
+                    <select is="emby-select" id="selChannelType" label="Treat channels tagged &quot;Other&quot; as">
+                        <option>TV</option>
+                        <option>Radio</option>
+                        <option>Ignore</option>
+                    </select>
+                </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" id="chkUseChannelLogoWhereArtworkIsMissing" />
+                        <span>Use the channel logo where there is no artwork</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Broadcast listings carry no pictures at all, so without this a recording is a blank
+                        tile and a guide entry has nothing beside it. The channel logo at least says which
+                        broadcaster the programme came from, and it never replaces artwork that does exist.
+                        On a recording it is letterboxed onto a poster rather than stretched.
                     </div>
                 </div>
-
-                <div class="verticalSection">
-                    <h2 class="sectionTitle">Live TV</h2>
-                    <div class="inputContainer">
-                        <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size, in MB" />
-                        <div class="fieldDescription">
-                            Each channel being watched is written into a buffer of this size in a circle, so this
-                            is the whole disk cost of a channel however long it runs. It is also how far a client
-                            may fall behind the live edge, by pausing for instance, before it is moved forward.
-                            Around ten minutes of an HD broadcast fit into 512 MB. Changing this needs a server
-                            restart.
-                        </div>
+                <div class="checkboxContainer">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" id="chkHideRecordingsChannel" />
+                        <span>Hide the TVHeadend Recordings channel</span>
+                    </label>
+                </div>
+                <div class="inputContainer">
+                    <button is="emby-button" type="button" id="btnResetArtwork" class="raised block">
+                        <span>Forget stored recording artwork</span>
+                    </button>
+                    <div class="fieldDescription">
+                        Jellyfin gives a recording a picture only when it has none, so the first one it is
+                        given is the one it keeps. Press this after changing the setting above, or after an
+                        upgrade that changed how artwork is published: the pictures are forgotten and fetched
+                        again straight away. Live channels and guide entries do not need it; they correct
+                        themselves.
                     </div>
                 </div>
 
-                <br />
-                <div>
+                <h2 class="sectionTitle">Live TV</h2>
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size, in MB" />
+                    <div class="fieldDescription">
+                        Each channel being watched is written into a buffer of this size in a circle, so this
+                        is the whole disk cost of a channel however long it runs. It is also how far a client
+                        may fall behind the live edge, by pausing for instance, before it is moved forward.
+                        Around ten minutes of an HD broadcast fit into 512 MB. Changing this needs a server
+                        restart.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
                     <button is="emby-button" type="submit" class="raised button-submit block">
                         <span>Save</span>
                     </button>
                 </div>
             </form>
-
-            <div class="verticalSection" style="margin-top:2em">
-                <h2 class="sectionTitle">Maintenance</h2>
-                <button is="emby-button" type="button" id="btnResetArtwork" class="raised block">
-                    <span>Forget stored recording artwork</span>
-                </button>
-                <div class="fieldDescription">
-                    Jellyfin gives a recording a picture only when it has none, so the first one it is given is
-                    the one it keeps. Use this after changing the setting above, or after an upgrade that
-                    changed how artwork is published: the pictures are forgotten and fetched again straight
-                    away. Live channels and guide entries do not need it; they correct themselves.
-                </div>
-            </div>
         </div>
     </div>
 </div>
