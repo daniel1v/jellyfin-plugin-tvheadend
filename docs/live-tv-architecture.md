@@ -345,10 +345,14 @@ a channel that wants its logo as a logo; `/TVHeadend/Artwork/{token}/poster` pad
 | Guide entry | `ImageUrl`, `ThumbImageUrl`, `LogoImageUrl`, `BackdropImageUrl` | its own artwork as primary; failing that the padded square as **both primary and thumb** |
 | Recording | `ImageUrl` only | its own artwork; failing that the padded square |
 
-The thumb matters. Jellyfin's live TV cards are built with `preferThumb`, so a programme carrying
-only a primary image still shows the placeholder in galleries like "On Now" -- which is what
-happened when only the logo slot was filled. The logo slot is deliberately left empty: that is
-where a programme's *own* logo belongs, and the channel's is not that.
+The thumb matters. Jellyfin's live TV cards are built with `preferThumb: "auto"`, which the card
+builder resolves to `shape === "backdrop" || shape === "overflowBackdrop"` -- true for the wide
+cards those galleries use. So a programme carrying only a primary image still shows the
+placeholder in "On Now", which is what happened when only the logo slot was filled. Both slots are
+filled, because that holds whichever way the option resolves.
+
+The logo slot is deliberately left empty: that is where a programme's *own* logo belongs, and the
+channel's is not that.
 
 A recording has one slot and no choice, which is also why `fanartImage` is read from the DVR entry
 and goes nowhere.
