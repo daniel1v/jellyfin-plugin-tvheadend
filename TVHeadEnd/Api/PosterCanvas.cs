@@ -4,120 +4,120 @@ using SkiaSharp;
 namespace TVHeadEnd.Api
 {
     /// <summary>
-    /// Puts a wide picture on a poster-shaped canvas instead of letting a client stretch it.
+    /// Puts a logo in the middle of a square with a wide margin all round it.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A TVHeadend channel logo is 400x240 -- landscape, 1.67:1 -- and Jellyfin renders a
-    /// recording's primary image as a 2:3 poster. Handing the logo over as it stands produced a
-    /// small landscape picture blown up into a portrait frame, which is the one thing worse than
-    /// no picture at all. There is no way to tell Jellyfin "this is a logo, letterbox it", so the
-    /// letterboxing is done here and it receives an image that is already the right shape.
+    /// Jellyfin does not draw an item's picture at one shape. The same logo appears in a tall
+    /// poster frame in one view and a wide thumbnail frame in another, and it fills whichever
+    /// frame it is given -- so a logo handed over as it stands is enlarged until it is the size of
+    /// the tile, and cropped differently in every view.
     /// </para>
     /// <para>
-    /// Nothing is scaled. The canvas grows around the picture at its native size, so a 400x240
-    /// logo becomes 400x600 with the logo centred, and Jellyfin scales that down for whatever the
-    /// client asked for. Enlarging a 400 pixel logo to fill a poster was half of what looked bad.
+    /// A square is what survives both. Cropping a square to a 2:3 poster keeps the middle
+    /// two-thirds of its width; cropping it to a 16:9 thumbnail keeps the middle nine-sixteenths
+    /// of its height. Anything inside both survives either, so the logo is drawn well within them
+    /// and everything else is margin. The result is a small logo in a large frame, which is what a
+    /// logo standing in for artwork should look like.
+    /// </para>
+    /// <para>
+    /// Nothing is ever enlarged. The square is sized around the logo at its own size, so it is the
+    /// margin that grows, and Jellyfin scales the whole down for whatever it is drawing.
     /// </para>
     /// </remarks>
     internal static class PosterCanvas
     {
         /// <summary>
-        /// The shape Jellyfin draws a primary image in: two wide by three high.
-        /// </summary>
-        private const double PosterAspect = 2.0 / 3.0;
-
-        /// <summary>
-        /// How far from that shape a picture may already be before it is left alone.
+        /// How much of the square's width the picture may use.
         /// </summary>
         /// <remarks>
-        /// A picture that is close enough to a poster is a poster. Padding it would add a border
-        /// nobody asked for and cost a re-encode for nothing.
+        /// A 2:3 crop keeps the middle 0.667 of the width. Staying well inside that is what leaves
+        /// a margin rather than reaching the edge of the crop.
         /// </remarks>
-        private const double Tolerance = 0.05;
+        private const double WidthShare = 0.55;
 
         /// <summary>
-        /// The canvas that holds a picture of this size at its native size, in poster shape.
+        /// How much of the square's height the picture may use.
         /// </summary>
         /// <remarks>
-        /// Whichever side is already too long decides: a wide picture keeps its width and gains
-        /// height, a tall one keeps its height and gains width. Either way the source fits without
-        /// being touched.
+        /// A 16:9 crop keeps the middle 0.5625 of the height, so this is the tighter of the two
+        /// and the one that decides for a tall picture.
+        /// </remarks>
+        private const double HeightShare = 0.45;
+
+        /// <summary>
+        /// The side of the square that holds a picture of this size with its margin.
+        /// </summary>
+        /// <remarks>
+        /// Whichever share the picture comes closer to exhausting decides the side, so the picture
+        /// is never scaled and never reaches its share on both axes at once.
         /// </remarks>
         /// <param name="width">The source width.</param>
         /// <param name="height">The source height.</param>
-        /// <returns>The canvas size, or the source size where it is poster-shaped already.</returns>
-        internal static (int Width, int Height) Fit(int width, int height)
+        /// <returns>The length of one side, or zero where the source has none.</returns>
+        internal static int Fit(int width, int height)
         {
             if (width <= 0 || height <= 0)
             {
-                return (width, height);
+                return 0;
             }
 
-            var aspect = (double)width / height;
-            if (Math.Abs(aspect - PosterAspect) <= Tolerance)
-            {
-                return (width, height);
-            }
-
-            return aspect > PosterAspect
-                ? (width, (int)Math.Round(width / PosterAspect))
-                : ((int)Math.Round(height * PosterAspect), height);
+            return (int)Math.Round(Math.Max(width / WidthShare, height / HeightShare));
         }
 
         /// <summary>
-        /// Redraws a picture centred on a poster-shaped canvas.
+        /// Redraws a picture centred on a square, with margin on every side.
         /// </summary>
         /// <remarks>
-        /// The background is the picture's own top-left pixel, so the padding continues whatever
-        /// the logo sits on and the join does not show. Where that pixel is transparent the canvas
-        /// stays transparent and the card behind it shows through, which is what a logo drawn for
+        /// The margin is the picture's own top-left pixel, so it continues whatever the logo sits
+        /// on and the join does not show. Where that pixel is transparent the square stays
+        /// transparent and the card behind it shows through, which is what a logo drawn for
         /// transparency expects.
         /// </remarks>
         /// <param name="source">The encoded picture.</param>
         /// <returns>
         /// A PNG of the padded picture, or <see langword="null"/> when the source could not be
-        /// read or needed no padding -- in both cases the caller serves what it already had.
+        /// read, in which case the caller serves what it already had.
         /// </returns>
         internal static byte[]? Pad(byte[] source)
         {
             ArgumentNullException.ThrowIfNull(source);
 
-            // Decode throws rather than answering for something it cannot read -- an
-            // ArgumentNullException naming an internal codec, which says nothing useful and is not
-            // an argument the caller passed. Turned into the "no" this method promises.
-            SKBitmap? picture;
+            // Decode throws rather than answering for something it cannot read, and what it throws
+            // is an ArgumentNullException naming an internal codec: no use to anyone, and not
+            // about an argument the caller passed. Turned into the "no" this method promises.
+            SKBitmap? decoded;
             try
             {
-                picture = SKBitmap.Decode(source);
+                decoded = SKBitmap.Decode(source);
             }
             catch (ArgumentException)
             {
                 return null;
             }
 
-            if (picture is null)
+            if (decoded is null)
             {
                 return null;
             }
 
-            using var decoded = picture;
+            using var picture = decoded;
 
-            var (width, height) = Fit(decoded.Width, decoded.Height);
-            if (width == decoded.Width && height == decoded.Height)
+            var side = Fit(picture.Width, picture.Height);
+            if (side <= 0)
             {
                 return null;
             }
 
-            var corner = decoded.GetPixel(0, 0);
+            var corner = picture.GetPixel(0, 0);
             var background = corner.Alpha == 0 ? SKColors.Transparent : corner;
 
-            using var surface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul));
+            using var surface = SKSurface.Create(new SKImageInfo(side, side, SKColorType.Rgba8888, SKAlphaType.Premul));
             surface.Canvas.Clear(background);
             surface.Canvas.DrawBitmap(
-                decoded,
-                (width - decoded.Width) / 2f,
-                (height - decoded.Height) / 2f);
+                picture,
+                (side - picture.Width) / 2f,
+                (side - picture.Height) / 2f);
             surface.Canvas.Flush();
 
             using var image = surface.Snapshot();

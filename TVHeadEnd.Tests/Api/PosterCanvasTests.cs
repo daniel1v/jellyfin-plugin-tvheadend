@@ -5,68 +5,106 @@ using Xunit;
 namespace TVHeadEnd.Tests.Api;
 
 /// <summary>
-/// Making a wide picture fit the shape Jellyfin draws it in.
+/// Making a channel logo look like a logo standing in for artwork, rather than like artwork.
 /// </summary>
 /// <remarks>
-/// A TVHeadend channel logo is 400x240 and a recording's primary image is a 2:3 poster. Published
-/// as it stood, every recording tile was a small landscape picture blown up into a portrait frame.
-/// There is no way to tell Jellyfin to letterbox it, so it is letterboxed here.
+/// Jellyfin draws an item's picture at whatever shape the view wants -- a tall poster here, a wide
+/// thumbnail there -- and fills the frame with it. A 400x240 logo handed over as it stands is
+/// enlarged to the size of the tile and cropped differently in every view. A square with a wide
+/// margin survives both crops and keeps the logo small.
 /// </remarks>
 public class PosterCanvasTests
 {
-    [Fact]
-    public void AWideLogoGainsHeightRatherThanBeingStretched()
-    {
-        // The real case: 400x240 becomes 400x600, which is 2:3. The logo keeps its own size and
-        // sits in the middle -- nothing is scaled, because enlarging a 400 pixel logo to fill a
-        // poster was half of what looked wrong.
-        Assert.Equal((400, 600), TVHeadEnd.Api.PosterCanvas.Fit(400, 240));
-    }
+    /// <summary>
+    /// What a 2:3 poster crop keeps of a square: the middle two-thirds of its width.
+    /// </summary>
+    private const double PosterCropKeepsWidth = 2.0 / 3.0;
 
-    [Fact]
-    public void ATallPictureGainsWidthInstead()
+    /// <summary>
+    /// What a 16:9 thumbnail crop keeps of a square: the middle nine-sixteenths of its height.
+    /// </summary>
+    private const double ThumbnailCropKeepsHeight = 9.0 / 16.0;
+
+    [Theory]
+    [InlineData(400, 240)]
+    [InlineData(240, 400)]
+    [InlineData(512, 512)]
+    [InlineData(1000, 120)]
+    public void TheLogoSurvivesBeingCroppedToEitherShape(int width, int height)
     {
-        // Whichever side is already too long decides, so the source always fits untouched.
-        Assert.Equal((400, 600), TVHeadEnd.Api.PosterCanvas.Fit(200, 600));
+        // The whole point of the square. Whichever way Jellyfin crops it, the logo is still inside
+        // what is left -- with room to spare, so it does not sit against the edge of the crop.
+        var side = TVHeadEnd.Api.PosterCanvas.Fit(width, height);
+
+        Assert.True(width <= side * PosterCropKeepsWidth, "the poster crop would cut the sides off");
+        Assert.True(height <= side * ThumbnailCropKeepsHeight, "the thumbnail crop would cut the top off");
     }
 
     [Theory]
-    [InlineData(400, 600)]
-    [InlineData(1000, 1500)]
-    [InlineData(400, 590)]
-    public void APictureThatIsAlreadyAPosterIsLeftAlone(int width, int height)
+    [InlineData(400, 240)]
+    [InlineData(240, 400)]
+    [InlineData(512, 512)]
+    public void TheLogoIsSmallInTheFrameRatherThanFillingIt(int width, int height)
     {
-        // Padding a poster would add a border nobody asked for and cost a re-encode for nothing.
-        Assert.Equal((width, height), TVHeadEnd.Api.PosterCanvas.Fit(width, height));
+        // "Padded" means visibly padded: the picture takes up well under half the square's area,
+        // so it reads as a logo on a card and not as a picture that happens to be the wrong shape.
+        var side = TVHeadEnd.Api.PosterCanvas.Fit(width, height);
+
+        Assert.True((double)(width * height) / (side * side) < 0.35);
     }
 
     [Fact]
-    public void APaddedLogoReallyComesBackAsAPoster()
+    public void TheLogoIsNeverEnlargedToFillTheSquare()
     {
-        // End to end through Skia rather than arithmetic only: the bytes have to decode again, at
-        // the size the geometry promised.
+        // Blowing a 400 pixel logo up to poster size was half of what looked wrong. The square
+        // grows around it instead, and Jellyfin scales the whole thing down.
         var padded = TVHeadEnd.Api.PosterCanvas.Pad(Logo(400, 240, SKColors.CornflowerBlue));
 
         Assert.NotNull(padded);
 
         using var result = SKBitmap.Decode(padded);
-        Assert.Equal(400, result.Width);
-        Assert.Equal(600, result.Height);
+        Assert.True(result.Width >= 400);
+        Assert.True(result.Height >= 240);
     }
 
     [Fact]
-    public void ThePaddingContinuesWhateverTheLogoSitsOn()
+    public void WhatComesBackIsSquare()
     {
-        // Taken from the logo's own corner, so the join does not show. A neutral grey would be a
-        // visible band above and below anything whose background is not grey.
+        var padded = TVHeadEnd.Api.PosterCanvas.Pad(Logo(400, 240, SKColors.CornflowerBlue));
+
+        using var result = SKBitmap.Decode(padded);
+        Assert.Equal(result.Width, result.Height);
+    }
+
+    [Fact]
+    public void ThereIsMarginOnEverySideAndNotOnlyAboveAndBelow()
+    {
+        // The first attempt grew the canvas downwards only, so the logo still touched both edges
+        // and looked no smaller. Every side is checked, in the picture that actually comes back.
         var padded = TVHeadEnd.Api.PosterCanvas.Pad(Logo(400, 240, SKColors.CornflowerBlue));
 
         using var result = SKBitmap.Decode(padded);
 
-        var top = result.GetPixel(10, 10);
-        Assert.Equal(SKColors.CornflowerBlue.Red, top.Red);
-        Assert.Equal(SKColors.CornflowerBlue.Green, top.Green);
-        Assert.Equal(SKColors.CornflowerBlue.Blue, top.Blue);
+        var horizontal = (result.Width - 400) / 2;
+        var vertical = (result.Height - 240) / 2;
+
+        Assert.True(horizontal > 40, "no room to the left and right");
+        Assert.True(vertical > 40, "no room above and below");
+    }
+
+    [Fact]
+    public void TheMarginContinuesWhateverTheLogoSitsOn()
+    {
+        // Taken from the logo's own corner, so the join does not show. A neutral grey would be a
+        // visible border around anything whose background is not grey.
+        var padded = TVHeadEnd.Api.PosterCanvas.Pad(Logo(400, 240, SKColors.CornflowerBlue));
+
+        using var result = SKBitmap.Decode(padded);
+        var corner = result.GetPixel(5, 5);
+
+        Assert.Equal(SKColors.CornflowerBlue.Red, corner.Red);
+        Assert.Equal(SKColors.CornflowerBlue.Green, corner.Green);
+        Assert.Equal(SKColors.CornflowerBlue.Blue, corner.Blue);
     }
 
     [Fact]
@@ -76,8 +114,7 @@ public class PosterCanvasTests
         var padded = TVHeadEnd.Api.PosterCanvas.Pad(Logo(400, 240, SKColors.Transparent));
 
         using var result = SKBitmap.Decode(padded);
-
-        Assert.Equal(0, result.GetPixel(10, 10).Alpha);
+        Assert.Equal(0, result.GetPixel(5, 5).Alpha);
     }
 
     [Fact]
@@ -86,13 +123,6 @@ public class PosterCanvasTests
         // The caller serves the original when this answers null, so a source Skia cannot read
         // costs the picture nothing.
         Assert.Null(TVHeadEnd.Api.PosterCanvas.Pad([0x00, 0x01, 0x02, 0x03]));
-    }
-
-    [Fact]
-    public void APosterIsNotReEncodedForNothing()
-    {
-        // Null here means "serve what you already had", which is both cheaper and lossless.
-        Assert.Null(TVHeadEnd.Api.PosterCanvas.Pad(Logo(400, 600, SKColors.CornflowerBlue)));
     }
 
     private static byte[] Logo(int width, int height, SKColor background)
