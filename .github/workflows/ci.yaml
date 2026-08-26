@@ -1,0 +1,57 @@
+name: 'CI'
+
+# Replaces the nine workflows this fork inherited from upstream. Every one of them was either
+# wrong here or not ours to run: the build and test ones call a shared workflow that defaults to
+# .NET 9 while this plugin targets net10.0, the CodeQL one passed upstream's repository name, and
+# the publish, changelog, label and bot-command ones drive Jellyfin's own infrastructure. This
+# fork packages and publishes itself through tools/release.ps1.
+#
+# Note that GitHub Actions are not enabled on this fork, so nothing here has ever run. It is
+# written to be correct for the day they are.
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 'Build, test and check formatting'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+
+      - name: 'Setup .NET'
+        uses: actions/setup-dotnet@v4
+        with:
+          # The framework the plugin actually targets. The shared upstream workflow defaults to
+          # 9.0.x, which is why calling it would have failed on the first line.
+          dotnet-version: '10.0.x'
+
+      - name: 'Restore'
+        run: dotnet restore
+
+      - name: 'Build'
+        # Warnings are errors by the project's own settings, so this is also the analyser gate.
+        run: dotnet build --configuration Release --no-restore
+
+      - name: 'Test'
+        run: dotnet test --configuration Release --no-build --verbosity normal
+
+      - name: 'Check formatting'
+        # Worth running only since line endings were settled: with a CRLF checkout this reported
+        # 12,626 ENDOFLINE errors and could never have passed.
+        run: dotnet format --verify-no-changes --no-restore

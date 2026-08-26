@@ -1,24 +1,34 @@
 <h1 align="center">Jellyfin TVHeadend Plugin</h1>
-<h3 align="center">Part of the <a href="https://jellyfin.org">Jellyfin Project</a></h3>
+<h3 align="center">An alpha fork of the <a href="https://github.com/jellyfin/jellyfin-plugin-tvheadend">Jellyfin project's plugin</a></h3>
 
 <p align="center">
 <img alt="Plugin Banner" src="https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/plugins/SVG/jellyfin-plugin-tvheadend.svg?sanitize=true"/>
 <br/>
 <br/>
-<a href="https://github.com/jellyfin/jellyfin-plugin-tvheadend/actions/workflows/build.yaml">
-<img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/jellyfin/jellyfin-plugin-tvheadend/build.yaml?branch=master"/>
+<a href="https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases">
+<img alt="Latest alpha" src="https://img.shields.io/github/v/release/daniel1v/jellyfin-plugin-tvheadend?include_prereleases&amp;label=alpha"/>
 </a>
-<a href="https://github.com/jellyfin/jellyfin-plugin-tvheadend">
-<img alt="MIT License" src="https://img.shields.io/github/license/jellyfin/jellyfin-plugin-tvheadend.svg"/>
-</a>
-<a href="https://github.com/jellyfin/jellyfin-plugin-tvheadend/releases">
-<img alt="Current Release" src="https://img.shields.io/github/release/jellyfin/jellyfin-plugin-tvheadend.svg"/>
+<a href="https://github.com/daniel1v/jellyfin-plugin-tvheadend/blob/master/LICENSE">
+<img alt="MIT License" src="https://img.shields.io/github/license/daniel1v/jellyfin-plugin-tvheadend.svg"/>
 </a>
 </p>
 
 ## About
 
 This plugin allows you to manage TVHeadend from Jellyfin.
+
+**This is a fork, and it publishes alphas.** Live TV and recording delivery have been reworked so
+that both play on the official Jellyfin Android app; see [How live TV works](#how-live-tv-works)
+and [docs/live-tv-architecture.md](docs/live-tv-architecture.md) for what that changed and why.
+Releases are marked as GitHub prereleases and are not proven — read the changelog before
+installing one.
+
+Add it to Jellyfin as a plugin repository:
+
+```
+https://raw.githubusercontent.com/daniel1v/jellyfin-plugin-tvheadend/master/manifest.json
+```
+
 
 ## How live TV works
 
@@ -143,8 +153,16 @@ That was a clean slate, not a policy.
 
 ## Contributing
 
-We welcome all contributions and pull requests! If you have a larger feature in mind please open an issue so we can discuss the implementation before you start.
-In general refer to our [contributing guidelines](https://github.com/jellyfin/.github/blob/master/CONTRIBUTING.md) for further information.
+This is a personal fork. Anything that is not about the changes described above belongs upstream,
+at [jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend),
+under the Jellyfin project's
+[contributing guidelines](https://github.com/jellyfin/.github/blob/master/CONTRIBUTING.md) — the
+plugin is theirs and fixes are worth more there.
+
+Issues about what this fork changed are welcome here. If you are working on the live TV or
+recording path, read [docs/live-tv-architecture.md](docs/live-tv-architecture.md) first: most of
+it records a measurement or a failure that a reasonable-looking change would reintroduce.
+
 
 ## Licence
 
