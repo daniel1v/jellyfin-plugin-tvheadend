@@ -129,9 +129,16 @@ rather than leaving the flag to be remembered. That flag, the plugin name and th
 the only places the word can appear: Jellyfin parses a manifest version with `Version.Parse`, so a
 version cannot carry a `-alpha` suffix. Use the fourth component for the alpha number.
 
-All releases before 14.0.0.0 were withdrawn — each was broken in a way only found after publishing,
-and leaving them installable served nobody. The tags remain, so nothing is lost from the history;
-only the downloads are gone.
+Alphas accumulate. A published one stays published when the next supersedes it, and a defect found
+in one afterwards is not a reason to remove it — being unproven is what the label already says. Each
+release adds an entry to `manifest.json` alongside the ones before it, which the script does on its
+own.
+
+The exception was a one-off: everything up to and including 14.0.0.0 was withdrawn when the alpha
+line started, because each of those was broken in a way only found after publishing and none was
+worth installing. The tags remain, so nothing is lost from the history; only the downloads are gone.
+That was a clean slate, not a policy.
+
 
 
 ## Contributing
