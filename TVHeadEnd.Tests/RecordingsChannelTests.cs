@@ -78,6 +78,19 @@ public class RecordingsChannelTests
     }
 
     [Fact]
+    public void TheChannelNameIsTheOneTheOwnershipCheckDerivesFrom()
+    {
+        // Jellyfin derives the channel entity's identifier from this name alone, and writes that
+        // identifier onto every recording it stores. Recognising our own recordings later means
+        // deriving the very same identifier, so the two must be one string rather than two that
+        // happen to agree -- changing it here alone would orphan every stored recording silently.
+        var channel = (TVHeadEnd.RecordingsChannel)System.Runtime.CompilerServices.RuntimeHelpers
+            .GetUninitializedObject(typeof(TVHeadEnd.RecordingsChannel));
+
+        Assert.Equal(TVHeadEnd.Playback.TvheadendItems.RecordingsChannelName, channel.Name);
+    }
+
+    [Fact]
     public void APlaceholderStatesTheContainerButPromisesNothingElse()
     {
         var placeholder = RecordingsChannel.BuildPlaceholderSource("1312160563");

@@ -375,10 +375,16 @@ Whose an item is comes from the library -- a live channel records the service th
 and never from the request. A display name, a path fragment or a prefix would all be coincidences
 waiting to happen.
 
-The source itself is `ts` and stays `ts`. It reaches FFmpeg as `-f` whenever the server has
-hardware acceleration configured, and Jellyfin translates it on the way through:
-`EncodingHelper.GetInputFormat` maps `ts` to `mpegts`. Naming both at once was tried and broke
-playback outright on such a server -- `-f mpegts,ts` is not a demuxer.
+The source itself is `ts` and stays `ts`. Whenever the server has hardware acceleration configured
+the container is passed to FFmpeg as `-f`, but never verbatim: `EncodingHelper.GetInputFormat`
+translates on the way, so `ts` arrives as **`-f mpegts`**. `-f ts` is not what is produced and not
+what FFmpeg is asked for -- it has no demuxer by that name. That translation is the whole reason
+the canonical name can be the one clients use.
+
+Naming both spellings at once was tried and broke playback outright on such a server, because
+`mpegts,ts` is not in the translation table and so reached FFmpeg unchanged: `-f mpegts,ts` is not
+a demuxer either.
+
 
 
 ## Known external issues

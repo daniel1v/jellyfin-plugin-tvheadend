@@ -38,31 +38,44 @@ namespace TVHeadEnd
         private const int AnalysisSampleLength = 8 * 1024 * 1024;
 
         /// <summary>
-        /// When the shape of a recording's media sources last changed.
+        /// How many times the shape of a recording's media sources has changed since that floor.
         /// </summary>
         /// <remarks>
         /// <para>
         /// ChannelManager rewrites a stored channel item only when the item is new or when
-        /// ChannelItemInfo.DateModified is later than the date it stored. It compares no part of
-        /// MediaSources, and DataVersion does not help either -- that only discards the cached
-        /// listing response, not the items already in the database. So an upgrade that changes
-        /// how a recording is described has no way to reach the recordings somebody already has,
-        /// and they keep whatever description the previous version gave them, for ever.
+        /// ChannelItemInfo.DateModified is strictly later than the date it stored. It compares no
+        /// part of MediaSources, and DataVersion does not help either -- that only discards the
+        /// cached listing response, not the items already in the database. So an upgrade that
+        /// changes how a recording is described has no way to reach the recordings somebody
+        /// already has, and they keep whatever description the previous version gave them.
         /// </para>
         /// <para>
-        /// Raising this once per such change is what replaces them: it is later than the stored
-        /// date exactly once, so every existing item is rewritten once and then left alone. It is
-        /// a constant on purpose -- anything derived from the current time would rewrite every
-        /// recording on every listing.
+        /// What reaches them is an offset added to the date, not a date of its own. The published
+        /// date is <c>max(DateLastUpdated, floor) + revision</c>, which has the two properties the
+        /// job needs and a fixed date has neither of. For an unchanged recording it is greater
+        /// than the stored value exactly once per increment, so each upgrade rewrites every item
+        /// once and then leaves it alone -- and it stays true however long after the release the
+        /// plugin is installed, because it is measured from the recording rather than the calendar.
+        /// For a recording TVHeadend really did change it rises with the change, so a later
+        /// update still comes through instead of being masked by a fixed future date sitting above
+        /// it.
         /// </para>
         /// <para>
-        /// The date sits a little ahead of the release that carries it, because the comparison is
-        /// a strict one against the stored date and the stored date can be TVHeadend's. A
-        /// recording written by the outgoing version on the day of the change would otherwise
-        /// carry a later date than the revision and be the one recording the migration misses.
+        /// Counted in seconds rather than ticks so that the increment survives any rounding
+        /// between here and the database. Raise it by one per change to the published shape.
         /// </para>
         /// </remarks>
-        private static readonly DateTime MediaSourceSchemaRevisionUtc = new(2026, 8, 27, 0, 0, 0, DateTimeKind.Utc);
+        private const int MediaSourceSchemaRevision = 1;
+
+        /// <summary>
+        /// The floor every recording's modification date is lifted to, unchanged since 13.2.x.
+        /// </summary>
+        /// <remarks>
+        /// It exists so that a recording TVHeadend has not touched in years still carries a date
+        /// the schema revision can be counted from. It is not itself the revision and never moves
+        /// again; moving it would break the monotonicity of every stored date at once.
+        /// </remarks>
+        private static readonly DateTime MediaSourceDateFloorUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
 
         private readonly ILogger<LiveTvService> _logger;
         private readonly TvheadendConnection _connection;
@@ -93,13 +106,15 @@ namespace TVHeadEnd
             _logger.LogDebug("[TVHclient] RecordingsChannel()");
         }
 
-        public string Name
-        {
-            get
-            {
-                return "TVHeadEnd Recordings";
-            }
-        }
+        /// <summary>
+        /// Gets the name this channel is registered under.
+        /// </summary>
+        /// <remarks>
+        /// The single input to the identifier Jellyfin derives for the channel entity and writes
+        /// onto every recording it stores, so it is stated once and shared -- changing it here
+        /// alone would silently orphan every stored recording from the plugin that made it.
+        /// </remarks>
+        public string Name => Playback.TvheadendItems.RecordingsChannelName;
 
         public string Description
         {
@@ -318,13 +333,13 @@ namespace TVHeadEnd
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
-                // Later of two dates, because there are two reasons the stored item can be out
-                // of date: the recording itself changed, and this plugin now describes it
-                // differently than the version that wrote the stored copy. Without the second,
-                // an upgrade never reaches recordings somebody already has.
-                DateModified = item.DateLastUpdated > MediaSourceSchemaRevisionUtc
-                    ? item.DateLastUpdated
-                    : MediaSourceSchemaRevisionUtc,
+                // Two reasons the stored item can be out of date: the recording itself changed,
+                // and this plugin now describes it differently than the version that wrote the
+                // stored copy. The date carries both -- TVHeadend's own, floored, plus one step
+                // per description change since. Without the second an upgrade never reaches
+                // recordings somebody already has.
+                DateModified = PublishedDateFor(item.DateLastUpdated),
+
                 Overview = item.Overview,
                 // People = item.People
                 Etag = item.Status.ToString(),
@@ -589,6 +604,29 @@ namespace TVHeadEnd
             ArgumentException.ThrowIfNullOrEmpty(recordingId);
 
             return ("TVHeadEnd_Recording_" + recordingId).GetMD5().ToString("N", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// The modification date a recording is published with.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <c>max(DateLastUpdated, floor) + revision seconds</c>. Monotone in TVHeadend's own date,
+        /// so a recording that really changed still comes through, and greater than the previously
+        /// published value exactly once per revision, so an upgrade rewrites each stored item once.
+        /// </para>
+        /// <para>
+        /// Nothing here reads the clock. A value derived from the current time would be later than
+        /// the stored date on every listing and rewrite every recording for ever.
+        /// </para>
+        /// </remarks>
+        /// <param name="recordingChanged">When TVHeadend last touched the recording.</param>
+        /// <returns>The date to publish.</returns>
+        internal static DateTime PublishedDateFor(DateTime recordingChanged)
+        {
+            var floored = recordingChanged > MediaSourceDateFloorUtc ? recordingChanged : MediaSourceDateFloorUtc;
+
+            return floored.AddSeconds(MediaSourceSchemaRevision);
         }
 
         /// <summary>

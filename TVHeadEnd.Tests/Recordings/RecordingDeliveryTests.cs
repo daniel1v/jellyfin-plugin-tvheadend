@@ -216,57 +216,131 @@ public class RecordingDeliveryTests
     }
 
     [Fact]
-    public void StoredRecordingsAreRewrittenOnceWhenTheDescriptionShapeChanges()
+    public void AStoredRecordingIsRewrittenExactlyOncePerRevision()
     {
-        // ChannelManager rewrites a stored item only when DateModified is later than the date it
-        // stored, and it compares no part of MediaSources. So an upgrade that changes how a
-        // recording is described reaches existing recordings only through this date -- raising it
-        // once makes every stored item stale exactly once.
-        var revision = SchemaRevision();
+        // ChannelManager rewrites a stored item only when DateModified is strictly later than the
+        // date it stored, and it compares no part of MediaSources. So an upgrade that changes how
+        // a recording is described reaches existing recordings only through this date.
+        var recordingChanged = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
 
-        // A recording TVHeadend last touched before the change: the revision carries it.
-        var oldRecording = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        Assert.Equal(revision, Later(oldRecording, revision));
+        // What 13.2.x stored for it: the floor, with no revision on top.
+        var stored = PublishedBy(recordingChanged, revision: 0);
+        var now = PublishedBy(recordingChanged, revision: 1);
 
-        // One touched since: its own date is later and still wins, so a genuine change is not
-        // masked by the revision.
-        var recentRecording = revision.AddDays(1);
-        Assert.Equal(recentRecording, Later(recentRecording, revision));
+        // Once...
+        Assert.True(now > stored);
+
+        // ...and then never again, because the recording has not changed and neither has the
+        // revision. A second listing computes the same value, which is not later than the stored
+        // one, so the item is left alone.
+        Assert.False(now > now);
+        Assert.Equal(now, RecordingsChannel.PublishedDateFor(recordingChanged));
     }
 
     [Fact]
-    public void TheSchemaRevisionIsAConstantRatherThanSomethingDerivedFromTheClock()
+    public void ARecordingTvheadendReallyChangedStillComesThrough()
     {
-        // Anything derived from the current time would be later than the stored date on every
-        // listing, so every recording would be rewritten for ever. It has to sit after every
-        // date already stored -- otherwise the recordings written last, by the very version being
-        // replaced, are the ones the migration misses -- and then never move again.
-        var first = SchemaRevision();
-        System.Threading.Thread.Sleep(20);
-        var second = SchemaRevision();
+        // The failure a fixed future date has: it sits above every real date until it is reached,
+        // so a genuine update to a recording is masked and never reaches the library. Here the
+        // published date rises with TVHeadend's own, so it cannot be masked.
+        var before = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
 
-        Assert.Equal(first, second);
-        Assert.NotEqual(default, first);
-        Assert.Equal(DateTimeKind.Utc, first.Kind);
+        Assert.True(
+            RecordingsChannel.PublishedDateFor(before.AddSeconds(1))
+            > RecordingsChannel.PublishedDateFor(before));
 
-        // Written by hand rather than read off a clock. Comparing against the current time would
-        // itself be a clock-dependent test, and would fail for a minute whenever the two happened
-        // to coincide.
-        Assert.Equal(0, first.Ticks % TimeSpan.TicksPerMinute);
+        // Including a change smaller than the revision step, which is the case a coarser scheme
+        // would swallow.
+        Assert.True(
+            RecordingsChannel.PublishedDateFor(before.AddMilliseconds(1))
+            > RecordingsChannel.PublishedDateFor(before));
     }
 
-    private static DateTime SchemaRevision()
+    [Fact]
+    public void ALateInstallationMigratesJustTheSame()
+    {
+        // The fixed future date only worked for somebody who upgraded before it arrived. Measured
+        // from the recording rather than the calendar, the migration holds whenever it is run --
+        // here for a recording TVHeadend wrote long after the release that introduced it.
+        var wroteMuchLater = new DateTime(2028, 5, 4, 9, 30, 0, DateTimeKind.Utc);
+
+        Assert.True(PublishedBy(wroteMuchLater, revision: 1) > PublishedBy(wroteMuchLater, revision: 0));
+    }
+
+    [Fact]
+    public void ARecordingOlderThanTheFloorIsLiftedToIt()
+    {
+        // A recording TVHeadend has not touched in years still needs a date the revision can be
+        // counted from, and the floor is what gives it one.
+        var ancient = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        Assert.Equal(PublishedBy(DateFloor(), revision: 1), RecordingsChannel.PublishedDateFor(ancient));
+    }
+
+    [Fact]
+    public void NothingAboutThePublishedDateIsReadOffTheClock()
+    {
+        // A value derived from the current time would be later than the stored date on every
+        // listing, so every recording would be rewritten for ever.
+        var recordingChanged = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var first = RecordingsChannel.PublishedDateFor(recordingChanged);
+        System.Threading.Thread.Sleep(20);
+        var second = RecordingsChannel.PublishedDateFor(recordingChanged);
+
+        Assert.Equal(first, second);
+        Assert.Equal(DateTimeKind.Utc, first.Kind);
+
+        // And it is not a date sitting in the future waiting to be reached.
+        Assert.True(first < DateTime.UtcNow);
+    }
+
+    [Fact]
+    public void TheRevisionIsCountedInWholeSecondsSoRoundingCannotSwallowIt()
+    {
+        // Between here and the database the value is serialised and read back. A revision step
+        // smaller than the coarsest plausible rounding would be lost, and a lost step means the
+        // migration silently does not happen.
+        var revision = SchemaRevision();
+
+        Assert.True(revision >= 1);
+        Assert.Equal(
+            TimeSpan.FromSeconds(revision),
+            RecordingsChannel.PublishedDateFor(DateFloor()) - DateFloor());
+    }
+
+    private static int SchemaRevision()
     {
         var field = typeof(RecordingsChannel).GetField(
-            "MediaSourceSchemaRevisionUtc",
+            "MediaSourceSchemaRevision",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(field);
+        return (int)field!.GetValue(null)!;
+    }
+
+    private static DateTime DateFloor()
+    {
+        var field = typeof(RecordingsChannel).GetField(
+            "MediaSourceDateFloorUtc",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
 
         Assert.NotNull(field);
         return (DateTime)field!.GetValue(null)!;
     }
 
-    private static DateTime Later(DateTime recordingChanged, DateTime revision)
-        => recordingChanged > revision ? recordingChanged : revision;
+    /// <summary>
+    /// What the channel publishes for a recording at a given revision number, worked out here so
+    /// that a past revision -- which the code no longer contains -- can still be compared against.
+    /// </summary>
+    private static DateTime PublishedBy(DateTime recordingChanged, int revision)
+    {
+        var floor = DateFloor();
+        var floored = recordingChanged > floor ? recordingChanged : floor;
+
+        return floored.AddSeconds(revision);
+    }
+
 
     private static MediaSourceInfo DescribedRecording()
         => new()

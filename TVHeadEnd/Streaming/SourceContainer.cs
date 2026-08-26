@@ -26,12 +26,17 @@ namespace TVHeadEnd.Streaming
         /// need rewriting, so no other one is rewritten.
         /// </para>
         /// <para>
-        /// It must be a name FFmpeg knows, because Jellyfin passes the container of a media source
-        /// to FFmpeg as <c>-f</c> whenever the server has hardware acceleration configured. Naming
-        /// two spellings at once was tried and is what broke playback outright on such a server:
-        /// <c>-f mpegts,ts</c> is not a demuxer. <c>ts</c> is safe because Jellyfin translates it
-        /// on the way through -- <c>EncodingHelper.GetInputFormat</c> maps it to <c>mpegts</c> --
-        /// which is the whole reason the canonical name can be the one clients use. See
+        /// It must be a name Jellyfin can hand to FFmpeg, because with hardware acceleration
+        /// configured the container of a media source is passed as <c>-f</c>. Not verbatim,
+        /// though: <c>EncodingHelper.GetInputFormat</c> translates on the way, so <c>ts</c>
+        /// arrives as <c>-f mpegts</c>. <c>-f ts</c> is neither produced nor a demuxer FFmpeg
+        /// has, and that translation is the whole reason the canonical name can be the one
+        /// clients use.
+        /// </para>
+        /// <para>
+        /// Naming two spellings at once was tried and is what broke playback outright on such a
+        /// server: <c>mpegts,ts</c> is not in the translation table, so it reached FFmpeg
+        /// unchanged as <c>-f mpegts,ts</c>, which is not a demuxer either. See
         /// <c>LiveMediaSource.Container</c>.
         /// </para>
         /// </remarks>

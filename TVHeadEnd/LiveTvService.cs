@@ -168,9 +168,14 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // open by attempts that were abandoned.
         var consumer = _client.ResolveConsumerId();
 
+        // Which device is watching, so that the request that plays the stream can find it again.
+        // One channel can have several streams open at once -- two viewers whose profiles differ
+        // get a rendering each -- and they all carry the same media source identifier.
+        var device = _client.DeviceId;
+
         if (reusable is not null)
         {
-            _openStreams.Register(GetMediaSourceId(channelId), reusable);
+            _openStreams.Register(GetMediaSourceId(channelId), device, reusable);
 
             if (reusable.Consumers.Acquire(consumer))
             {
@@ -199,7 +204,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // Only once it is open. A stream that failed to open is never registered, so a failed
         // attempt cannot leave a viewer behind holding one.
         opened.Consumers.Acquire(consumer);
-        _openStreams.Register(GetMediaSourceId(channelId), opened);
+        _openStreams.Register(GetMediaSourceId(channelId), device, opened);
         return opened;
     }
 

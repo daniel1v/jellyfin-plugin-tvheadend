@@ -59,6 +59,7 @@ public sealed class LivePlaybackRequestMiddleware
     private const string MinSegmentsParameter = "MinSegments";
     private const string SegmentLengthParameter = "SegmentLength";
     private const string MediaSourceIdParameter = "MediaSourceId";
+    private const string DeviceIdParameter = "DeviceId";
     private const string StaticParameter = "static";
 
     /// <summary>
@@ -134,15 +135,18 @@ public sealed class LivePlaybackRequestMiddleware
     /// read. And only for this plugin's own items -- everything else in the library passes through
     /// with the profile exactly as it was sent.
     /// </para>
+    /// <para>
+    /// Both routes that weigh a profile against a source. <c>PlaybackInfo</c> is where a client
+    /// asks how it may play something, and <c>LiveStreams/Open</c> weighs the profile a second
+    /// time against the source the open produced -- <c>MediaInfoHelper.OpenMediaSource</c> calls
+    /// <c>SetDeviceSpecificData</c> whenever the request carried one. Widening only the first
+    /// would let a client be told it may direct play and then, on opening, be sent to a transcode.
+    /// </para>
     /// </remarks>
     private async Task WidenTransportStreamCapabilities(HttpContext context, ILibraryManager libraryManager)
     {
         var request = context.Request;
-
-        if (!request.Path.HasValue
-
-            || !request.Path.Value.EndsWith("/PlaybackInfo", StringComparison.OrdinalIgnoreCase)
-            || !TvheadendItems.IsOurs(libraryManager, ItemIdOf(request.Path.Value)))
+        if (!request.Path.HasValue || !CarriesADeviceProfile(request.Path.Value))
         {
             return;
         }
@@ -164,6 +168,11 @@ public sealed class LivePlaybackRequestMiddleware
 
         request.Body.Position = 0;
 
+        if (!TvheadendItems.IsOurs(libraryManager, ItemIdOf(request, body)))
+        {
+            return;
+        }
+
         if (body?["DeviceProfile"] is not JsonObject profile || !Widen(profile))
         {
             return;
@@ -179,14 +188,41 @@ public sealed class LivePlaybackRequestMiddleware
     }
 
     /// <summary>
-    /// The item a playback question is about, from the route it was asked on.
+    /// Whether a request on this route is one whose device profile is weighed against a source.
     /// </summary>
-    private static Guid ItemIdOf(string path)
-    {
-        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    private static bool CarriesADeviceProfile(string path)
+        => path.EndsWith("/PlaybackInfo", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith("/LiveStreams/Open", StringComparison.OrdinalIgnoreCase);
 
-        // .../Items/{itemId}/PlaybackInfo
-        return segments.Length >= 2 && Guid.TryParse(segments[^2], out var itemId) ? itemId : default;
+    /// <summary>
+    /// The item a playback question is about, wherever that route states it.
+    /// </summary>
+    /// <remarks>
+    /// <c>PlaybackInfo</c> names it in the route. <c>LiveStreams/Open</c> takes it from the query
+    /// or the body, in that order, which is the order Jellyfin's own controller resolves it in:
+    /// <c>ItemId = itemId ?? openLiveStreamDto?.ItemId ?? Guid.Empty</c>. Reading it any other way
+    /// would answer a different question than the one the server is about to answer.
+    /// </remarks>
+    private static Guid ItemIdOf(HttpRequest request, JsonNode? body)
+    {
+        var path = request.Path.Value ?? string.Empty;
+
+        if (path.EndsWith("/PlaybackInfo", StringComparison.OrdinalIgnoreCase))
+        {
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            // .../Items/{itemId}/PlaybackInfo
+            return segments.Length >= 2 && Guid.TryParse(segments[^2], out var fromRoute) ? fromRoute : default;
+        }
+
+        if (Guid.TryParse(request.Query["itemId"].ToString(), out var fromQuery))
+        {
+            return fromQuery;
+        }
+
+        return body?["ItemId"] is JsonValue stated && Guid.TryParse(stated.GetValue<string?>(), out var fromBody)
+            ? fromBody
+            : default;
     }
 
     /// <summary>
@@ -249,11 +285,17 @@ public sealed class LivePlaybackRequestMiddleware
     /// across, and this supplies it.
     /// </para>
     /// <para>
-    /// Only where it is certain. The media source named by the request must be one this plugin
-    /// currently has a stream open for, that stream must have been given an identifier, and
-    /// Jellyfin must still resolve that identifier to the very same stream. Anything short of
-    /// that and the request goes on exactly as it arrived -- an identifier guessed wrong would
-    /// hand a viewer somebody else's channel.
+    /// Only where it is certain, and the media source alone is not certainty: one channel can
+    /// have several streams open at once, one per viewer whose profile needs its own rendering,
+    /// and they all carry the same media source identifier. So the device the request names is
+    /// part of the question, and a lookup that does not single out one stream answers nothing.
+    /// </para>
+    /// <para>
+    /// Three things then have to hold. The media source and device named by the request must
+    /// resolve to exactly one stream this plugin has open, that stream must have been given an
+    /// identifier, and Jellyfin must still resolve that identifier to the very same stream.
+    /// Anything short of that and the request goes on exactly as it arrived -- an identifier
+    /// guessed wrong would hand a viewer somebody else's channel.
     /// </para>
     /// </remarks>
     private void SupplyLiveStreamId(HttpRequest request, IMediaSourceManager mediaSourceManager)
@@ -264,7 +306,13 @@ public sealed class LivePlaybackRequestMiddleware
             return;
         }
 
-        var stream = _openStreams.Find(request.Query[MediaSourceIdParameter].ToString());
+        // The device identifier the client sends on the streaming endpoints, which is the same
+        // one Jellyfin put in the session's claims when the stream was opened. Read from the
+        // request rather than from the session, because this step runs before authentication.
+        var stream = _openStreams.Find(
+            request.Query[MediaSourceIdParameter].ToString(),
+            request.Query[DeviceIdParameter].ToString());
+
         var liveStreamId = stream?.MediaSource?.LiveStreamId;
         if (stream is null || string.IsNullOrEmpty(liveStreamId))
         {

@@ -80,6 +80,17 @@ public sealed class PlaybackClient
         => Name?.Contains("android", StringComparison.OrdinalIgnoreCase) == true;
 
     /// <summary>
+    /// Gets the device identifier of the request being served, or <see langword="null"/> when
+    /// there is no request -- a scheduled task, a channel refresh, or an internal call.
+    /// </summary>
+    /// <remarks>
+    /// The same value a client sends back as <c>deviceId</c> on the streaming endpoints, which is
+    /// what lets a stream opened here be found again by the request that plays it. Jellyfin put it
+    /// in the session's claims; it is not read from a header the client could spell differently.
+    /// </remarks>
+    public string? DeviceId => _httpContextAccessor?.HttpContext?.User?.FindFirst(DeviceIdClaim)?.Value;
+
+    /// <summary>
     /// Identifies the viewer the request is being served for, for as long as a live stream needs
     /// to be kept open for them.
     /// </summary>
@@ -99,7 +110,7 @@ public sealed class PlaybackClient
     /// <returns>An identity stable for as long as the viewer is watching.</returns>
     public string ResolveConsumerId()
     {
-        var device = _httpContextAccessor?.HttpContext?.User?.FindFirst(DeviceIdClaim)?.Value;
+        var device = DeviceId;
 
         return string.IsNullOrEmpty(device)
             ? Guid.NewGuid().ToString("N")

@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Common.Extensions;
+using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
@@ -31,6 +33,7 @@ public class LivePlaybackRequestMiddlewareTests
     private const string ForcedId = "live-forced";
     private const string PlainId = "live-plain";
     private const string ForeignId = "live-foreign";
+    private const string ItemId = "8a1f0e6c4b2d47f0a9c3e5d7b1f2a4c6";
 
     [Fact]
     public async Task ARequestNamingNoLiveStreamIsUntouched()
@@ -197,9 +200,9 @@ public class LivePlaybackRequestMiddlewareTests
         stream.MediaSource.LiveStreamId = ForcedId;
 
         var open = new OpenLiveStreams();
-        open.Register("source-1", stream);
+        open.Register("source-1", "pixel-10", stream);
 
-        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&ApiKey=secret");
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&DeviceId=pixel-10&ApiKey=secret");
 
         await Invoke(context, open, new FakeMediaSourceManager(
             new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = stream }));
@@ -216,7 +219,7 @@ public class LivePlaybackRequestMiddlewareTests
         stream.MediaSource.LiveStreamId = ForcedId;
 
         var open = new OpenLiveStreams();
-        open.Register("source-1", stream);
+        open.Register("source-1", "pixel-10", stream);
 
         var context = Request($"/Videos/1/stream?static=true&MediaSourceId=source-1&LiveStreamId={PlainId}");
 
@@ -249,7 +252,7 @@ public class LivePlaybackRequestMiddlewareTests
         var somebodyElses = LiveStream(requiresVideoReencode: false);
 
         var open = new OpenLiveStreams();
-        open.Register("source-1", ours);
+        open.Register("source-1", "pixel-10", ours);
 
         var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1");
 
@@ -257,6 +260,104 @@ public class LivePlaybackRequestMiddlewareTests
             new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = somebodyElses }));
 
         Assert.Equal("?static=true&MediaSourceId=source-1", context.Request.QueryString.Value);
+    }
+
+    [Fact]
+    public async Task TwoDevicesWatchingOneChannelEachGetTheirOwnStream()
+    {
+        // One channel can have several streams open at once -- two viewers whose profiles need
+        // different renderings get one each -- and every one of them carries the same media
+        // source identifier. The device is what tells them apart.
+        var forPixel = LiveStream(requiresVideoReencode: false);
+        forPixel.MediaSource.LiveStreamId = ForcedId;
+
+        var forBrowser = LiveStream(requiresVideoReencode: false);
+        forBrowser.MediaSource.LiveStreamId = PlainId;
+
+        var open = new OpenLiveStreams();
+        open.Register("source-1", "pixel-10", forPixel);
+        open.Register("source-1", "firefox", forBrowser);
+
+        var registered = new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase)
+        {
+            [ForcedId] = forPixel,
+            [PlainId] = forBrowser,
+        };
+
+        var pixel = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&DeviceId=pixel-10");
+        await Invoke(pixel, open, new FakeMediaSourceManager(registered));
+        Assert.Equal(ForcedId, pixel.Request.Query["LiveStreamId"]);
+
+        var browser = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&DeviceId=firefox");
+        await Invoke(browser, open, new FakeMediaSourceManager(registered));
+        Assert.Equal(PlainId, browser.Request.Query["LiveStreamId"]);
+    }
+
+    [Fact]
+    public async Task ARequestThatDoesNotSayWhichDeviceItIsGetsNothing()
+    {
+        // Two streams answer to this media source, so the media source does not identify one.
+        // Handing over either would be a coin toss for whose rendering the viewer receives.
+        var open = new OpenLiveStreams();
+        var registered = TwoDevicesOnOneChannel(open);
+
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1");
+
+        await Invoke(context, open, new FakeMediaSourceManager(registered));
+
+        Assert.Equal("?static=true&MediaSourceId=source-1", context.Request.QueryString.Value);
+    }
+
+    [Fact]
+    public async Task ARequestFromADeviceNothingIsOpenForGetsNothing()
+    {
+        // The device is known to Jellyfin but not to this registry, and two streams are open, so
+        // there is still nothing that singles one out.
+        var open = new OpenLiveStreams();
+        var registered = TwoDevicesOnOneChannel(open);
+
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&DeviceId=roku");
+
+        await Invoke(context, open, new FakeMediaSourceManager(registered));
+
+        Assert.Equal("?static=true&MediaSourceId=source-1&DeviceId=roku", context.Request.QueryString.Value);
+    }
+
+    [Fact]
+    public async Task ASingleOpenStreamIsStillFoundWithoutADevice()
+    {
+        // A stream opened outside a request has no device recorded, and an older client may send
+        // none. Where the media source leaves no room for doubt that is still an answer.
+        var stream = LiveStream(requiresVideoReencode: false);
+        stream.MediaSource.LiveStreamId = ForcedId;
+
+        var open = new OpenLiveStreams();
+        open.Register("source-1", null, stream);
+
+        var context = Request("/Videos/1/stream?static=true&MediaSourceId=source-1&DeviceId=pixel-10");
+
+        await Invoke(context, open, new FakeMediaSourceManager(
+            new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase) { [ForcedId] = stream }));
+
+        Assert.Equal(ForcedId, context.Request.Query["LiveStreamId"]);
+    }
+
+    private static Dictionary<string, ILiveStream> TwoDevicesOnOneChannel(OpenLiveStreams open)
+    {
+        var first = LiveStream(requiresVideoReencode: false);
+        first.MediaSource.LiveStreamId = ForcedId;
+
+        var second = LiveStream(requiresVideoReencode: false);
+        second.MediaSource.LiveStreamId = PlainId;
+
+        open.Register("source-1", "pixel-10", first);
+        open.Register("source-1", "firefox", second);
+
+        return new Dictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase)
+        {
+            [ForcedId] = first,
+            [PlainId] = second,
+        };
     }
 
     [Fact]
@@ -268,7 +369,7 @@ public class LivePlaybackRequestMiddlewareTests
         stream.MediaSource.LiveStreamId = ForcedId;
 
         var open = new OpenLiveStreams();
-        open.Register("source-1", stream);
+        open.Register("source-1", "pixel-10", stream);
 
         var context = Request("/videos/1/live.m3u8?MediaSourceId=source-1");
 
@@ -319,13 +420,83 @@ public class LivePlaybackRequestMiddlewareTests
         Assert.Equal(Sent, await PlaybackInfo(new Movie(), Sent));
     }
 
+    [Fact]
+    public async Task ARecordingOfOursIsWidenedTheWayAChannelIs()
+    {
+        // The gap this closes: a recording is not a LiveTvChannel, so recognising only those left
+        // every recording matching against its published container alone. A client that lists
+        // MPEG-TS as "mpegts" and a source that says "ts" never met.
+        var body = await PlaybackInfo(
+            Recording(),
+            "{\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"mpegts\",\"Type\":\"Video\"}]}}");
+
+        Assert.Contains("mpegts,ts", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnotherChannelPluginsItemIsLeftCompletelyAlone()
+    {
+        // It is a channel item, which is the closest thing in the library to one of our
+        // recordings, and it belongs to a different channel. The identifier Jellyfin's own channel
+        // manager wrote is what decides, and nothing else.
+        const string Sent = "{\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"mpegts\"}]}}";
+
+        var foreign = new Movie
+        {
+            ChannelId = FakeLibrary.NewItemId("Channel Some Other Plugin", typeof(Channel)),
+        };
+
+        Assert.Equal(Sent, await PlaybackInfo(foreign, Sent));
+    }
+
+    [Fact]
+    public async Task OpeningALiveStreamWidensTheProfileToo()
+    {
+        // MediaInfoHelper.OpenMediaSource weighs the profile a second time, against the source the
+        // open produced. Widening only PlaybackInfo would tell a client it may direct play and
+        // then, on opening, send it to a transcode.
+        var body = await Open(
+            "/LiveStreams/Open",
+            "{\"ItemId\":\"" + ItemId + "\",\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"mpegts\"}]}}");
+
+        Assert.Contains("mpegts,ts", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpeningALiveStreamTakesTheItemFromTheQueryFirst()
+    {
+        // The order Jellyfin's own controller resolves it in: itemId ?? dto.ItemId ?? Empty.
+        var body = await Open(
+            $"/LiveStreams/Open?itemId={ItemId}",
+            "{\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"ts\"}]}}");
+
+        Assert.Contains("ts,mpegts", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpeningALiveStreamForSomebodyElsesItemIsLeftAlone()
+    {
+        const string Sent = "{\"ItemId\":\"" + ItemId + "\",\"DeviceProfile\":{\"DirectPlayProfiles\":[{\"Container\":\"mpegts\"}]}}";
+
+        Assert.Equal(Sent, await Body("/LiveStreams/Open", Sent, new Movie()));
+    }
+
+    /// <summary>
+    /// Runs an open request for one of our live channels.
+    /// </summary>
+    private static Task<string> Open(string pathAndQuery, string sent)
+        => Body(pathAndQuery, sent, Channel(TvheadendItems.ServiceName));
+
     /// <summary>
     /// Runs a PlaybackInfo request for whatever the library says the item is, and returns the
     /// body as the rest of the pipeline sees it.
     /// </summary>
-    private static async Task<string> PlaybackInfo(BaseItem? item, string sent)
+    private static Task<string> PlaybackInfo(BaseItem? item, string sent)
+        => Body($"/Items/{ItemId}/PlaybackInfo", sent, item);
+
+    private static async Task<string> Body(string pathAndQuery, string sent, BaseItem? item)
     {
-        var context = Request($"/Items/{Guid.NewGuid():N}/PlaybackInfo");
+        var context = Request(pathAndQuery);
         context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(sent));
 
         await Invoke(context, new OpenLiveStreams(), Streams(), FakeLibrary.Returning(item));
@@ -337,6 +508,19 @@ public class LivePlaybackRequestMiddlewareTests
 
     private static LiveTvChannel Channel(string serviceName)
         => new() { ServiceName = serviceName };
+
+    /// <summary>
+    /// A recording as Jellyfin's channel manager stores it: an ordinary video item carrying the
+    /// identifier of the channel that produced it.
+    /// </summary>
+    private static Movie Recording()
+        => new()
+        {
+            ChannelId = FakeLibrary.NewItemId(
+                "Channel " + TvheadendItems.RecordingsChannelName,
+                typeof(Channel)),
+        };
+
 
     private static Task Invoke(HttpContext context)
         => Invoke(context, new OpenLiveStreams(), Streams());
@@ -401,10 +585,10 @@ public class LivePlaybackRequestMiddlewareTests
     }
 
     /// <summary>
-    /// Answers the one library question this plugin asks, and nothing else.
+    /// Answers the two library questions this plugin asks, and nothing else.
     /// </summary>
     /// <remarks>
-    /// ILibraryManager is a hundred members wide and only one of them is reachable from here, so
+    /// ILibraryManager is a hundred members wide and only two of them are reachable from here, so
     /// it is generated rather than written out: every other member answers with its default and
     /// would fail loudly if the middleware ever started calling it.
     /// </remarks>
@@ -419,9 +603,30 @@ public class LivePlaybackRequestMiddlewareTests
             return proxy;
         }
 
-        protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
-            => targetMethod?.Name == nameof(ILibraryManager.GetItemById) ? _item : null;
+        /// <summary>
+        /// Derives an identifier the way LibraryManager does: the type's full name in front of
+        /// the key, then MD5. Copied rather than approximated, because the whole point of the
+        /// channel check is that the plugin arrives at the very identifier Jellyfin stored.
+        /// </summary>
+        public static Guid NewItemId(string key, Type type)
+            => ((type.FullName ?? string.Empty) + key.ToLowerInvariant()).GetMD5();
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod?.Name == nameof(ILibraryManager.GetItemById))
+            {
+                return _item;
+            }
+
+            if (targetMethod?.Name == nameof(ILibraryManager.GetNewItemId))
+            {
+                return NewItemId((string)args![0]!, (Type)args[1]!);
+            }
+
+            return null;
+        }
     }
+
 
     /// <summary>
     /// Never called: these streams are only ever looked up, never opened.

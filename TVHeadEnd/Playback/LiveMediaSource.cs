@@ -39,8 +39,9 @@ public static class LiveMediaSource
     /// <para>
     /// It needs no FFmpeg spelling of its own, because Jellyfin translates: with hardware
     /// acceleration configured the container is passed to FFmpeg as <c>-f</c>, and
-    /// <c>EncodingHelper.GetInputFormat</c> maps <c>ts</c> to <c>mpegts</c> on the way. Both
-    /// levels are therefore served by the one name.
+    /// <c>EncodingHelper.GetInputFormat</c> maps <c>ts</c> to <c>mpegts</c> on the way. What
+    /// FFmpeg is asked for is therefore <c>-f mpegts</c>, never <c>-f ts</c>, which is not a
+    /// demuxer it has. Both levels are served by the one name.
     /// </para>
     /// <para>
     /// Not <c>mpegts,ts</c>. A container is one container, not a set of aliases, and that value
