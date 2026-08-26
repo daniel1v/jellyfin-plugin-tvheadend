@@ -142,6 +142,46 @@ public class DvrEntryTests
         Assert.NotEqual(default, recording.DateLastUpdated);
         Assert.Equal(entry.StopUtc, recording.DateLastUpdated);
     }
+    [Fact]
+    public void ArtworkTheServerSentIsKept()
+    {
+        // TVHeadend copies the artwork onto the DVR entry when it schedules the recording, so it
+        // is still there once the EPG event has aged out of the guide -- which for a recording is
+        // most of its life. It was being read past and thrown away, and every recording was
+        // published as having no image at all.
+        var message = Message(id: 4711, state: "completed", title: "Tatort");
+        message.Set("image", "imagecache/182");
+        message.Set("fanartImage", "imagecache/183");
+
+        var entry = DvrEntry.FromMessage(message);
+
+        Assert.NotNull(entry);
+        Assert.Equal("imagecache/182", entry!.Image);
+        Assert.Equal("imagecache/183", entry.FanartImage);
+
+        var recording = TVHeadEnd.Domain.JellyfinDvrMapper.ToRecording(entry);
+
+        // The reference, not an address: turning one into the other needs this server's own
+        // address and its secret, which a projection of one HTSP message has neither of.
+        Assert.Equal("imagecache/182", recording.ImageReference);
+        Assert.Equal("imagecache/183", recording.FanartReference);
+        Assert.True(recording.HasImage);
+    }
+
+    [Fact]
+    public void ARecordingWithNoArtworkStillClaimsNone()
+    {
+        var entry = DvrEntry.FromMessage(Message(id: 4711, state: "completed", title: "Tatort"));
+
+        Assert.NotNull(entry);
+        Assert.Null(entry!.Image);
+
+        var recording = TVHeadEnd.Domain.JellyfinDvrMapper.ToRecording(entry);
+
+        Assert.False(recording.HasImage);
+        Assert.Null(recording.ImageReference);
+    }
+
     private static HtspMessage Message(
         int id,
         string state,

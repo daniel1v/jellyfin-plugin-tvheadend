@@ -224,19 +224,38 @@ public sealed class TvheadendDvr
             var reply = await _connection.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             // TVHeadend answers a DVR change with an explicit success flag rather than an error,
-            // so a reply on its own does not mean it worked.
-            if (reply.Contains("success") && !reply.GetBoolean("success"))
-            {
-                _logger.LogError(
-                    "TVHeadend would not {What}: {Reason}",
-                    what,
-                    reply.GetString("error") ?? "no reason given");
-            }
+            // so a reply on its own does not mean it worked. Logging that and returning left
+            // Jellyfin believing the timer had been set: it reports success to the client,
+            // schedules nothing, and the recording quietly never happens. A refusal has to
+            // travel back as one.
+            // Not logged here: the catch below logs every refusal, and doing it in both places
+            // writes the same failure to the log twice.
+            EnsureAccepted(reply);
         }
         catch (HtspException exception)
         {
             _logger.LogError(exception, "TVHeadend would not {What}", what);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Throws when TVHeadend answered that it would not do what it was asked.
+    /// </summary>
+    /// <remarks>
+    /// The flag is only meaningful when it is there. A reply that does not mention success is one
+    /// from a server or a request that does not use the flag, and treating its absence as a
+    /// refusal would fail every such operation.
+    /// </remarks>
+    /// <param name="reply">The reply TVHeadend sent.</param>
+    internal static void EnsureAccepted(HtspMessage reply)
+    {
+        ArgumentNullException.ThrowIfNull(reply);
+
+        if (reply.Contains("success") && !reply.GetBoolean("success"))
+        {
+            throw new HtspException(
+                $"TVHeadend refused it: {reply.GetString("error") ?? "no reason given"}");
         }
     }
 

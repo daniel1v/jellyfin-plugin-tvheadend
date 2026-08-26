@@ -12,14 +12,15 @@ using TVHeadEnd.Tvheadend;
 namespace TVHeadEnd.Api
 {
     /// <summary>
-    /// Serves TVHeadend channel logos through Jellyfin rather than sending Jellyfin to TVHeadend.
+    /// Serves TVHeadend artwork through Jellyfin rather than sending Jellyfin to TVHeadend.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A channel's image reaches Jellyfin as a URL, which Jellyfin then fetches with an HTTP client
-    /// of its own. That client knows nothing of TVHeadend, so a server that requires
-    /// authentication -- the ordinary case -- answers it with 401 and the channel has no logo.
-    /// There is no way to hand Jellyfin a header along with the address.
+    /// An image reaches Jellyfin as a URL, which Jellyfin then fetches with an HTTP client of its
+    /// own. That client knows nothing of TVHeadend, so a server that requires authentication --
+    /// the ordinary case -- answers it with 401 and the item has no picture. There is no way to
+    /// hand Jellyfin a header along with the address. It is the same for a channel logo, an EPG
+    /// programme image and a recording's poster, so one route answers all three.
     /// </para>
     /// <para>
     /// Putting the credentials in the URL, which an earlier version did, does not work and never
@@ -58,74 +59,65 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
-        /// The route a channel's logo is served from, for the token that names it.
+        /// The route artwork is served from, for the token that names it.
         /// </summary>
-        /// <param name="token">The unguessable name of the channel.</param>
+        /// <param name="token">The unguessable name of the image.</param>
         /// <returns>The path, relative to the server root.</returns>
         public static string ImagePathFor(string token)
         {
             ArgumentException.ThrowIfNullOrEmpty(token);
 
-            return "/TVHeadend/Channels/" + token + "/image";
+            return "/TVHeadend/Artwork/" + token;
         }
 
         /// <summary>
-        /// Serves a channel's logo.
+        /// Serves a piece of artwork.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Anonymous because Jellyfin's image pipeline fetches it without a session, the same way
         /// it fetches any other remote image. What protects it is the address: the token carries a
-        /// tag derived from a secret only this server knows.
+        /// tag derived from a secret only this server knows, so a caller cannot mint one.
+        /// </para>
+        /// <para>
+        /// The token names a path below the TVHeadend web root and nothing else. It is resolved
+        /// against the configured endpoint and nowhere else, so the address this fetches from --
+        /// and therefore the only address the credentials can reach -- is fixed by configuration
+        /// rather than by anything in the request.
+        /// </para>
         /// </remarks>
-        /// <param name="token">The unguessable name of the channel.</param>
+        /// <param name="token">The unguessable name of the image.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The logo.</returns>
-        [HttpGet("Channels/{token}/image")]
+        /// <returns>The image.</returns>
+        [HttpGet("Artwork/{token}")]
         [AllowAnonymous]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public async Task<ActionResult> GetChannelImage(string token, CancellationToken cancellationToken)
+        public async Task<ActionResult> GetArtwork(string token, CancellationToken cancellationToken)
         {
-            if (!TvheadendAccessToken.TryRead(token, Plugin.Instance.Configuration.RecordingAccessSecret, out var channelId))
+            if (!TvheadendAccessToken.TryRead(token, Plugin.Instance.Configuration.RecordingAccessSecret, out var encoded)
+                || !TvheadendArtwork.TryDecode(encoded, out var path))
             {
-                return NotFound();
-            }
-
-            // Before the catalog is read, not after. Jellyfin fetches a channel image from a
-            // background task that can run before anything has asked for live TV, and an empty
-            // catalog answers every channel with "no icon" -- which Jellyfin records as a failure
-            // and clears the image for, so a cold server would lose the logo it just gained.
-            await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
-
-            // What the channel says its icon is, from the catalog the HTSP connection keeps. The
-            // token names the channel and nothing else, so no caller can choose the address this
-            // fetches from.
-            var icon = _connection.Channels.Get(channelId)?.Icon;
-            if (string.IsNullOrEmpty(icon))
-            {
-                _logger.LogDebug("TVHeadend channel {ChannelId}: no icon is known for it", channelId);
                 return NotFound();
             }
 
             var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
 
-            var upstream = endpoint.ResolveImageUrl(icon);
-            if (string.IsNullOrEmpty(upstream))
+            // Checked again on the way out, not only on the way in. The token cannot be forged,
+            // but this is the one line that decides where the credentials go, and it should not
+            // depend on a caller elsewhere having got it right.
+            if (TvheadendArtwork.PathOnTvheadend(path, endpoint.BaseUrl) is not { } safe)
             {
+                _logger.LogWarning("TVHeadend artwork: refused a path that is not on the server -- {Path}", path);
                 return NotFound();
             }
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, upstream);
+            var upstream = endpoint.CreateApiUrl(safe);
 
-            // Only to TVHeadend. A channel icon can be an absolute URL an EPG provider supplied,
-            // pointing anywhere at all, and sending the TVHeadend credentials to some other host
-            // would hand them to whoever runs it.
-            if (upstream.StartsWith(endpoint.BaseUrl, StringComparison.OrdinalIgnoreCase))
+            using var request = new HttpRequestMessage(HttpMethod.Get, upstream);
+            foreach (var header in endpoint.CreateHeaders())
             {
-                foreach (var header in endpoint.CreateHeaders())
-                {
-                    request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                }
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
             var client = _httpClientFactory.CreateClient();
@@ -138,24 +130,25 @@ namespace TVHeadEnd.Api
             }
             catch (HttpRequestException exception)
             {
-                _logger.LogError(exception, "TVHeadend channel {ChannelId}: its logo could not be fetched", channelId);
+                _logger.LogError(exception, "TVHeadend artwork {Path} could not be fetched", safe);
                 return StatusCode(StatusCodes.Status502BadGateway);
             }
 
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "TVHeadend answered {StatusCode} for the logo of channel {ChannelId}",
+                    "TVHeadend answered {StatusCode} for the artwork {Path}",
                     (int)response.StatusCode,
-                    channelId);
+                    safe);
+
                 response.Dispose();
                 return StatusCode(response.StatusCode == HttpStatusCode.NotFound
                     ? StatusCodes.Status404NotFound
                     : StatusCodes.Status502BadGateway);
             }
 
-            // Read whole rather than streamed. A logo is a few kilobytes, and Jellyfin's image
-            // pipeline wants a complete body it can hash and store.
+            // Read whole rather than streamed. Artwork is a few kilobytes, and Jellyfin's
+            // image pipeline wants a complete body it can hash and store.
             var body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
             var contentType = response.Content.Headers.ContentType?.ToString();
             response.Dispose();

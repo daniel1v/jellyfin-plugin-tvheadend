@@ -23,19 +23,23 @@ public sealed class TvheadendGuide
     private static readonly DateTime UnixEpochUtc = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     private readonly TvheadendConnection _connection;
+    private readonly TVHeadEnd.Api.TvheadendArtwork _artwork;
     private readonly ILogger _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TvheadendGuide"/> class.
     /// </summary>
     /// <param name="connection">The TVHeadend connection.</param>
+    /// <param name="artwork">How an image reference becomes an address Jellyfin can fetch.</param>
     /// <param name="logger">The logger.</param>
-    public TvheadendGuide(TvheadendConnection connection, ILogger logger)
+    public TvheadendGuide(TvheadendConnection connection, TVHeadEnd.Api.TvheadendArtwork artwork, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(artwork);
         ArgumentNullException.ThrowIfNull(logger);
 
         _connection = connection;
+        _artwork = artwork;
         _logger = logger;
     }
 
@@ -93,7 +97,7 @@ public sealed class TvheadendGuide
         return programs;
     }
 
-    private static ProgramInfo? Describe(HtspMessage entry, TvheadendHttpEndpoint endpoint)
+    private ProgramInfo? Describe(HtspMessage entry, TvheadendHttpEndpoint endpoint)
     {
         var start = entry.GetInt64("start");
         var stop = entry.GetInt64("stop");
@@ -132,9 +136,11 @@ public sealed class TvheadendGuide
             program.OriginalAirDate = UnixEpochUtc.AddSeconds(firstAired);
         }
 
+        // Through this plugin where it points at TVHeadend, because Jellyfin fetches an image URL
+        // with a client that carries no TVHeadend credentials and would be answered with 401.
         if (entry.GetString("image") is { Length: > 0 } image)
         {
-            program.ImageUrl = endpoint.ResolveImageUrl(image);
+            program.ImageUrl = _artwork.AddressFor(image, endpoint);
             program.HasImage = !string.IsNullOrEmpty(program.ImageUrl);
         }
 

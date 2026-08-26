@@ -183,6 +183,22 @@ namespace TVHeadEnd
         public bool? HasImage { get; set; }
 
         /// <summary>
+        /// Gets or sets the artwork reference exactly as TVHeadend stated it.
+        /// </summary>
+        /// <remarks>
+        /// Kept apart from <see cref="ImageUrl"/> because the two are different things: this is
+        /// what the server said, and that is an address a client can fetch. Turning one into the
+        /// other needs this server's own address and its secret, which the mapper that builds this
+        /// record has neither of.
+        /// </remarks>
+        public string? ImageReference { get; set; }
+
+        /// <summary>
+        /// Gets or sets the backdrop reference exactly as TVHeadend stated it.
+        /// </summary>
+        public string? FanartReference { get; set; }
+
+        /// <summary>
         /// Gets or sets the date last updated.
         /// </summary>
         /// <value>The date last updated.</value>

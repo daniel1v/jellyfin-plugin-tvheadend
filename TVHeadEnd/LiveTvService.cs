@@ -46,6 +46,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     private readonly PlaybackClient _client;
     private readonly OpenLiveStreams _openStreams;
     private readonly IServerApplicationHost _applicationHost;
+    private readonly Api.TvheadendArtwork _artwork;
 
     private readonly ILogger<LiveTvService> _logger;
 
@@ -80,6 +81,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         _client = new PlaybackClient(httpContextAccessor);
         _openStreams = openStreams;
         _applicationHost = applicationHost;
+        _artwork = new Api.TvheadendArtwork(applicationHost, _logger);
 
         var bufferDirectory = LiveBufferDirectory.Resolve(configurationManager);
         LiveBufferDirectory.RemoveOrphaned(bufferDirectory, _logger);
@@ -92,7 +94,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             bufferDirectory,
             _logger);
         _dvr = new TvheadendDvr(connection, _logger);
-        _guide = new TvheadendGuide(connection, _logger);
+        _guide = new TvheadendGuide(connection, _artwork, _logger);
     }
 
     /// <inheritdoc />
@@ -119,49 +121,11 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         foreach (var channel in channels)
         {
             var known = _connection.Channels.Get(channel.Id);
-            channel.ImageUrl = BuildChannelImageUrl(channel.Id, known?.Icon);
+            channel.ImageUrl = _artwork.AddressFor(known?.Icon, endpoint);
             channel.HasImage = !string.IsNullOrEmpty(channel.ImageUrl);
         }
 
         return channels;
-    }
-
-    /// <summary>
-    /// Builds the address a channel's logo is served from: this plugin's own endpoint, not
-    /// TVHeadend's.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Jellyfin fetches an image URL with an HTTP client of its own, which knows nothing of
-    /// TVHeadend. A server that requires authentication answers that with 401 and the channel has
-    /// no logo. Credentials in the URL do not help -- HttpClient ignores the userinfo component
-    /// entirely -- and all an earlier attempt at that achieved was writing the TVHeadend password
-    /// into Jellyfin's database as an image path.
-    /// </para>
-    /// <para>
-    /// Pointing at this plugin instead means the fetch that needs the credentials is made by the
-    /// code that has them. A channel with no icon gets no address, so Jellyfin shows what it
-    /// shows for anything else without one.
-    /// </para>
-    /// </remarks>
-    private string? BuildChannelImageUrl(string channelId, string? icon)
-    {
-        if (string.IsNullOrEmpty(icon) || string.IsNullOrEmpty(channelId))
-        {
-            return null;
-        }
-
-        try
-        {
-            var secret = Api.TvheadendAccessSecret.Ensure(_logger);
-            return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
-                + Api.TvHeadendImagesController.ImagePathFor(Api.TvheadendAccessToken.Create(channelId, secret));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Live TV: could not build a logo address for channel {ChannelId}", channelId);
-            return null;
-        }
     }
 
     /// <summary>
@@ -359,7 +323,21 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     public async Task<IReadOnlyList<MyRecordingInfo>> GetRecordingsAsync(CancellationToken cancellationToken)
     {
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
-        return _connection.Dvr.GetRecordings();
+
+        var recordings = _connection.Dvr.GetRecordings();
+        var endpoint = _connection.HttpEndpoint;
+
+        // Here rather than in the mapper, which is a pure projection of one HTSP message and has
+        // neither this server's address nor its secret. This is also the only place every
+        // consumer of a recording passes through, so a folder built from these gets a finished
+        // address like the recordings in it.
+        foreach (var recording in recordings)
+        {
+            recording.ImageUrl = _artwork.AddressFor(recording.ImageReference, endpoint);
+            recording.HasImage = !string.IsNullOrEmpty(recording.ImageUrl);
+        }
+
+        return recordings;
     }
 
     /// <summary>

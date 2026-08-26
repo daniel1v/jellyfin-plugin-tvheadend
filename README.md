@@ -108,16 +108,31 @@ this repository packages and publishes itself. Bump the version in `build.yaml` 
 `Directory.Build.props`, describe the release in the `changelog` block of `build.yaml`, then:
 
 ```powershell
-pwsh tools/release.ps1
-gh release create v13.1.0.0 dist/tvheadend_13.1.0.0.zip --repo daniel1v/jellyfin-plugin-tvheadend
-git commit -am "Publish 13.1.0.0" && git push
+& .\tools\release.ps1 -Publish
+git commit -am "Publish 14.0.0.0" && git push
 ```
+
+`-Publish` creates the GitHub release as well as the package. Without it the script only leaves the
+zip in `dist/` and updates `manifest.json`, which is what you want when checking what a release would
+contain.
 
 `tools/release.ps1` takes every package detail from `build.yaml`, so the zip, the `meta.json` inside
 it and the `manifest.json` entry cannot drift apart. The checksum Jellyfin verifies is the MD5 of the
-zip, which is why the manifest is written after the zip is final — upload exactly the file the script
-produced. Upstream's route via [JPRM](https://github.com/oddstr13/jellyfin-plugin-repository-manager)
-remains an alternative.
+zip, which is why the manifest is written after the zip is final — and why the script uploads exactly
+the file it produced rather than leaving that to be done by hand. Upstream's route via
+[JPRM](https://github.com/oddstr13/jellyfin-plugin-repository-manager) remains an alternative.
+
+### Alpha releases
+
+Every release this fork makes is an alpha, and the script marks it as a GitHub prerelease itself
+rather than leaving the flag to be remembered. That flag, the plugin name and the release title are
+the only places the word can appear: Jellyfin parses a manifest version with `Version.Parse`, so a
+version cannot carry a `-alpha` suffix. Use the fourth component for the alpha number.
+
+All releases before 14.0.0.0 were withdrawn — each was broken in a way only found after publishing,
+and leaving them installable served nobody. The tags remain, so nothing is lost from the history;
+only the downloads are gone.
+
 
 ## Contributing
 

@@ -287,12 +287,13 @@ Only the playlists, too. Segment requests are not adjusted: by the time one is f
 naming it has already been released. Radio takes Jellyfin's audio route and is left alone, because
 the nine seconds being cut here is the wait for video segments.
 
-## Channel logos
+## Artwork
 
-TVHeadend serves them from `/imagecache/N`, behind the same authentication as everything else it
-serves. Jellyfin is handed an image URL and fetches it with an HTTP client of its own, which knows
-nothing of TVHeadend -- so it received 401 and every channel was blank. Measured against a real
-server: anonymous 401, authenticated 200 and 4,971 bytes for the same path.
+Three kinds — a channel logo, an EPG programme image, a recording's poster — and one problem
+between them. TVHeadend serves its own images from `/imagecache/N`, behind the same authentication
+as everything else it serves. Jellyfin is handed an image URL and fetches it with an HTTP client of
+its own, which knows nothing of TVHeadend, so it received 401 and the item was blank. Measured
+against a real server: anonymous 401, authenticated 200 and 4,971 bytes for the same path.
 
 Credentials in the URL do not fix it, although an earlier version tried. **`HttpClient` ignores the
 userinfo component of a URI** and sends no `Authorization` header for it, so
@@ -300,19 +301,40 @@ userinfo component of a URI** and sends no `Authorization` header for it, so
 writing the TVHeadend password into Jellyfin's database as an image path, and into the log on every
 failed fetch.
 
-So the logo is fetched here instead. A channel publishes `/TVHeadend/Channels/{token}/image`, which
-is on Jellyfin and needs no credentials; this plugin then asks TVHeadend for it with the header it
-uses everywhere else. Because the published address differs from the stored one, Jellyfin replaces
-the old path on the next guide refresh -- which is also what clears the stored passwords.
+So an image that lives on TVHeadend is fetched here instead, and published as
+`/TVHeadend/Artwork/{token}` — an address on Jellyfin, which needs no credentials. Because the
+published address differs from the stored one, Jellyfin replaces the old path on the next refresh,
+which is also what clears the stored passwords.
 
-The token names the channel and nothing else. The icon is looked up from the HTSP catalog by that
-identifier, so no part of a request can choose the address this server fetches from. The route is
-anonymous because Jellyfin's image pipeline carries no session, exactly as the recordings route is,
-and an unguessable address is what stands in for one.
+### Where each one comes from
 
-One rule on top: the TVHeadend header is attached only when the resolved address is on the
-TVHeadend endpoint. A channel icon can be an absolute URL an EPG provider supplied, pointing
-anywhere at all, and those go out bare.
+| | Source | Notes |
+|---|---|---|
+| Channel | `channelIcon` on the HTSP channel | Kept in the channel catalog the connection maintains. |
+| Programme | `image` on the EPG event | Read as the guide is read; the guide keeps no catalog of its own. |
+| Recording | `image` and `fanartImage` on the DVR entry | Taken from the entry, not rebuilt from the event it was made from: TVHeadend copies the artwork onto the entry when it schedules the recording, so it survives the event ageing out of the guide — which for a recording is most of its life. |
+
+All three go through the same publisher, and all three are decided by the same rule.
+
+### The credential rule
+
+**TVHeadend credentials only ever reach the configured TVHeadend endpoint.** That is a property of
+how the address is built rather than a check that could be forgotten: the token carries a *path*,
+the controller puts the configured base URL in front of it, and there is no input that makes it
+produce a different host.
+
+A reference that points somewhere else — an EPG provider's own artwork, on some host of its own — is
+published unchanged and fetched by Jellyfin directly. It needs no credentials, and this is what
+keeps it from being sent any.
+
+The token names a path below the TVHeadend web root and nothing else. It is not a URL, and it is
+signed with a secret only this server knows, so nobody can mint one. The path is checked again as
+it comes back out — absolute references, `..`, and anything carrying a query or a fragment are
+refused — because that is the line that decides where the credentials go, and it should not depend
+on every caller elsewhere having got it right.
+
+The route is anonymous, as the recordings route is, because Jellyfin's image pipeline carries no
+session. An unguessable address is what stands in for one.
 
 ## Recordings
 

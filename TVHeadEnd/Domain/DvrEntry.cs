@@ -106,6 +106,22 @@ public sealed record DvrEntry
     public string? Error { get; init; }
 
     /// <summary>
+    /// Gets the reference to the entry's own artwork, as TVHeadend states it.
+    /// </summary>
+    /// <remarks>
+    /// Taken from the DVR entry rather than rebuilt from the EPG event it was made from. The
+    /// server copies the artwork onto the entry when it schedules the recording, so it is still
+    /// there after the event has aged out of the guide -- which for a recording is most of its
+    /// life.
+    /// </remarks>
+    public string? Image { get; init; }
+
+    /// <summary>
+    /// Gets the reference to the entry's backdrop, where the server has one.
+    /// </summary>
+    public string? FanartImage { get; init; }
+
+    /// <summary>
     /// Gets a value indicating whether the recording TVHeadend still lists no longer has a file
     /// behind it.
     /// </summary>
@@ -158,6 +174,8 @@ public sealed record DvrEntry
             FilePath = message.GetString("path"),
             Url = message.GetString("url"),
             Error = message.GetString("error"),
+            Image = message.GetString("image"),
+            FanartImage = message.GetString("fanartImage"),
         };
     }
 

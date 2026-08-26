@@ -99,7 +99,14 @@ namespace TVHeadEnd.Domain
                 StartDate = entry.StartUtc,
                 EndDate = entry.StopUtc,
                 Status = ToRecordingStatus(entry.State),
-                HasImage = false,
+
+                // What the server said, not an address yet -- see MyRecordingInfo.ImageReference.
+                // This used to be a flat "HasImage = false", which was a claim rather than an
+                // answer: TVHeadend copies the artwork onto the DVR entry when it schedules the
+                // recording, and it was being thrown away unread.
+                ImageReference = entry.Image,
+                FanartReference = entry.FanartImage,
+                HasImage = !string.IsNullOrEmpty(entry.Image),
 
                 // When this recording last became something different. Jellyfin re-saves a
                 // channel item -- and with it the description of what it contains -- only when
