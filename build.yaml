@@ -1,7 +1,7 @@
 name: "TVHeadend (alpha)"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
-version: "14.0.0.2"
+version: "14.0.0.3"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 owner: "daniel1v"
@@ -12,16 +12,10 @@ artifacts:
   - "TVHeadEnd.dll"
   - "Tvheadend.Htsp.dll"
 changelog: |-
-  Alpha 3. Artwork, and the DVR failures that were never reported.
+  Channel logos have room to breathe.
 
-  Pictures appear at all. TVHeadend serves its artwork behind the same authentication as everything else, and Jellyfin fetches an image URL with an HTTP client that knows nothing of TVHeadend, so every channel logo, programme image and recording poster came back 401 and the item was blank. Putting the credentials in the URL, which an earlier version did, never worked either: HttpClient ignores the userinfo component of a URI and sends no Authorization header for it. All it achieved was writing the TVHeadend password into Jellyfin's database as an image path and into the log on every failed fetch. Artwork is now fetched by the plugin and served from an address on Jellyfin, which needs no credentials, and existing servers have those stored passwords replaced on the next refresh.
+  Jellyfin was drawing them edge to edge, so every channel looked like a badly cropped billboard. They now sit in the middle of their tile with a proper margin, the way recordings and guide entries already did.
 
-  Recordings carry artwork. The DVR entry's image fields were read past and every recording was published as having no picture. They are taken from the entry rather than rebuilt from the EPG event, because TVHeadend copies them onto the entry when it schedules the recording, so they survive the event ageing out of the guide.
+  Artwork the broadcaster actually sent is left alone. A picture should fill its frame; a logo should not.
 
-  Where a broadcast listing supplies no artwork -- which for DVB EIT is everywhere, since the format has no field for a picture -- a recording or guide entry can borrow the logo of the channel it came from. It is padded into a square with a wide margin first: Jellyfin draws an item's picture at whatever shape the view wants and fills the frame, so a 400x240 logo handed over as it stands is enlarged to the size of the tile. A square survives being cropped to a tall poster and to a wide thumbnail alike. This is a setting, on by default, with a button beside it that forgets the pictures already stored so a change reaches recordings that already have one.
-
-  A DVR request TVHeadend refuses now fails. TVHeadend declines by replying normally with a success flag set to false rather than by erroring, and that was logged and swallowed -- so Jellyfin reported the timer as set, scheduled nothing, and the recording quietly never happened.
-
-  TVHeadend credentials can only reach the configured TVHeadend endpoint. That is a property of how the address is built rather than a check: the token carries a path below the web root, never a URL, and the configured base URL is put in front of it. An EPG provider's own artwork is published unchanged and fetched by Jellyfin directly, which is what keeps it from being sent any credentials.
-
-  Also in this build: the settings page is grouped into sections and no longer showed the TVHeadend password in the clear; an upgrade that changes how a recording is described now discards the cached listing that used to hide it for three hours; and the repository's own formatting check works again, having reported 12,626 line-ending errors and therefore nothing.
+  Nothing to do — the logos swap themselves out on the next guide refresh.

@@ -134,6 +134,11 @@ the file it produced rather than leaving that to be done by hand. Upstream's rou
 
 ### Alpha releases
 
+Release notes are written for the person installing the plugin, not for the person who wrote it:
+what changed for them, what they have to do, a few short paragraphs. Being funny is fine. Internal
+mechanics belong in the commit message and in the architecture notes, which stay as thorough as
+they are.
+
 Every release this fork makes is an alpha, and the script marks it as a GitHub prerelease itself
 rather than leaving the flag to be remembered. That flag, the plugin name and the release title are
 the only places the word can appear: Jellyfin parses a manifest version with `Version.Parse`, so a
