@@ -71,6 +71,23 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
+        /// The route artwork is served from when it has to fill a poster.
+        /// </summary>
+        /// <remarks>
+        /// A separate address rather than a flag on the token, so that the same picture can be
+        /// published both ways: a channel wants its logo as a logo, and a recording that borrows
+        /// that logo wants it letterboxed. The token still names only a path.
+        /// </remarks>
+        /// <param name="token">The unguessable name of the image.</param>
+        /// <returns>The path, relative to the server root.</returns>
+        public static string PosterPathFor(string token)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(token);
+
+            return "/TVHeadend/Artwork/" + token + "/poster";
+        }
+
+        /// <summary>
         /// Serves a piece of artwork.
         /// </summary>
         /// <remarks>
@@ -90,7 +107,9 @@ namespace TVHeadEnd.Api
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The image.</returns>
         [HttpGet("Artwork/{token}")]
+        [HttpGet("Artwork/{token}/poster")]
         [AllowAnonymous]
+
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<ActionResult> GetArtwork(string token, CancellationToken cancellationToken)
@@ -153,7 +172,39 @@ namespace TVHeadEnd.Api
             var contentType = response.Content.Headers.ContentType?.ToString();
             response.Dispose();
 
+            if (Request.Path.Value?.EndsWith("/poster", StringComparison.OrdinalIgnoreCase) == true
+                && PadSafely(body, safe) is { } padded)
+            {
+                return File(padded, "image/png");
+            }
+
             return File(body, string.IsNullOrEmpty(contentType) ? "image/png" : contentType);
+        }
+
+        /// <summary>
+        /// Pads a picture to poster shape, and gives up rather than failing if it cannot.
+        /// </summary>
+        /// <remarks>
+        /// The padding is drawn with the SkiaSharp the server already loads, a dependency this
+        /// plugin compiles against but does not ship. If a future server carries a version this
+        /// cannot bind to, the failure lands here and nowhere else: the original picture is served
+        /// instead, which is what happened before padding existed. A cosmetic improvement must not
+        /// be able to take the artwork down with it.
+        /// </remarks>
+        /// <param name="body">The picture as TVHeadend sent it.</param>
+        /// <param name="path">The path it came from, for the log.</param>
+        /// <returns>The padded picture, or <see langword="null"/> to serve the original.</returns>
+        private byte[]? PadSafely(byte[] body, string path)
+        {
+            try
+            {
+                return PosterCanvas.Pad(body);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "TVHeadend artwork {Path} could not be padded; serving it unchanged", path);
+                return null;
+            }
         }
     }
 }

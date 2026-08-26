@@ -18,6 +18,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TVHeadEnd\TVHeadEnd.csproj" />
+
+    <!--
+      With its runtime assets, unlike the plugin. The plugin borrows the SkiaSharp that the server
+      already loads, but a test process has no server, so it needs the native library itself.
+    -->
+    <PackageReference Include="SkiaSharp" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />
   </ItemGroup>
 
 </Project>

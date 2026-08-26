@@ -320,19 +320,33 @@ All three go through the same publisher, and all three are decided by the same r
 
 Broadcast DVB EIT has no field for a picture, so on an over-the-air guide there is nothing to
 publish -- measured against a real server: 84 DVR entries and 300 EPG events, none carrying an
-image. Those items are published without one, and Jellyfin shows what it shows for anything else
-without a picture.
+image. A recording falls back to its channel's logo, which is at least true in that it says which
+broadcaster the recording came from.
 
-Falling back to the channel's logo was tried and removed. The idea was sound and the shape was
-not: a TVHeadend channel logo is 400x240, and Jellyfin renders a recording's primary image as a
-2:3 poster, so every tile became a small landscape picture blown up into a portrait frame. There
-is no way to say "this is a logo, letterbox it" -- `ChannelItemInfo` carries one field, `ImageUrl`,
-and Jellyfin makes it `ImageType.Primary`. Making it fit would mean composing a poster-shaped
-image in the plugin, which needs an image library shipped with it. No picture is better than a
-bad one.
+**It is letterboxed on the way out.** A TVHeadend logo is 400x240, landscape at 1.67:1, and
+Jellyfin draws a recording's primary image as a 2:3 poster. Published as it stood, every tile was a
+small landscape picture blown up into a portrait frame. There is no way to say "this is a logo,
+letterbox it" -- `ChannelItemInfo` carries one field and Jellyfin makes it `ImageType.Primary` --
+so the letterboxing happens here and Jellyfin receives something already the right shape.
 
-That single field is also why `fanartImage` is read from the DVR entry and goes nowhere: there is
-no second image field to put it in.
+That is what the second route is for. `/TVHeadend/Artwork/{token}` serves the picture as it is, for
+a channel that wants its logo as a logo; `/TVHeadend/Artwork/{token}/poster` pads it first. The
+same picture can be published both ways, and the token still names only a path.
+
+Nothing is scaled. The canvas grows around the picture at its native size -- 400x240 becomes
+400x600 with the logo centred -- and Jellyfin scales that down for whatever the client asked for.
+Enlarging a 400 pixel logo to fill a poster was half of what looked wrong. The padding takes its
+colour from the picture's own corner pixel so the join does not show, and stays transparent where
+that pixel is.
+
+The drawing uses the SkiaSharp the server already loads: the plugin compiles against it and does
+not ship it, so no native library is carried in the plugin zip and there is never a second copy in
+the process. If a future server carries a version the plugin cannot bind to, the padding fails and
+the original picture is served instead. A cosmetic improvement must not be able to take the
+artwork down with it.
+
+`fanartImage` is read from the DVR entry and goes nowhere: `ChannelItemInfo` has no second image
+field to put it in.
 
 ### The credential rule
 

@@ -31,6 +31,16 @@
     -->
     <PackageReference Include="Jellyfin.Controller" Version="12.0.0-rc5" />
 
+    <!--
+      Compiled against, never shipped. Jellyfin already loads SkiaSharp for its own image
+      processing, and it sits beside the server assemblies with native libraries for every runtime
+      that Jellyfin supports. ExcludeAssets="runtime" lets this use the copy that is already there.
+      Shipping a second one would mean carrying native binaries for every architecture in the
+      plugin zip, and risking two versions of the same native library in one process.
+    -->
+
+    <PackageReference Include="SkiaSharp" Version="3.119.4" ExcludeAssets="runtime" />
+
   </ItemGroup>
 
   <ItemGroup>

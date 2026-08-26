@@ -101,18 +101,27 @@ public class ArtworkTests
     }
 
     [Fact]
-    public void TheAddressIsOneTheControllerActuallyServes()
+    public void BothAddressesAreOnesTheControllerActuallyServes()
     {
-        var route = Attribute<Microsoft.AspNetCore.Mvc.HttpGetAttribute>().Template;
-
+        // Two routes, one method: a channel wants its logo as a logo, and a recording borrowing
+        // that logo wants it letterboxed into a poster. Both have to be real.
         var prefix = typeof(TvHeadendImagesController)
             .GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.RouteAttribute), false)
             .Cast<Microsoft.AspNetCore.Mvc.RouteAttribute>()
             .Single()
             .Template;
 
-        Assert.Equal("/" + prefix + "/" + route, TvHeadendImagesController.ImagePathFor("{token}"));
+        var served = typeof(TvHeadendImagesController)
+            .GetMethod(nameof(TvHeadendImagesController.GetArtwork))!
+            .GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpGetAttribute), false)
+            .Cast<Microsoft.AspNetCore.Mvc.HttpGetAttribute>()
+            .Select(route => "/" + prefix + "/" + route.Template)
+            .ToArray();
+
+        Assert.Contains(TvHeadendImagesController.ImagePathFor("{token}"), served);
+        Assert.Contains(TvHeadendImagesController.PosterPathFor("{token}"), served);
     }
+
 
     [Fact]
     public void TheAddressCannotBeMintedByWhoeverAsksForIt()
@@ -176,8 +185,9 @@ public class ArtworkTests
 
         Assert.NotNull(method);
 
-        return method!.GetCustomAttributes(typeof(T), false).Cast<T>().Single();
+        return method!.GetCustomAttributes(typeof(T), false).Cast<T>().First();
     }
+
 
     private static TVHeadEnd.Tvheadend.TvheadendHttpEndpoint Endpoint()
         => new("tvheadend", 9981, string.Empty, "Frigo", "secret-password");

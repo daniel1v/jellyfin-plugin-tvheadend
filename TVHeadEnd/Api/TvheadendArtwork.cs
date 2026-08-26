@@ -50,6 +50,33 @@ namespace TVHeadEnd.Api
         /// <param name="endpoint">The TVHeadend endpoint the reference is relative to.</param>
         /// <returns>The address, or <see langword="null"/> when there is no image.</returns>
         public string? AddressFor(string? reference, TvheadendHttpEndpoint endpoint)
+            => AddressFor(reference, endpoint, asPoster: false);
+
+        /// <summary>
+        /// The address to publish for an item whose picture is drawn as a poster, falling back to
+        /// a second reference where the first names nothing.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// What the fallback is for: an EPG that carries no artwork. Broadcast DVB EIT has no field
+        /// for a picture, so a recording made from it has none either, and a library of blank tiles
+        /// is the result. The channel's own logo is at least true, in that it says which
+        /// broadcaster this came from.
+        /// </para>
+        /// <para>
+        /// Published as a poster because that is the shape Jellyfin draws it in. Handing the logo
+        /// over as it stands was tried and looked wrong: 400x240 blown up into a 2:3 frame.
+        /// </para>
+        /// </remarks>
+        /// <param name="reference">The image the item itself names.</param>
+        /// <param name="fallback">What to fall back on, typically the channel's logo.</param>
+        /// <param name="endpoint">The TVHeadend endpoint the references are relative to.</param>
+        /// <returns>The address, or <see langword="null"/> when neither names anything.</returns>
+        public string? PosterAddressFor(string? reference, string? fallback, TvheadendHttpEndpoint endpoint)
+            => AddressFor(reference, endpoint, asPoster: true)
+                ?? AddressFor(fallback, endpoint, asPoster: true);
+
+        private string? AddressFor(string? reference, TvheadendHttpEndpoint endpoint, bool asPoster)
         {
             ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -69,8 +96,12 @@ namespace TVHeadEnd.Api
             try
             {
                 var secret = TvheadendAccessSecret.Ensure(_logger);
+                var token = TvheadendAccessToken.Create(Encode(path), secret);
+
                 return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
-                    + TvHeadendImagesController.ImagePathFor(TvheadendAccessToken.Create(Encode(path), secret));
+                    + (asPoster
+                        ? TvHeadendImagesController.PosterPathFor(token)
+                        : TvHeadendImagesController.ImagePathFor(token));
             }
             catch (Exception exception)
             {
