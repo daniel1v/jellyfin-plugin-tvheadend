@@ -508,6 +508,12 @@ dotnet_diagnostic.CA2101.severity = none
 # disable warning CA2234: Pass System.Uri objects instead of strings
 dotnet_diagnostic.CA2234.severity = none
 
+# disable warning CA1003: Use generic event handler instances.
+# The rule predates EventHandler<T> accepting any payload type and still insists the payload
+# derive from EventArgs. Wrapping a protocol record in an EventArgs subclass to satisfy it adds
+# a type per event and tells a reader nothing.
+dotnet_diagnostic.CA1003.severity = none
+
 # error on RS0030: Do not used banned APIs
 dotnet_diagnostic.RS0030.severity = error
 

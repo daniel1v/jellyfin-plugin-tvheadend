@@ -1,4 +1,4 @@
-﻿const TVHclientConfigurationPageVar = {
+const TVHclientConfigurationPageVar = {
     pluginUniqueId: '3fd018e5-5e78-4e58-b280-a0c068febee0'
 };
 
@@ -13,18 +13,16 @@ export default function (view, params) {
             page.querySelector('#txtUserName').value = config.Username || '';
             page.querySelector('#txtPassword').value = config.Password || '';
             page.querySelector('#txtPriority').value = config.Priority || '5';
-            page.querySelector('#txtProfile').value = config.Profile || '';
+            page.querySelector('#txtDvrProfile').value = config.DvrProfile || '';
             page.querySelector('#txtPrePadding').value = config.Pre_Padding || '0';
             page.querySelector('#txtPostPadding').value = config.Post_Padding || '0';
             page.querySelector('#selChannelType').value = config.ChannelType || 'Ignore';
             page.querySelector('#chkHideRecordingsChannel').checked = config.HideRecordingsChannel || false;
-            page.querySelector('#chkEnableSubsMaudios').checked = config.EnableSubsMaudios || false;
-            page.querySelector('#chkForceDeinterlace').checked = config.ForceDeinterlace || false;
-            page.querySelector('#chkReencodeWhenNoIdr').checked = config.ReencodeWhenNoIdr !== false;
             page.querySelector('#txtLiveBufferSizeMegabytes').value = config.LiveBufferSizeMegabytes || '512';
             Dashboard.hideLoadingMsg();
         });
     });
+
     view.querySelector('.TVHclientConfigurationForm').addEventListener('submit', function (e) {
         e.preventDefault();
         Dashboard.showLoadingMsg();
@@ -36,14 +34,11 @@ export default function (view, params) {
             config.Username = form.querySelector('#txtUserName').value;
             config.Password = form.querySelector('#txtPassword').value;
             config.Priority = form.querySelector('#txtPriority').value;
-            config.Profile = form.querySelector('#txtProfile').value;
+            config.DvrProfile = form.querySelector('#txtDvrProfile').value;
             config.Pre_Padding = form.querySelector('#txtPrePadding').value;
             config.Post_Padding = form.querySelector('#txtPostPadding').value;
             config.ChannelType = form.querySelector('#selChannelType').value;
             config.HideRecordingsChannel = form.querySelector('#chkHideRecordingsChannel').checked;
-            config.EnableSubsMaudios = form.querySelector('#chkEnableSubsMaudios').checked;
-            config.ForceDeinterlace = form.querySelector('#chkForceDeinterlace').checked;
-            config.ReencodeWhenNoIdr = form.querySelector('#chkReencodeWhenNoIdr').checked;
             config.LiveBufferSizeMegabytes = form.querySelector('#txtLiveBufferSizeMegabytes').value;
             ApiClient.updatePluginConfiguration(TVHclientConfigurationPageVar.pluginUniqueId, config).then(Dashboard.processPluginConfigurationUpdateResult);
         });

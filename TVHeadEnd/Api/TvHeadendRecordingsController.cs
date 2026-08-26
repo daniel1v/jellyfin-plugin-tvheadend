@@ -1,16 +1,16 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.Streaming;
+using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Api
 {
@@ -38,23 +38,17 @@ namespace TVHeadEnd.Api
     [Route("TVHeadend")]
     public class TvHeadendRecordingsController : ControllerBase
     {
-        private readonly HTSConnectionHandler _connectionHandler;
+        private readonly TvheadendConnection _connectionHandler;
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly RecordingsChannel _recordings;
-        private readonly IMediaEncoder _mediaEncoder;
         private readonly ILogger<TvHeadendRecordingsController> _logger;
 
         public TvHeadendRecordingsController(
-            HTSConnectionHandler connectionHandler,
+            TvheadendConnection connectionHandler,
             IHttpClientFactory httpClientFactory,
-            RecordingsChannel recordings,
-            IMediaEncoder mediaEncoder,
             ILogger<TvHeadendRecordingsController> logger)
         {
             _connectionHandler = connectionHandler;
             _httpClientFactory = httpClientFactory;
-            _recordings = recordings;
-            _mediaEncoder = mediaEncoder;
             _logger = logger;
         }
 
@@ -77,7 +71,14 @@ namespace TVHeadEnd.Api
                 return NotFound();
             }
 
-            var upstream = _connectionHandler.GetAuthenticatedUrl("dvrfile/" + recordingId);
+            // Taken once, and only after a connection exists. The server's web root is part of
+            // every address here and is only known from a handshake, so the synchronous property
+            // can answer with a root the server never reported -- and asking twice within one
+            // request could answer from two different servers if the configuration changed in
+            // between.
+            var endpoint = await _connectionHandler.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
+
+            var upstream = endpoint.CreateApiUrl("dvrfile/" + recordingId);
             if (string.IsNullOrEmpty(upstream))
             {
                 return NotFound();
@@ -89,21 +90,21 @@ namespace TVHeadEnd.Api
                 Request.Method,
                 string.IsNullOrEmpty(Request.Headers.Range.ToString()) ? "whole" : Request.Headers.Range.ToString());
 
-            var client = _httpClientFactory.CreateClient();
-
-            if (!HttpMethods.IsHead(Request.Method) && _recordings.RequiresReencode(recordingId))
-            {
-                return await ServeReencoded(client, upstream, recordingId, cancellationToken).ConfigureAwait(false);
-            }
+            // One route for HEAD and GET. They used to diverge -- HEAD proxied TVHeadend, which
+            // advertises a seekable file, while GET could answer with a re-encode that has no
+            // length and no ranges -- so a client that asked first and fetched second was told
+            // one thing and given another.
 
             using var request = new HttpRequestMessage(
                 HttpMethods.IsHead(Request.Method) ? HttpMethod.Head : HttpMethod.Get,
                 upstream);
 
-            foreach (var header in _connectionHandler.GetHeaders())
+            foreach (var header in endpoint.CreateHeaders())
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
+
+            var client = _httpClientFactory.CreateClient();
 
             // Whatever the client asked for is asked of TVHeadend, on a connection of its own.
             var range = Request.Headers.Range.ToString();
@@ -163,192 +164,6 @@ namespace TVHeadEnd.Api
             {
                 EnableRangeProcessing = false,
             };
-        }
-
-        /// <summary>
-        /// Serves the recording re-encoded, for a broadcast that carries no IDR frame.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// Nothing cheaper works for these. Withholding direct play and the remux still leaves
-        /// Jellyfin copying the video inside its transcoding job -- the stream matches the target
-        /// codec, and that decision is made there -- so the frames a decoder needs are still
-        /// absent. Only re-encoding creates them, which is exactly what the live path does for
-        /// the same broadcasts, with the same arguments.
-        /// </para>
-        /// <para>
-        /// FFmpeg is fed rather than pointed at the recording. Letting it open the source itself
-        /// is what made it seek back after analysing, which TVHeadend answers by dropping the
-        /// connection. Seeking is given up for these recordings: an encoder's output has no
-        /// length to seek within, and the alternative is not playing them at all.
-        /// </para>
-        /// </remarks>
-        private async Task<ActionResult> ServeReencoded(
-            HttpClient client,
-            string upstream,
-            string recordingId,
-            CancellationToken cancellationToken)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, upstream);
-            foreach (var header in _connectionHandler.GetHeaders())
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-
-            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                response.Dispose();
-                return StatusCode(StatusCodes.Status502BadGateway);
-            }
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = _mediaEncoder.EncoderPath,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-
-            foreach (var argument in TvHeadendHttpLiveStream.BuildReencodeArguments())
-            {
-                startInfo.ArgumentList.Add(argument);
-            }
-
-            var encoder = new Process { StartInfo = startInfo };
-            if (!encoder.Start())
-            {
-                encoder.Dispose();
-                response.Dispose();
-                return StatusCode(StatusCodes.Status500InternalServerError);
-            }
-
-            _logger.LogInformation(
-                "TVHeadend recording {RecordingId}: carries no IDR frame, serving it re-encoded",
-                recordingId);
-
-            _ = PumpIntoEncoder(response, encoder, recordingId, cancellationToken);
-            _ = DrainEncoderErrors(encoder);
-
-            // No length and no ranges: what comes out is produced as it is read.
-            Response.Headers.AcceptRanges = "none";
-            Response.StatusCode = StatusCodes.Status200OK;
-
-            return new FileStreamResult(new EncodedStream(encoder, response), "video/mp2t")
-            {
-                EnableRangeProcessing = false,
-            };
-        }
-
-        private async Task PumpIntoEncoder(
-            HttpResponseMessage response,
-            Process encoder,
-            string recordingId,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                await using (body.ConfigureAwait(false))
-                {
-                    await body.CopyToAsync(encoder.StandardInput.BaseStream, cancellationToken).ConfigureAwait(false);
-                }
-            }
-            catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException)
-            {
-                // The client went away, or the encoder did. Its own disposal cleans up.
-            }
-            finally
-            {
-                try
-                {
-                    encoder.StandardInput.Close();
-                }
-                catch (IOException)
-                {
-                    // Already gone.
-                }
-            }
-        }
-
-        private async Task DrainEncoderErrors(Process encoder)
-        {
-            try
-            {
-                var tail = await encoder.StandardError.ReadToEndAsync().ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(tail))
-                {
-                    _logger.LogDebug("TVHeadend recording re-encode: {Message}", tail.Trim());
-                }
-            }
-            catch (Exception exception) when (exception is IOException or ObjectDisposedException)
-            {
-            }
-        }
-
-        /// <summary>
-        /// The encoder's output, keeping the encoder and its source alive while it is read.
-        /// </summary>
-        private sealed class EncodedStream(Process encoder, HttpResponseMessage response) : Stream
-        {
-            public override bool CanRead => true;
-
-            public override bool CanSeek => false;
-
-            public override bool CanWrite => false;
-
-            public override long Length => throw new NotSupportedException();
-
-            public override long Position
-            {
-                get => throw new NotSupportedException();
-                set => throw new NotSupportedException();
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-                => encoder.StandardOutput.BaseStream.Read(buffer, offset, count);
-
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-                => encoder.StandardOutput.BaseStream.ReadAsync(buffer, cancellationToken);
-
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-                => encoder.StandardOutput.BaseStream.ReadAsync(buffer, offset, count, cancellationToken);
-
-            public override void Flush()
-            {
-            }
-
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-            public override void SetLength(long value) => throw new NotSupportedException();
-
-            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-            protected override void Dispose(bool disposing)
-            {
-                if (disposing)
-                {
-                    try
-                    {
-                        if (!encoder.HasExited)
-                        {
-                            encoder.Kill(entireProcessTree: true);
-                        }
-                    }
-                    catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-                    {
-                        // Already terminating.
-                    }
-
-                    encoder.Dispose();
-                    response.Dispose();
-                }
-
-                base.Dispose(disposing);
-            }
         }
 
         /// <summary>

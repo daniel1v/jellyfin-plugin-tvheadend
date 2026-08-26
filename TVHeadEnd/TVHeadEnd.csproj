@@ -17,7 +17,24 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" Version="12.*-*" />
+    <!--
+      Pinned, not a range, and pinned to what the plugin is actually run against rather than to
+      whatever a floating range resolves to. The running server identifies itself only as 12.0.0.0
+      in its own assemblies and deps file, with no prerelease label surviving there, so this version
+      is justified by the plugin building, testing and working against that server, not by a
+      version string matching. This plugin leans on a handful of specific Jellyfin behaviours: the
+      ILiveStream contract, IMediaSourceManager.GetLiveStreamInfo and the LiveStreamId that
+      addresses it, the allowVideoStreamCopy request parameter that EncodingHelper reads, the way
+      LiveTvMediaSourceProvider normalises a live source, and ProgressiveFileStream's polling of a
+      stream that returns nothing. A floating range would quietly build against a different
+      set of them on any restore. This is the version the branch is developed and run against.
+    -->
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0-rc5" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tvheadend.Htsp\Tvheadend.Htsp.csproj" />
   </ItemGroup>
 
   <ItemGroup>

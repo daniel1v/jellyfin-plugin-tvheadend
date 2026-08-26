@@ -1,9 +1,8 @@
-﻿using System;
-using System.Numerics;
+using System;
 using MediaBrowser.Model.LiveTv;
-using TVHeadEnd.DataHelper;
+using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Domain;
-using TVHeadEnd.HTSP;
+using TVHeadEnd.Tvheadend.Catalogs;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Domain;
@@ -59,7 +58,7 @@ public class DvrEntryTests
         // TVHeadend keeps the entry of a deleted recording, still marked completed. Only the
         // error tells them apart, and listing one would offer something unplayable.
         var message = Message(id: 1, state: "completed");
-        message.PutField("error", "File missing");
+        message.Set("error", "File missing");
 
         var entry = DvrEntry.FromMessage(message)!;
 
@@ -73,13 +72,13 @@ public class DvrEntryTests
         // TVHeadend sends just the fields that changed. Replacing the entry with the update --
         // which is what parsing each message on its own amounts to -- would leave a recording
         // that has just started with no title, no channel and no times.
-        var store = new DvrDataHelper(new NullLogger<DvrDataHelper>());
-        store.DvrEntryAdd(Message(id: 7, state: "scheduled", title: "Tagesschau"));
+        var store = new DvrCatalog(new NullLogger<DvrCatalog>());
+        store.Add(Message(id: 7, state: "scheduled", title: "Tagesschau"));
 
-        var update = new HTSMessage();
-        update.PutField("id", new BigInteger(7));
-        update.PutField("state", "recording");
-        store.DvrEntryUpdate(update);
+        var update = new HtspMessage();
+        update.Set("id", 7);
+        update.Set("state", "recording");
+        store.Update(update);
 
         var entry = Assert.Single(store.GetEntries());
         Assert.Equal(DvrState.Recording, entry.State);
@@ -102,7 +101,7 @@ public class DvrEntryTests
     public void ARecordingKeepsNoPathBecauseTheFileIsOnTheOtherServer()
     {
         var message = Message(id: 3, state: "completed", title: "Tatort");
-        message.PutField("path", "/recordings/tatort.ts");
+        message.Set("path", "/recordings/tatort.ts");
 
         var recording = JellyfinDvrMapper.ToRecording(DvrEntry.FromMessage(message)!);
 
@@ -114,7 +113,7 @@ public class DvrEntryTests
     public void ASubtitleMarksTheRecordingAsPartOfASeries()
     {
         var message = Message(id: 3, state: "completed", title: "Tatort");
-        message.PutField("subtitle", "Der Fall Mustermann");
+        message.Set("subtitle", "Der Fall Mustermann");
 
         var recording = JellyfinDvrMapper.ToRecording(DvrEntry.FromMessage(message)!);
 
@@ -125,7 +124,7 @@ public class DvrEntryTests
     [Fact]
     public void AMessageWithoutAnIdentifierIsRefused()
     {
-        Assert.Null(DvrEntry.FromMessage(new HTSMessage()));
+        Assert.Null(DvrEntry.FromMessage(new HtspMessage()));
     }
 
 
@@ -143,24 +142,24 @@ public class DvrEntryTests
         Assert.NotEqual(default, recording.DateLastUpdated);
         Assert.Equal(entry.StopUtc, recording.DateLastUpdated);
     }
-    private static HTSMessage Message(
+    private static HtspMessage Message(
         int id,
         string state,
         string? title = null,
         long startExtraMinutes = 0,
         long stopExtraMinutes = 0)
     {
-        var message = new HTSMessage();
-        message.PutField("id", new BigInteger(id));
-        message.PutField("state", state);
-        message.PutField("channel", new BigInteger(1234));
-        message.PutField("start", new BigInteger(1786889738L));
-        message.PutField("stop", new BigInteger(1786889978L));
-        message.PutField("startExtra", new BigInteger(startExtraMinutes));
-        message.PutField("stopExtra", new BigInteger(stopExtraMinutes));
+        var message = new HtspMessage();
+        message.Set("id", id);
+        message.Set("state", state);
+        message.Set("channel", 1234);
+        message.Set("start", 1786889738L);
+        message.Set("stop", 1786889978L);
+        message.Set("startExtra", startExtraMinutes);
+        message.Set("stopExtra", stopExtraMinutes);
         if (title is not null)
         {
-            message.PutField("title", title);
+            message.Set("title", title);
         }
 
         return message;

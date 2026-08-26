@@ -1,4 +1,4 @@
-﻿<div id="TVHclientConfigurationPage" data-role="page" class="page type-interior pluginConfigurationPage" data-controller="__plugin/tvheadendjs">
+<div id="TVHclientConfigurationPage" data-role="page" class="page type-interior pluginConfigurationPage" data-controller="__plugin/tvheadendjs">
 
     <div data-role="content">
         <div class="content-primary">
@@ -8,12 +8,15 @@
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtHTTP_Port" label="HTTP Port" />
+                    <div class="fieldDescription">Carries the broadcast itself.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtHTSP_Port" label="HTSP Port" />
+                    <div class="fieldDescription">Carries the channel list, the guide and the DVR.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtUserName" label="Username" />
+                    <div class="fieldDescription">An ordinary TVHeadend streaming account is enough. No administrator rights are needed.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtPassword" label="Password" />
@@ -23,7 +26,7 @@
                     <div class="fieldDescription">0 = Important, 1 = High, 2 = Normal, 3 = Low, 4 = Unimportant, 5 = leave it to the TVHeadend DVR configuration (default)</div>
                 </div>
                 <div class="inputContainer">
-                    <input is="emby-input" type="text" id="txtProfile" label="Profile for Recordings" />
+                    <input is="emby-input" type="text" id="txtDvrProfile" label="TVHeadend DVR configuration for recordings" />
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtPrePadding" label="Pre-recording Padding in seconds" />
@@ -45,27 +48,6 @@
                         <input is="emby-checkbox" type="checkbox" id="chkHideRecordingsChannel" />
                         <span>Hide TVHeadEnd Recordings channel</span>
                     </label>
-                </div>
-                <div class="checkboxContainer checkboxContainer-withDescription">
-                    <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkEnableSubsMaudios" />
-                        <span>Enable live TV subtitles and multiple audio tracks (Experimental)</span>
-                    </label>
-                    <div class="fieldDescription checkboxFieldDescription">Note: Enabling this feature has security implications and will require a server restart. (TVH username and password will appear in server logs and will be transmitted in cleartext over the network)</div>
-                </div>
-                <div class="checkboxContainer checkboxContainer-withDescription">
-                    <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkForceDeinterlace" />
-                        <span>Force video deinterlacing for all channels and recordings. (Experimental)</span>
-                    </label>
-                    <div class="fieldDescription checkboxFieldDescription">Note: Changing this requires a server restart.</div>
-                </div>
-                <div class="checkboxContainer checkboxContainer-withDescription">
-                    <label>
-                        <input is="emby-checkbox" type="checkbox" id="chkReencodeWhenNoIdr" />
-                        <span>Re-encode video of broadcasts without IDR frames</span>
-                    </label>
-                    <div class="fieldDescription checkboxFieldDescription">Some broadcasters (for example the German ARD network) signal random access only through recovery points and never send H.264 IDR frames. Many device decoders cannot start such a stream and show a black picture. When enabled, the video of affected channels is re-encoded on the server so every client can play it; audio is passed through and all other channels remain untouched. Costs CPU while an affected channel is being watched. Note: Changing this requires a server restart.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="number" id="txtLiveBufferSizeMegabytes" min="32" max="8192" step="32" label="Live buffer size (MB):" />

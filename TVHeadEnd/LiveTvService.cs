@@ -1,984 +1,362 @@
-﻿using System;
-using System.Collections.Concurrent;
+using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
-using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.MediaInfo;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using TVHeadEnd.DataHelper;
-using TVHeadEnd.Helper;
-using TVHeadEnd.HTSP;
-using TVHeadEnd.HTSP.Responses;
+using TVHeadEnd.LiveTv;
+using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
-using TVHeadEnd.TimeoutHelper;
-using static TVHeadEnd.TicketType;
+using TVHeadEnd.Tvheadend;
 
-namespace TVHeadEnd
+namespace TVHeadEnd;
+
+/// <summary>
+/// The adapter between Jellyfin's live TV contract and TVHeadend.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Only an adapter. What a channel is belongs to the catalogues, opening one to
+/// <see cref="LiveStreamOpener"/>, recording to <see cref="TvheadendDvr"/> and the guide to
+/// <see cref="TvheadendGuide"/>; this translates Jellyfin's questions into theirs and their
+/// answers back.
+/// </para>
+/// <para>
+/// Exactly one media source is offered per channel, because TVHeadend delivers exactly one thing.
+/// Whether a client plays it as it is, remuxes it or transcodes it is Jellyfin's decision, taken
+/// against the device profile the client sent and taken again once the stream is open and
+/// described. There is no second playback policy here.
+/// </para>
+/// </remarks>
+public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvider
 {
-    public class LiveTvService : ILiveTvService, ISupportsDirectStreamProvider
+    private readonly TvheadendConnection _connection;
+    private readonly LiveStreamOpener _opener;
+    private readonly TvheadendDvr _dvr;
+    private readonly TvheadendGuide _guide;
+    private readonly ChannelItemIds _itemIds;
+    private readonly PlaybackClient _client;
+
+    private readonly ILogger<LiveTvService> _logger;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LiveTvService"/> class.
+    /// </summary>
+    /// <param name="loggerFactory">The logger factory.</param>
+    /// <param name="connection">The TVHeadend connection.</param>
+    /// <param name="libraryManager">The Jellyfin library manager.</param>
+    /// <param name="httpClientFactory">The HTTP client factory.</param>
+    /// <param name="configurationManager">The Jellyfin configuration manager.</param>
+    /// <param name="applicationHost">The Jellyfin application host.</param>
+    /// <param name="httpContextAccessor">The request in flight, for the client name.</param>
+    public LiveTvService(
+        ILoggerFactory loggerFactory,
+        TvheadendConnection connection,
+        ILibraryManager libraryManager,
+        IHttpClientFactory httpClientFactory,
+        IConfigurationManager configurationManager,
+        IServerApplicationHost applicationHost,
+        IHttpContextAccessor httpContextAccessor)
     {
-        /// <summary>
-        /// DVR_AUTOREC_BTYPE_ALL - record any broadcast.
-        /// </summary>
-        private const int BroadcastTypeAll = 0;
-
-        /// <summary>
-        /// DVR_AUTOREC_BTYPE_NEW_OR_UNKNOWN - record only broadcasts flagged as new or unflagged.
-        /// </summary>
-        private const int BroadcastTypeNewOrUnknown = 1;
-
-        private readonly IMediaEncoder _mediaEncoder;
-
-        private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
-
-        private readonly HTSConnectionHandler _htsConnectionHandler;
-        private readonly AccessTicketHandler _channelTicketHandler;
-        private readonly LiveTvItemIdResolver _liveTvItemIdResolver;
-        private readonly IHttpClientFactory _httpClientFactory;
-        private readonly IConfigurationManager _configurationManager;
-        private readonly IServerApplicationHost _applicationHost;
-        private readonly ConcurrentDictionary<string, TvHeadendHttpLiveStream> _activeChannelStreams = new(StringComparer.OrdinalIgnoreCase);
-        private readonly SourceDescriber _sourceDescriber;
-
-        // Channels measured to carry no IDR frames skip the detection phase and start their
-        // re-encode immediately. Persisted, so the first tune after a restart is fast too;
-        // the scan keeps running alongside the encoder, so a channel that starts sending IDR
-        // frames drops out of the list again by itself.
-        private readonly ConcurrentDictionary<string, bool> _channelRequiresReencode = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Lock _verdictPersistenceLock = new();
-
-        // Probe results, keyed by channel and validated against the PMT layout they were
-        // taken from. Re-probing costs about a tenth of a second, but the buffering it needs
-        // costs two full seconds on every channel change, and that is what this avoids.
-        private readonly ConcurrentDictionary<string, CachedChannelProbe> _channelProbeCache = new(StringComparer.OrdinalIgnoreCase);
-
-        private readonly ILogger<LiveTvService> _logger;
-
-        private bool _verdictsLoaded;
-
-        public LiveTvService(
-            ILoggerFactory loggerFactory,
-            IMediaEncoder mediaEncoder,
-            HTSConnectionHandler connectionHandler,
-            ILibraryManager libraryManager,
-            IHttpClientFactory httpClientFactory,
-            IConfigurationManager configurationManager,
-            IServerApplicationHost applicationHost)
-        {
-            // System.Diagnostics.StackTrace t = new System.Diagnostics.StackTrace();
-            _logger = loggerFactory.CreateLogger<LiveTvService>();
-            _logger.LogDebug("LiveTvService()");
-
-            _htsConnectionHandler = connectionHandler;
-            _liveTvItemIdResolver = new LiveTvItemIdResolver(libraryManager);
-            _httpClientFactory = httpClientFactory;
-            _configurationManager = configurationManager;
-            _applicationHost = applicationHost;
-            _htsConnectionHandler.SetLiveTvService(this);
-            {
-                var lifeSpan = TimeSpan.FromSeconds(15);       // Revalidate tickets every 15 seconds
-                var requestTimeout = TimeSpan.FromSeconds(10); // First request retry after 10 seconds
-                var retries = 2;                               // Number of times to retry getting tickets
-                _channelTicketHandler = new AccessTicketHandler(loggerFactory, _htsConnectionHandler, requestTimeout, retries, lifeSpan, Channel);
-            }
-
-            _mediaEncoder = mediaEncoder;
-            _sourceDescriber = new SourceDescriber(mediaEncoder, _logger);
-
-            TvHeadendHttpLiveStream.RemoveOrphanedBuffers(_configurationManager, _logger);
-        }
-
-        public DateTime LastRecordingChange { get; private set; } = DateTime.MinValue;
-
-        public string HomePageUrl
-        {
-            get { return "http://tvheadend.org/"; }
-        }
-
-        public string Name
-        {
-            get { return "TVHclient LiveTvService"; }
-        }
-
-        public async Task CancelSeriesTimerAsync(string timerId, CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.CancelSeriesTimerAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage deleteAutorecMessage = new HTSMessage();
-            deleteAutorecMessage.Method = "deleteAutorecEntry";
-            deleteAutorecMessage.PutField("id", timerId);
-
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Run(
-                () =>
-                {
-                    LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                    _htsConnectionHandler.SendMessage(deleteAutorecMessage, lbrh);
-                    LastRecordingChange = DateTime.UtcNow;
-                    return lbrh.GetResponse();
-                },
-                cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.CancelSeriesTimerAsync: can't delete recording because the timeout was reached");
-            }
-            else
-            {
-                HTSMessage deleteAutorecResponse = twtRes.Result;
-                bool success = deleteAutorecResponse.GetInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (deleteAutorecResponse.ContainsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.CancelSeriesTimerAsync: can't delete recording: '{Why}'", deleteAutorecResponse.GetString("error"));
-                    }
-                    else if (deleteAutorecResponse.ContainsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.CancelSeriesTimerAsync: can't delete recording: '{Why}'", deleteAutorecResponse.GetString("noaccess"));
-                    }
-                }
-            }
-        }
-
-        public async Task CancelTimerAsync(string timerId, CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.CancelTimerAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage cancelTimerMessage = new HTSMessage();
-            cancelTimerMessage.Method = "cancelDvrEntry";
-            cancelTimerMessage.PutField("id", timerId);
-
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Run(
-                () =>
-                {
-                    LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                    _htsConnectionHandler.SendMessage(cancelTimerMessage, lbrh);
-                    LastRecordingChange = DateTime.UtcNow;
-                    return lbrh.GetResponse();
-                },
-                cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.CancelTimerAsync: can't cancel timer because the timeout was reached");
-            }
-            else
-            {
-                HTSMessage cancelTimerResponse = twtRes.Result;
-                bool success = cancelTimerResponse.GetInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (cancelTimerResponse.ContainsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.CancelTimerAsync: can't cancel timer: '{Why}'", cancelTimerResponse.GetString("error"));
-                    }
-                    else if (cancelTimerResponse.ContainsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.CancelTimerAsync: can't cancel timer: '{Why}'", cancelTimerResponse.GetString("noaccess"));
-                    }
-                }
-            }
-        }
-
-        public async Task CloseLiveStream(string id, CancellationToken cancellationToken)
-        {
-            await Task.Run(
-                () =>
-                {
-                    _logger.LogDebug("LiveTvService.CloseLiveStream: closed stream for subscriptionId: {Id}", id);
-                    return id;
-                },
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        public async Task CreateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
-        {
-            ArgumentNullException.ThrowIfNull(info);
-
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.CreateSeriesTimerAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage createAutorecMessage = new HTSMessage();
-            createAutorecMessage.Method = "addAutorecEntry";
-            BuildAutorecFields(createAutorecMessage, info);
-            createAutorecMessage.PutField("configName", _htsConnectionHandler.GetProfile());
-
-            await SendAutorecMessage(createAutorecMessage, nameof(CreateSeriesTimerAsync), cancellationToken).ConfigureAwait(false);
-        }
-
-        /// <summary>
-        /// Fills in the autorec fields shared by addAutorecEntry and updateAutorecEntry.
-        /// </summary>
-        /// <param name="message">The message to populate.</param>
-        /// <param name="info">The series timer to translate.</param>
-        private void BuildAutorecFields(HTSMessage message, SeriesTimerInfo info)
-        {
-            message.PutField("title", info.Name);
-
-            // A negative channelId means "any channel" from HTSP v25 on; older servers treat an
-            // absent channelId the same way, so it is only sent for a channel-bound timer.
-            if (!info.RecordAnyChannel && !string.IsNullOrEmpty(info.ChannelId))
-            {
-                message.PutField("channelId", Convert.ToInt32(info.ChannelId, CultureInfo.InvariantCulture));
-            }
-            else if (_htsConnectionHandler.GetNegotiatedProtocolVersion() > 24)
-            {
-                message.PutField("channelId", -1);
-            }
-
-            if (info.Days != null && info.Days.Count > 0 && info.Days.Count < 7)
-            {
-                message.PutField("daysOfWeek", AutorecDataHelper.GetDaysOfWeekFromList(info.Days));
-            }
-
-            // "start"/"startWindow" are minutes from midnight, -1 meaning any time.
-            if (info.RecordAnyTime)
-            {
-                message.PutField("start", -1);
-                message.PutField("startWindow", -1);
-            }
-            else
-            {
-                int start = AutorecDataHelper.GetMinutesFromMidnight(info.StartDate);
-                message.PutField("start", start);
-                message.PutField("startWindow", (start + 30) % (24 * 60));
-            }
-
-            // Padding is exchanged in minutes; 0 falls back to the DVR configuration.
-            message.PutField("startExtra", (long)(info.PrePaddingSeconds / 60));
-            message.PutField("stopExtra", (long)(info.PostPaddingSeconds / 60));
-            message.PutField("priority", _htsConnectionHandler.GetPriority());
-            message.PutField("broadcastType", info.RecordNewOnly ? BroadcastTypeNewOrUnknown : BroadcastTypeAll);
-        }
-
-        /// <summary>
-        /// Sends an autorec message and logs whatever TVHeadend reports back.
-        /// </summary>
-        /// <param name="message">The autorec message to send.</param>
-        /// <param name="caller">The calling method, used for log context.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>A task representing the operation.</returns>
-        private async Task SendAutorecMessage(HTSMessage message, string caller, CancellationToken cancellationToken)
-        {
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Run(
-                () =>
-                {
-                    LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                    _htsConnectionHandler.SendMessage(message, lbrh);
-                    LastRecordingChange = DateTime.UtcNow;
-                    return lbrh.GetResponse();
-                },
-                cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.{Caller}: can't change series timer because the timeout was reached", caller);
-                return;
-            }
-
-            HTSMessage response = twtRes.Result;
-            if (response.GetInt("success", 0) == 1)
-            {
-                return;
-            }
-
-            if (response.ContainsField("error"))
-            {
-                _logger.LogError("LiveTvService.{Caller}: can't change series timer: '{Why}'", caller, response.GetString("error"));
-            }
-            else if (response.ContainsField("noaccess"))
-            {
-                _logger.LogError("LiveTvService.{Caller}: can't change series timer: user is not allowed to record", caller);
-            }
-        }
-
-        public async Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.CreateTimerAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage createTimerMessage = new HTSMessage();
-            createTimerMessage.Method = "addDvrEntry";
-            createTimerMessage.PutField("channelId", info.ChannelId);
-            createTimerMessage.PutField("start", DateTimeHelper.GetUnixUtcTimeFromUtcDateTime(info.StartDate));
-            createTimerMessage.PutField("stop", DateTimeHelper.GetUnixUtcTimeFromUtcDateTime(info.EndDate));
-            createTimerMessage.PutField("startExtra", (long)(info.PrePaddingSeconds / 60));
-            createTimerMessage.PutField("stopExtra", (long)(info.PostPaddingSeconds / 60));
-            createTimerMessage.PutField("priority", _htsConnectionHandler.GetPriority()); // info.Priority delivers always 0 - no GUI
-            createTimerMessage.PutField("configName", _htsConnectionHandler.GetProfile());
-            createTimerMessage.PutField("description", info.Overview);
-            createTimerMessage.PutField("title", info.Name);
-            createTimerMessage.PutField("creator", Plugin.Instance.Configuration.Username);
-
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Run(
-                () =>
-                {
-                    LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                    _htsConnectionHandler.SendMessage(createTimerMessage, lbrh);
-                    return lbrh.GetResponse();
-                },
-                cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.CreateTimerAsync: can't create timer because the timeout was reached");
-            }
-            else
-            {
-                HTSMessage createTimerResponse = twtRes.Result;
-                bool success = createTimerResponse.GetInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (createTimerResponse.ContainsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.CreateTimerAsync: can't create timer: '{Why}'", createTimerResponse.GetString("error"));
-                    }
-                    else if (createTimerResponse.ContainsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.CreateTimerAsync: can't create timer: '{Why}'", createTimerResponse.GetString("noaccess"));
-                    }
-                }
-            }
-        }
-
-        public async Task DeleteRecordingAsync(string recordingId, CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogError("LiveTvService.DeleteRecordingAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage deleteRecordingMessage = new HTSMessage();
-            deleteRecordingMessage.Method = "deleteDvrEntry";
-            deleteRecordingMessage.PutField("id", recordingId);
-
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Run(
-                () =>
-                {
-                    LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                    _htsConnectionHandler.SendMessage(deleteRecordingMessage, lbrh);
-                    LastRecordingChange = DateTime.UtcNow;
-                    return lbrh.GetResponse();
-                },
-                cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.DeleteRecordingAsync: can't delete recording because the timeout was reached");
-            }
-            else
-            {
-                HTSMessage deleteRecordingResponse = twtRes.Result;
-                bool success = deleteRecordingResponse.GetInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (deleteRecordingResponse.ContainsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.DeleteRecordingAsync: can't delete recording: '{Why}'", deleteRecordingResponse.GetString("error"));
-                    }
-                    else if (deleteRecordingResponse.ContainsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.DeleteRecordingAsync: can't delete recording: '{Why}'", deleteRecordingResponse.GetString("noaccess"));
-                    }
-                }
-            }
-        }
-
-        public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogError("LiveTvService.GetChannelsAsync: call cancelled or timed out - returning empty list");
-                return new List<ChannelInfo>();
-            }
-
-            TaskWithTimeoutRunner<IEnumerable<ChannelInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<ChannelInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<ChannelInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildChannelInfos(cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                return new List<ChannelInfo>();
-            }
-
-            var list = twtRes.Result.ToList();
-
-            foreach (var channel in list)
-            {
-                if (string.IsNullOrEmpty(channel.ImageUrl))
-                {
-                    channel.ImageUrl = _htsConnectionHandler.GetChannelImageUrl(channel.Id);
-                }
-            }
-
-            return list;
-        }
-
-        /// <summary>
-        /// The <see cref="ILiveTvService"/> fallback for services that cannot manage their own
-        /// live streams. Jellyfin only takes this branch for services that do not implement
-        /// <see cref="ISupportsDirectStreamProvider"/>, so this one never reaches it. Answering
-        /// it would mean handing out the bare TVHeadend URL: a second subscription for a channel
-        /// that is already being received, and a stream that has passed neither the conditioner
-        /// nor the re-encode that broadcasts without IDR frames need.
-        /// </summary>
-        /// <param name="channelId">The channel to open.</param>
-        /// <param name="streamId">The stream identifier chosen by the client.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>Never returns; always throws.</returns>
-        public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException(
-                "TVHeadend channels are served through the managed live stream. " +
-                "Open them with GetChannelStreamWithDirectStreamProvider.");
-        }
-
-        public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(
-            string channelId,
-            string streamId,
-            List<ILiveStream> currentLiveStreams,
-            CancellationToken cancellationToken)
-        {
-            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
-            var reusableStream = TvHeadendHttpLiveStream.AcquireReusable(
-                currentLiveStreams,
-                streamId,
-                mediaSourceId);
-            if (reusableStream is not null)
-            {
-                if (reusableStream is TvHeadendHttpLiveStream reusableTvheadendStream)
-                {
-                    _activeChannelStreams[mediaSourceId] = reusableTvheadendStream;
-                }
-
-                _logger.LogInformation(
-                    "Live TV stream reuse: managed stream {UniqueId} now has {ConsumerCount} consumers",
-                    reusableStream.UniqueId,
-                    reusableStream.ConsumerCount);
-                return reusableStream;
-            }
-
-            var mediaSource = await CreateOpenedChannelMediaSource(channelId, cancellationToken).ConfigureAwait(false);
-            var liveStream = new TvHeadendHttpLiveStream(
-                mediaSource,
-                _httpClientFactory,
-                _configurationManager,
-                _applicationHost,
-                _logger,
-                _mediaEncoder.EncoderPath,
-                _htsConnectionHandler.GetReencodeWhenNoIdr(),
-                _htsConnectionHandler.GetLiveBufferSizeMegabytes(),
-                GetKnownChannelVerdict(channelId),
-                requiresReencode => RememberChannelVerdict(channelId, requiresReencode),
-                _channelProbeCache.TryGetValue(channelId, out var cachedProbe) ? cachedProbe.ProgramLayout : null)
-            {
-                OriginalStreamId = streamId,
-            };
-
-            try
-            {
-                await liveStream.Open(cancellationToken).ConfigureAwait(false);
-
-                if (liveStream.MatchesCachedLayout && cachedProbe is not null)
-                {
-                    cachedProbe.ApplyTo(liveStream.MediaSource);
-                    _logger.LogInformation(
-                        "Live TV stream start: reused the probe of channel {ChannelId}; the broadcast still announces the same elementary streams",
-                        channelId);
-                }
-                else
-                {
-                    await ProbeStream(liveStream.MediaSource, cancellationToken).ConfigureAwait(false);
-                    if (liveStream.ProgramLayout is not null && !liveStream.IsReencoding)
-                    {
-                        _channelProbeCache[channelId] = CachedChannelProbe.From(liveStream.ProgramLayout, liveStream.MediaSource);
-                    }
-                }
-
-                ApplyLiveStreamOverrides(liveStream.MediaSource);
-
-                liveStream.MediaSource.SupportsDirectPlay = true;
-
-                // A broadcast that signals random access with recovery points instead of IDR
-                // frames -- the ARD network does, ZDF does not -- offers no synchronisation
-                // sample to common device decoders, which then never emit a frame. When the
-                // re-encode for such streams is switched off, record the fact so a report of
-                // "audio but black picture" can be traced here.
-                if (!liveStream.IsReencoding && !liveStream.HasSeenIdrFrame)
-                {
-                    _logger.LogWarning(
-                        "Live TV stream start: channel {ChannelId} carries no IDR frames and re-encoding is disabled. Many device decoders cannot start this stream and show a black picture",
-                        channelId);
-                }
-
-                _activeChannelStreams[mediaSourceId] = liveStream;
-                return liveStream;
-            }
-            catch
-            {
-                await liveStream.Close().ConfigureAwait(false);
-                liveStream.Dispose();
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Builds the media source for a channel from a fresh access ticket. The source is not
-        /// probed here: it describes the upstream TVHeadend URL, which the managed live stream
-        /// consumes but no client ever sees. Probing it would open a second subscription to a
-        /// channel that is about to be received anyway, and would describe the broadcast rather
-        /// than what ends up in the buffer.
-        /// </summary>
-        private async Task<MediaSourceInfo> CreateOpenedChannelMediaSource(
-            string channelId,
-            CancellationToken cancellationToken)
-        {
-            var streamStartStopwatch = Stopwatch.StartNew();
-            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
-            var ticket = await _channelTicketHandler.GetTicket(channelId, cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation(
-                "Live TV stream start: access ticket ready for channel {ChannelId} after {ElapsedMilliseconds} ms",
-                channelId,
-                streamStartStopwatch.ElapsedMilliseconds);
-            _logger.LogInformation(
-                "Live TV stream start: HTSP channel mapping {ChannelId} -> {ChannelName}",
-                channelId,
-                _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>");
-
-            MediaSourceInfo livetvasset;
-            if (_htsConnectionHandler.GetEnableSubsMaudios())
-            {
-                _logger.LogInformation("Live TV stream start: support for live TV subtitles and multiple audio tracks is enabled");
-
-                // Use HTTP basic auth in HTTP header instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                livetvasset = LiveTvMediaSourceFactory.CreateOpened(
-                    mediaSourceId,
-                    _htsConnectionHandler.GetHttpBaseUrl() + ticket.Path);
-                livetvasset.RequiredHttpHeaders = _htsConnectionHandler.GetHeaders();
-            }
-            else
-            {
-                livetvasset = LiveTvMediaSourceFactory.CreateOpened(
-                    mediaSourceId,
-                    _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url);
-            }
-
-            _logger.LogInformation(
-                "Live TV stream start: upstream source ready for channel {ChannelId} after {ElapsedMilliseconds} ms; awaiting the managed-buffer probe",
-                channelId,
-                streamStartStopwatch.ElapsedMilliseconds);
-
-            return livetvasset;
-        }
-
-        private void ApplyLiveStreamOverrides(MediaSourceInfo mediaSource)
-        {
-            SourceDescriber.PreferCompatibleAudioTrack(mediaSource);
-
-            if (!_htsConnectionHandler.GetForceDeinterlace())
-            {
-                return;
-            }
-
-            _logger.LogInformation("Live TV stream start: force video deinterlacing for all channels and recordings is enabled");
-            foreach (MediaStream stream in mediaSource.MediaStreams)
-            {
-                if (stream.Type == MediaStreamType.Video && stream.IsInterlaced == false)
-                {
-                    stream.IsInterlaced = true;
-                }
-
-                stream.RealFrameRate = 50.0F;
-            }
-        }
-
-        /// <summary>
-        /// Describes what the shared buffer actually contains, through the same component that
-        /// describes a recording. It reads the local buffer, never the upstream channel, so it
-        /// costs no TVHeadend subscription and reports the re-encoded video where a channel goes
-        /// through the encoder.
-        /// </summary>
-        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, CancellationToken cancellationToken)
-        {
-            var described = await _sourceDescriber
-                .DescribeFromSample(mediaSourceInfo, mediaSourceInfo.Path, "the live buffer", cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!described)
-            {
-                return;
-            }
-
-            // A channel has no runtime, whatever the buffer happens to hold.
-            mediaSourceInfo.RunTimeTicks = null;
-            mediaSourceInfo.Size = null;
-            mediaSourceInfo.DefaultSubtitleStreamIndex = null;
-            mediaSourceInfo.SupportsDirectStream = true;
-            mediaSourceInfo.SupportsTranscoding = true;
-        }
-
-        public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
-        {
-            var mediaSourceId = _liveTvItemIdResolver.GetInternalChannelId(Name, channelId);
-            if (_activeChannelStreams.TryGetValue(mediaSourceId, out var activeStream))
-            {
-                // A stream whose buffer has gone is worse than no stream at all: the client
-                // would keep requesting a source that answers 404 instead of opening a fresh one.
-                if (activeStream.EnableStreamSharing && activeStream.HasBuffer)
-                {
-                    _logger.LogInformation(
-                        "Live TV playback negotiation: returning active direct-play source {MediaSourceId} for channel {ChannelId}",
-                        mediaSourceId,
-                        channelId);
-                    return Task.FromResult<List<MediaSourceInfo>>([activeStream.MediaSource]);
-                }
-
-                _activeChannelStreams.TryRemove(mediaSourceId, out _);
-            }
-
-            _logger.LogInformation(
-                "Live TV playback negotiation: pending source {MediaSourceId} ready for channel {ChannelId} ({ChannelName}); opening is required",
-                mediaSourceId,
-                channelId,
-                _htsConnectionHandler.GetChannelName(channelId) ?? "<unknown>");
-
-            return Task.FromResult<List<MediaSourceInfo>>([LiveTvMediaSourceFactory.CreatePending(mediaSourceId)]);
-        }
-
-        public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
-        {
-            return await Task.Run(
-                () =>
-                {
-                    return new SeriesTimerInfo
-                    {
-                        PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
-                        PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
-                        RecordAnyChannel = true,
-                        RecordAnyTime = true,
-                        RecordNewOnly = false
-                    };
-                },
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        public async Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime startDateUtc, DateTime endDateUtc, CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.GetProgramsAsync: call cancelled or timed out - returning empty list");
-                return new List<ProgramInfo>();
-            }
-
-            GetEventsResponseHandler currGetEventsResponseHandler = new GetEventsResponseHandler(startDateUtc, endDateUtc, _logger, cancellationToken);
-
-            HTSMessage queryEvents = new HTSMessage();
-            queryEvents.Method = "getEvents";
-            queryEvents.PutField("channelId", Convert.ToInt32(channelId, CultureInfo.InvariantCulture));
-            queryEvents.PutField("maxTime", ((DateTimeOffset)endDateUtc).ToUnixTimeSeconds());
-            _htsConnectionHandler.SendMessage(queryEvents, currGetEventsResponseHandler);
-
-            _logger.LogDebug("LiveTvService.GetProgramsAsync: ask TVH for events of channel '{Chanid}'", channelId);
-
-            TaskWithTimeoutRunner<IEnumerable<ProgramInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<ProgramInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<ProgramInfo>> twtRes = await
-                twtr.RunWithTimeout(currGetEventsResponseHandler.GetEvents(channelId, cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogDebug("LiveTvService.GetProgramsAsync: timeout reached while calling for events of channel '{Chanid}'", channelId);
-                return new List<ProgramInfo>();
-            }
-
-            var programs = twtRes.Result.ToList();
-
-            // From HTSP v34 on the server sends imagecache references relative to the web root
-            // instead of absolute URLs, so they have to be resolved against the TVH endpoint.
-            foreach (var program in programs)
-            {
-                program.ImageUrl = _htsConnectionHandler.ResolveImageUrl(program.ImageUrl);
-                program.HasImage = !string.IsNullOrEmpty(program.ImageUrl);
-            }
-
-            return programs;
-        }
-
-        public async Task<IEnumerable<SeriesTimerInfo>> GetSeriesTimersAsync(CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.GetSeriesTimersAsync: call cancelled ot timed out - returning empty list");
-                return new List<SeriesTimerInfo>();
-            }
-
-            TaskWithTimeoutRunner<IEnumerable<SeriesTimerInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<SeriesTimerInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<SeriesTimerInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildAutorecInfos(cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                return new List<SeriesTimerInfo>();
-            }
-
-            return twtRes.Result;
-        }
-
-        public async Task<IEnumerable<TimerInfo>> GetTimersAsync(CancellationToken cancellationToken)
-        {
-            // Retrieve the 'Pending' recordings
-
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.GetTimersAsync: call cancelled or timed out - returning empty list");
-                return new List<TimerInfo>();
-            }
-
-            TaskWithTimeoutRunner<IEnumerable<TimerInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<TimerInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<TimerInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildPendingTimersInfos(cancellationToken)).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                return new List<TimerInfo>();
-            }
-
-            return twtRes.Result;
-        }
-
-        public Task ResetTuner(string id, CancellationToken cancellationToken)
-        {
-            throw new NotImplementedException();
-        }
-
-        public async Task UpdateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
-        {
-            ArgumentNullException.ThrowIfNull(info);
-
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.UpdateSeriesTimerAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage updateAutorecMessage = new HTSMessage();
-            updateAutorecMessage.Method = "updateAutorecEntry";
-            updateAutorecMessage.PutField("id", info.Id);
-            BuildAutorecFields(updateAutorecMessage, info);
-
-            await SendAutorecMessage(updateAutorecMessage, nameof(UpdateSeriesTimerAsync), cancellationToken).ConfigureAwait(false);
-        }
-
-        public async Task UpdateTimerAsync(TimerInfo updatedTimer, CancellationToken cancellationToken)
-        {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken).ConfigureAwait(false);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.UpdateTimerAsync: call cancelled or timed out");
-                return;
-            }
-
-            HTSMessage updateTimerMessage = new HTSMessage();
-            updateTimerMessage.Method = "updateDvrEntry";
-            updateTimerMessage.PutField("id", updatedTimer.Id);
-            updateTimerMessage.PutField("startExtra", (long)(updatedTimer.PrePaddingSeconds / 60));
-            updateTimerMessage.PutField("stopExtra", (long)(updatedTimer.PostPaddingSeconds / 60));
-
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Run(() =>
-            {
-                LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(updateTimerMessage, lbrh);
-                LastRecordingChange = DateTime.UtcNow;
-                return lbrh.GetResponse();
-            })).ConfigureAwait(false);
-
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.UpdateTimerAsync: can't update timer because the timeout was reached");
-            }
-            else
-            {
-                HTSMessage updateTimerResponse = twtRes.Result;
-                bool success = updateTimerResponse.GetInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (updateTimerResponse.ContainsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.UpdateTimerAsync: can't update timer: '{Why}'", updateTimerResponse.GetString("error"));
-                    }
-                    else if (updateTimerResponse.ContainsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.UpdateTimerAsync: can't update timer: '{Why}'", updateTimerResponse.GetString("noaccess"));
-                    }
-                }
-            }
-        }
-
-        /***********/
-        /* Helpers */
-        /***********/
-
-        private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
-        {
-            return Task.Run(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
-        }
-
-        /// <summary>
-        /// Gets what an earlier tune measured about a channel, loading the persisted list on
-        /// first use. Not in the constructor: this service is built before the plugin instance
-        /// that holds the configuration exists.
-        /// </summary>
-        private bool? GetKnownChannelVerdict(string channelId)
-        {
-            lock (_verdictPersistenceLock)
-            {
-                if (!_verdictsLoaded)
-                {
-                    _verdictsLoaded = true;
-                    foreach (var persisted in Plugin.Instance.Configuration.ChannelsWithoutIdr)
-                    {
-                        _channelRequiresReencode.TryAdd(persisted, true);
-                    }
-                }
-            }
-
-            return _channelRequiresReencode.TryGetValue(channelId, out var verdict) ? verdict : null;
-        }
-
-        /// <summary>
-        /// Records whether a channel needs its video re-encoded, and persists the list when it
-        /// changes so the next start does not have to measure again.
-        /// </summary>
-        private void RememberChannelVerdict(string channelId, bool requiresReencode)
-        {
-            if (_channelRequiresReencode.TryGetValue(channelId, out var previous) && previous == requiresReencode)
-            {
-                return;
-            }
-
-            _channelRequiresReencode[channelId] = requiresReencode;
-
-            lock (_verdictPersistenceLock)
-            {
-                var configuration = Plugin.Instance.Configuration;
-                var channels = _channelRequiresReencode
-                    .Where(entry => entry.Value)
-                    .Select(entry => entry.Key)
-                    .Order(StringComparer.Ordinal)
-                    .ToArray();
-                if (channels.SequenceEqual(configuration.ChannelsWithoutIdr, StringComparer.Ordinal))
-                {
-                    return;
-                }
-
-                configuration.ChannelsWithoutIdr = channels;
-                Plugin.Instance.SaveConfiguration();
-            }
-
-            if (requiresReencode)
-            {
-                _logger.LogInformation(
-                    "Live TV stream start: channel {ChannelId} carries no IDR frames and will be re-encoded from now on",
-                    channelId);
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Live TV stream start: channel {ChannelId} carries IDR frames again and no longer needs re-encoding",
-                    channelId);
-            }
-        }
-
-        /// <summary>
-        /// A probe result together with the PMT layout it was taken from.
-        /// </summary>
-        private sealed class CachedChannelProbe
-        {
-            private CachedChannelProbe(string programLayout, string serializedMediaStreams, string? container, int? bitrate)
-            {
-                ProgramLayout = programLayout;
-                SerializedMediaStreams = serializedMediaStreams;
-                Container = container;
-                Bitrate = bitrate;
-            }
-
-            public string ProgramLayout { get; }
-
-            private string SerializedMediaStreams { get; }
-
-            private string? Container { get; }
-
-            private int? Bitrate { get; }
-
-            public static CachedChannelProbe From(string programLayout, MediaSourceInfo mediaSource)
-            {
-                // Held serialized so that every tune gets its own instances. The source
-                // handed to Jellyfin is mutated afterwards -- the default audio track is
-                // marked on it, and Jellyfin fills in localized display titles -- and two
-                // viewers on one channel must not share those objects.
-                return new CachedChannelProbe(
-                    programLayout,
-                    JsonSerializer.Serialize(mediaSource.MediaStreams),
-                    mediaSource.Container,
-                    mediaSource.Bitrate);
-            }
-
-            public void ApplyTo(MediaSourceInfo mediaSource)
-            {
-                mediaSource.MediaStreams = JsonSerializer.Deserialize<List<MediaStream>>(SerializedMediaStreams) ?? [];
-                mediaSource.Container = Container;
-                mediaSource.Bitrate = Bitrate;
-
-                // The plugin keeps the full probe result including real stream indices, so
-                // Jellyfin must not reduce it to its own cached live TV view.
-                mediaSource.SupportsProbing = false;
-                mediaSource.SupportsDirectStream = true;
-                mediaSource.SupportsTranscoding = true;
-                mediaSource.RunTimeTicks = null;
-                mediaSource.DefaultSubtitleStreamIndex = null;
-            }
-        }
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+        ArgumentNullException.ThrowIfNull(connection);
+
+        _logger = loggerFactory.CreateLogger<LiveTvService>();
+        _connection = connection;
+        _itemIds = new ChannelItemIds(libraryManager);
+        _client = new PlaybackClient(httpContextAccessor);
+
+        var bufferDirectory = LiveBufferDirectory.Resolve(configurationManager);
+        LiveBufferDirectory.RemoveOrphaned(bufferDirectory, _logger);
+
+        _opener = new LiveStreamOpener(
+            connection,
+            httpClientFactory,
+            applicationHost,
+            _client,
+            bufferDirectory,
+            _logger);
+        _dvr = new TvheadendDvr(connection, _logger);
+        _guide = new TvheadendGuide(connection, _logger);
     }
+
+    /// <inheritdoc />
+    public string Name => "TVHclient LiveTvService";
+
+    /// <inheritdoc />
+    public string HomePageUrl => "https://tvheadend.org/";
+
+    /// <summary>
+    /// Gets a number that changes whenever TVHeadend's timers and recordings do, which is what
+    /// Jellyfin caches its recording listing against.
+    /// </summary>
+    public long RecordingRevision => _dvr.RecordingRevision;
+
+    /// <inheritdoc />
+    public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)
+    {
+        await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
+
+        _connection.Channels.SetTypeForOther(_connection.Settings.ChannelTypeForOther);
+        var channels = _connection.Channels.ToChannelInfos();
+        var endpoint = _connection.HttpEndpoint;
+
+        foreach (var channel in channels)
+        {
+            var known = _connection.Channels.Get(channel.Id);
+            channel.ImageUrl = endpoint.ResolveImageUrl(known?.Icon);
+            channel.HasImage = !string.IsNullOrEmpty(channel.ImageUrl);
+        }
+
+        return channels;
+    }
+
+    /// <summary>
+    /// Lists what Jellyfin may choose between for a channel, which is one thing.
+    /// </summary>
+    /// <remarks>
+    /// Must never cost a TVHeadend subscription: Jellyfin calls this during playback negotiation
+    /// and for every channel in a list. Nothing here touches the network.
+    /// </remarks>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The single source on offer.</returns>
+    public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
+    {
+        var channel = _connection.Channels.Get(channelId);
+
+        return Task.FromResult<List<MediaSourceInfo>>(
+        [
+            LiveMediaSource.CreatePending(GetMediaSourceId(channelId), channel?.Name ?? "Live TV"),
+        ]);
+    }
+
+    /// <inheritdoc />
+    public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(
+        string channelId,
+        string streamId,
+        List<ILiveStream> currentLiveStreams,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(currentLiveStreams);
+
+        // Jellyfin serialises this: MediaSourceManager.OpenLiveStreamInternal holds its own lock
+        // across the whole call, so two viewers starting the same channel arrive here one after
+        // the other and the second finds the first stream to reuse. A lock of our own would only
+        // duplicate that.
+        var needsIdrToStart = _client.IsAndroid;
+        var reusable = currentLiveStreams
+            .OfType<TvheadendLiveStream>()
+            .FirstOrDefault(stream => CanBeReusedFor(stream, channelId, needsIdrToStart));
+
+        // Who is watching, not how many times they asked. A client whose first attempt at
+        // playback fails negotiates again, and Jellyfin answers by asking for the stream once
+        // more; recognising that as the same viewer is what keeps the stream from being held
+        // open by attempts that were abandoned.
+        var consumer = _client.ResolveConsumerId();
+
+        if (reusable is not null)
+        {
+            if (reusable.Consumers.Acquire(consumer))
+            {
+                _logger.LogInformation(
+                    "Live TV: channel {ChannelId} is already running and now has {ConsumerCount} viewers",
+                    channelId,
+                    reusable.ConsumerCount);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Live TV: channel {ChannelId} is already running for this viewer, who is negotiating again",
+                    channelId);
+            }
+
+            return reusable;
+        }
+
+        var opened = await _opener.OpenAsync(
+                channelId,
+                GetMediaSourceId(channelId),
+                _connection.Channels.GetChannelType(channelId),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        // Only once it is open. A stream that failed to open is never registered, so a failed
+        // attempt cannot leave a viewer behind holding one.
+        opened.Consumers.Acquire(consumer);
+        return opened;
+    }
+
+    /// <summary>
+    /// The fallback for services that cannot manage their own live streams.
+    /// </summary>
+    /// <remarks>
+    /// Jellyfin only takes this branch for a service that does not implement
+    /// <see cref="ISupportsDirectStreamProvider"/>, so this one never reaches it. Answering would
+    /// mean handing out the bare TVHeadend address: a second subscription for a channel already
+    /// being received, and a stream that has passed neither the conditioner nor anything that
+    /// knows where a decoder may start in it.
+    /// </remarks>
+    /// <param name="channelId">The channel to open.</param>
+    /// <param name="streamId">The stream identifier.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>Never returns; always throws.</returns>
+    public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
+        => throw new NotSupportedException(
+            "TVHeadend channels are served through the managed live stream. "
+            + "Open them with GetChannelStreamWithDirectStreamProvider.");
+
+    /// <inheritdoc />
+    public Task CloseLiveStream(string id, CancellationToken cancellationToken)
+    {
+        // Jellyfin disposes the stream itself, which is what releases the buffer and the HTSP
+        // subscription. Nothing is left for this to do.
+        _logger.LogDebug("Live TV: Jellyfin closed stream {StreamId}", id);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public async Task<IEnumerable<ProgramInfo>> GetProgramsAsync(
+        string channelId,
+        DateTime startDateUtc,
+        DateTime endDateUtc,
+        CancellationToken cancellationToken)
+    {
+        await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
+        return await _guide.GetProgramsAsync(channelId, startDateUtc, endDateUtc, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IEnumerable<TimerInfo>> GetTimersAsync(CancellationToken cancellationToken)
+    {
+        await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
+        return _connection.Dvr.GetTimers();
+    }
+
+    /// <inheritdoc />
+    public async Task<IEnumerable<SeriesTimerInfo>> GetSeriesTimersAsync(CancellationToken cancellationToken)
+    {
+        await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
+        return _connection.SeriesRules.ToSeriesTimers();
+    }
+
+    /// <inheritdoc />
+    public Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
+        => Task.FromResult(new SeriesTimerInfo
+        {
+            PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
+            PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
+            RecordAnyChannel = true,
+            RecordAnyTime = true,
+            RecordNewOnly = false,
+        });
+
+    /// <inheritdoc />
+    public Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
+        => _dvr.CreateTimerAsync(info, cancellationToken);
+
+    /// <inheritdoc />
+    public Task UpdateTimerAsync(TimerInfo updatedTimer, CancellationToken cancellationToken)
+        => _dvr.UpdateTimerAsync(updatedTimer, cancellationToken);
+
+    /// <inheritdoc />
+    public Task CancelTimerAsync(string timerId, CancellationToken cancellationToken)
+        => _dvr.CancelTimerAsync(timerId, cancellationToken);
+
+    /// <summary>
+    /// Deletes a recording. Not part of Jellyfin's live TV contract; the recordings channel
+    /// calls it when a viewer deletes an item.
+    /// </summary>
+    /// <param name="recordingId">The TVHeadend entry identifier.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once TVHeadend has accepted it.</returns>
+    public Task DeleteRecordingAsync(string recordingId, CancellationToken cancellationToken)
+        => _dvr.DeleteRecordingAsync(recordingId, cancellationToken);
+
+    /// <inheritdoc />
+    public Task CreateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
+        => _dvr.CreateSeriesTimerAsync(info, cancellationToken);
+
+    /// <inheritdoc />
+    public Task UpdateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
+        => _dvr.UpdateSeriesTimerAsync(info, cancellationToken);
+
+    /// <inheritdoc />
+    public Task CancelSeriesTimerAsync(string timerId, CancellationToken cancellationToken)
+        => _dvr.CancelSeriesTimerAsync(timerId, cancellationToken);
+
+    /// <inheritdoc />
+    public Task ResetTuner(string id, CancellationToken cancellationToken)
+        => throw new NotSupportedException("TVHeadend manages its own tuners.");
+
+    /// <summary>
+    /// Gets the recordings TVHeadend holds, for the recordings channel.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The recordings.</returns>
+    public async Task<IReadOnlyList<MyRecordingInfo>> GetRecordingsAsync(CancellationToken cancellationToken)
+    {
+        await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
+        return _connection.Dvr.GetRecordings();
+    }
+
+    /// <summary>
+    /// Reports whether an open stream can serve a request for a channel.
+    /// </summary>
+    /// <remarks>
+    /// A live stream is shared by every viewer of the same channel: it is one TVHeadend
+    /// subscription writing one ring buffer, and each reader joins at its own entry point.
+    /// </remarks>
+    /// <param name="stream">The open stream.</param>
+    /// <param name="channelId">The channel being requested.</param>
+    /// <param name="needsIdrToStart">Whether the asking client's decoder needs IDR pictures.</param>
+    /// <returns>Whether the stream may be shared.</returns>
+    internal static bool CanBeReusedFor(TvheadendLiveStream stream, string channelId, bool needsIdrToStart)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+
+        if (stream is not { EnableStreamSharing: true, HasBuffer: true }
+            || !string.Equals(stream.ChannelId, channelId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // A stream opened for a decoder that needs IDR pictures carries a media source with
+        // direct play withdrawn, so that Jellyfin re-encodes the video. Handing it to anyone else
+        // would transcode a channel that plays perfectly well as it is.
+        if (stream.RequiresVideoReencode)
+        {
+            return needsIdrToStart;
+        }
+
+        // And the other way round: a broadcast whose access point holds no IDR is a stream such a
+        // decoder never starts on, however much of it is already buffered. It opens its own,
+        // which is the same bytes with a media source that asks Jellyfin to re-encode them.
+        // And the other way round: a broadcast whose entry points hold no IDR is a stream such a
+        // decoder never starts on, however much of it is already buffered. It opens its own, which
+        // is the same bytes with a media source that asks Jellyfin to re-encode them.
+        return !needsIdrToStart || stream.OffersIdrJoins;
+    }
+
+    /// <summary>
+    /// Gets the identity the channel's one media source carries.
+    /// </summary>
+    /// <remarks>
+    /// The channel's own Jellyfin item identifier, which is what Jellyfin's convention for a
+    /// single source is and what clients ask for when they have made no choice. Jellyfin for
+    /// Android sends the item identifier as the media source identifier by default, and the
+    /// server matches that against the offered sources with an ordinal comparison before it will
+    /// auto-open the stream; an identifier of this plugin's own invention would simply not be
+    /// found, and playback would stall with the source never opened.
+    /// </remarks>
+    private string GetMediaSourceId(string channelId) => _itemIds.GetInternalChannelId(Name, channelId);
 }

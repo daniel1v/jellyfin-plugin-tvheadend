@@ -230,3 +230,23 @@ pip-log.txt
 .mr.developer.cfg
 artifacts
 .idea
+
+#############
+## TVHeadend plugin
+#############
+
+# Local scratch: reference checkouts of Jellyfin server and client, captures and
+# experiments kept beside the repository for cross-checking behaviour.
+.codex_tmp/
+
+# Stream captures and analysis samples. Nothing in this repository is a media
+# file, so these are always artefacts of a measurement.
+*.ts
+*.mkv
+*.mp4
+*.m3u8
+*.yuv
+
+# Release packaging output. The manifest itself is tracked; the zip it describes
+# is attached to a GitHub release instead.
+dist/

@@ -19,6 +19,15 @@ namespace TVHeadEnd
             : base(applicationPaths, xmlSerializer)
         {
             Instance = this;
+
+            // The stored configuration may predate the current field names. Migrating it here is
+            // what makes the migration part of the product rather than of its tests: it ran
+            // nowhere else, so a server upgraded from an older plugin kept reading the old fields
+            // and finding them empty.
+            if (Configuration.Migrate())
+            {
+                SaveConfiguration();
+            }
         }
 
         /// <summary>

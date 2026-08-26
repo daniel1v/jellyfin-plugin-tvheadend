@@ -34,7 +34,7 @@ public sealed class LiveRingBufferTests : IDisposable
 
         await ring.WriteAsync(written, CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         Assert.Equal(written, await ReadFully(reader, written.Length));
     }
 
@@ -46,7 +46,7 @@ public sealed class LiveRingBufferTests : IDisposable
         await using var ring = new LiveRingBuffer(_path, 64 * PacketSize);
         await ring.WriteAsync(Pattern(0, PacketSize), CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         await ReadFully(reader, PacketSize);
 
         var buffer = new byte[PacketSize];
@@ -66,7 +66,7 @@ public sealed class LiveRingBufferTests : IDisposable
         const int capacity = 16 * PacketSize;
         await using var ring = new LiveRingBuffer(_path, capacity);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
         var received = new MemoryStream();
         var chunk = new byte[4 * PacketSize];
 
@@ -110,7 +110,7 @@ public sealed class LiveRingBufferTests : IDisposable
         await using var ring = new LiveRingBuffer(_path, capacity);
         await ring.WriteAsync(Pattern(0, PacketSize), CancellationToken.None);
 
-        using var reader = ring.OpenReaderFromStart();
+        using var reader = ring.OpenReaderFromStart(null);
 
         // The writer laps the reader several times over.
         for (var round = 1; round < 30; round++)
@@ -127,22 +127,6 @@ public sealed class LiveRingBufferTests : IDisposable
         // What arrives is real stream content, not a fragment straddling two packets.
         var expectedStart = ring.OldestPosition;
         Assert.Equal(Pattern((int)expectedStart, PacketSize), buffer);
-    }
-
-    [Fact]
-    public async Task ResetDiscardsTheDetectionPhaseSoTheEncoderOutputStandsAlone()
-    {
-        await using var ring = new LiveRingBuffer(_path, 64 * PacketSize);
-        await ring.WriteAsync(Pattern(0, 4 * PacketSize), CancellationToken.None);
-
-        ring.Reset();
-        Assert.Equal(0, ring.WritePosition);
-
-        var encoded = Pattern(1000, 2 * PacketSize);
-        await ring.WriteAsync(encoded, CancellationToken.None);
-
-        using var reader = ring.OpenReaderFromStart();
-        Assert.Equal(encoded, await ReadFully(reader, encoded.Length));
     }
 
     private static byte[] Pattern(int start, int length)
