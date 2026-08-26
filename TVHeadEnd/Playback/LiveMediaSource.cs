@@ -27,32 +27,28 @@ namespace TVHeadEnd.Playback;
 public static class LiveMediaSource
 {
     /// <summary>
-    /// What FFmpeg reports for a transport stream, and what a device profile calls it.
+    /// What a device profile calls a transport stream.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// One name, and it has to be a name FFmpeg knows. Jellyfin hands the container of a media
-    /// source straight to FFmpeg as <c>-f</c> whenever the server has hardware acceleration
-    /// configured, and it does so without checking: <c>EncodingHelper.GetInputFormat</c> maps a
-    /// handful of containers and returns the rest verbatim.
+    /// One name, and Jellyfin's own: <c>ts</c> is what its probe normaliser produces and what
+    /// client device profiles list for MPEG-TS direct play. Jellyfin for Android TV publishes its
+    /// direct play profile as <c>ts</c>, and a container that does not match it is a container
+    /// that cannot direct play.
     /// </para>
     /// <para>
-    /// This once named both spellings, <c>mpegts,ts</c>, so that device profiles split over the
-    /// two would both match -- Jellyfin for Android lists only <c>mpegts</c>, Jellyfin's own probe
-    /// normaliser produces only <c>ts</c>, and the comparison splits both sides on commas. It
-    /// worked, and on a server with hardware acceleration it also produced
-    /// <c>-f mpegts,ts</c>, which is not a demuxer FFmpeg has: "Unknown input format", and no
-    /// channel played at all. Measured on a production server on 2026-08-26.
+    /// It needs no FFmpeg spelling of its own, because Jellyfin translates: with hardware
+    /// acceleration configured the container is passed to FFmpeg as <c>-f</c>, and
+    /// <c>EncodingHelper.GetInputFormat</c> maps <c>ts</c> to <c>mpegts</c> on the way. Both
+    /// levels are therefore served by the one name.
     /// </para>
     /// <para>
-    /// So one name it is, and this one, because it is what FFprobe reports, what this plugin's own
-    /// transport stream check already keys on, and a valid demuxer as it stands. The cost is that
-    /// a client whose profile lists only <c>ts</c> no longer matches on the container and is given
-    /// a remux instead of direct play -- a worse path for that client, where the alternative was
-    /// no path at all for every viewer on a hardware-accelerated server.
+    /// Not <c>mpegts,ts</c>. A container is one container, not a set of aliases, and that value
+    /// reached FFmpeg unmapped as <c>-f mpegts,ts</c> -- not a demuxer it has, and nothing played
+    /// at all on a hardware-accelerated server.
     /// </para>
     /// </remarks>
-    public const string Container = "mpegts";
+    public const string Container = "ts";
 
     /// <summary>
     /// How long FFmpeg may analyse the stream before it has to start producing output.

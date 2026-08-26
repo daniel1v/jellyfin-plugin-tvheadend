@@ -1,7 +1,9 @@
 using System;
 using System.Linq;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Extensions;
 using MediaBrowser.Model.MediaInfo;
 using TVHeadEnd.Playback;
 using Xunit;
@@ -115,15 +117,26 @@ public class LiveMediaSourceTests
     }
 
     [Fact]
-    public void TheContainerIsOneNameFFmpegCanOpen()
+    public void TheContainerIsTheNameJellyfinsOwnProfilesUse()
     {
-        // It has to be a name FFmpeg knows, because Jellyfin hands the container straight to it
-        // as -f whenever the server has hardware acceleration configured. Naming two spellings at
-        // once -- which device profiles would have liked, since they are split over mpegts and ts
-        // -- is what broke every channel on such a server: "-f mpegts,ts" is not a demuxer.
+        // A device profile lists MPEG-TS as "ts", and a container that does not match it is a
+        // container that cannot direct play. Checked against Jellyfin's own comparison rather
+        // than a restatement of it -- the profile side is spelled the way Android TV publishes it.
         var source = LiveMediaSource.CreatePending(ItemId, "Das Erste HD");
 
-        Assert.Equal("mpegts", source.Container);
+        Assert.Equal("ts", source.Container);
+        Assert.True(ContainerHelper.ContainsContainer("ts", source.Container));
+    }
+
+    [Fact]
+    public void TheContainerStillReachesFFmpegAsAFormatItHas()
+    {
+        // The other half of the same value: with hardware acceleration configured Jellyfin passes
+        // the container to FFmpeg as -f. It translates on the way, so no FFmpeg spelling is needed
+        // here -- but the translation has to exist, which is what this reads. Naming two spellings
+        // at once is what got through untranslated once, as "-f mpegts,ts", and played nothing.
+        Assert.Equal("mpegts", EncodingHelper.GetInputFormat(LiveMediaSource.Container));
+        Assert.DoesNotContain(",", LiveMediaSource.Container, StringComparison.Ordinal);
     }
 
     [Fact]
