@@ -155,7 +155,7 @@ public class RecordingDeliveryTests
         => new()
         {
             Id = "recording-1",
-            Container = "mpegts,ts",
+            Container = "mpegts",
             SupportsDirectPlay = true,
             SupportsDirectStream = true,
             SupportsTranscoding = true,

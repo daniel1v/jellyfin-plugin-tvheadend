@@ -18,15 +18,20 @@ namespace TVHeadEnd.Streaming
         /// The two spellings of the MPEG-TS container, reported together.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// FFprobe calls it <c>mpegts</c> and Jellyfin's <c>ProbeResultNormalizer</c> rewrites
-        /// that to <c>ts</c>, but client device profiles are split over both spellings: Jellyfin
-        /// for Android only ever lists <c>mpegts</c>. <c>ContainerHelper.ContainsContainer</c>
-        /// compares the two sides for exact equality without knowing they are the same container,
-        /// and it splits the reported value on commas, so naming both is what lets either kind of
-        /// profile match and direct play at all. No other container is known to need this, so no
-        /// other one is rewritten.
+        /// that to <c>ts</c>; both are reported as this one name so that a recording and a live
+        /// channel describe the same container identically. No other container is known to need
+        /// rewriting, so no other one is rewritten.
+        /// </para>
+        /// <para>
+        /// It must be a name FFmpeg knows, because Jellyfin passes the container of a media source
+        /// to FFmpeg as <c>-f</c> whenever the server has hardware acceleration configured. Naming
+        /// two spellings at once was tried and is what broke playback outright on such a server:
+        /// <c>-f mpegts,ts</c> is not a demuxer. See <c>LiveMediaSource.Container</c>.
+        /// </para>
         /// </remarks>
-        public const string TransportStream = "mpegts,ts";
+        public const string TransportStream = "mpegts";
 
         private const int TransportStreamPacketLength = 188;
         private const byte SyncByte = 0x47;

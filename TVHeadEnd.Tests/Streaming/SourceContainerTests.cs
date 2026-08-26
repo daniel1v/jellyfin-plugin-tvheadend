@@ -73,20 +73,20 @@ public class SourceContainerTests
     {
         // FFprobe says one, Android's device profile says the other, and Jellyfin compares them
         // as plain strings.
-        Assert.Equal("mpegts,ts", SourceContainer.Describe(probed, "mpegts,ts"));
+        Assert.Equal("mpegts", SourceContainer.Describe(probed, "mpegts"));
     }
 
     [Fact]
     public void AnyOtherContainerIsReportedAsFound()
     {
-        Assert.Equal("matroska,webm", SourceContainer.Describe("matroska,webm", "mpegts,ts"));
+        Assert.Equal("matroska,webm", SourceContainer.Describe("matroska,webm", "mpegts"));
     }
 
     [Fact]
     public void AnAnalysisThatFoundNothingLeavesTheAssumptionInPlace()
     {
-        Assert.Equal("mpegts,ts", SourceContainer.Describe(null, "mpegts,ts"));
-        Assert.Equal("mpegts,ts", SourceContainer.Describe(string.Empty, "mpegts,ts"));
+        Assert.Equal("mpegts", SourceContainer.Describe(null, "mpegts"));
+        Assert.Equal("mpegts", SourceContainer.Describe(string.Empty, "mpegts"));
     }
 
     private static byte[] TransportStream(int packets, int startOffset)

@@ -30,12 +30,29 @@ public static class LiveMediaSource
     /// What FFmpeg reports for a transport stream, and what a device profile calls it.
     /// </summary>
     /// <remarks>
-    /// Both spellings, because Jellyfin compares the two sides literally and splits each on
-    /// commas without knowing they are the same container. FFprobe says <c>mpegts</c> and
-    /// Jellyfin's own normaliser rewrites that to <c>ts</c>, while Jellyfin for Android only ever
-    /// lists <c>mpegts</c>; naming both is what lets either kind of profile match at all.
+    /// <para>
+    /// One name, and it has to be a name FFmpeg knows. Jellyfin hands the container of a media
+    /// source straight to FFmpeg as <c>-f</c> whenever the server has hardware acceleration
+    /// configured, and it does so without checking: <c>EncodingHelper.GetInputFormat</c> maps a
+    /// handful of containers and returns the rest verbatim.
+    /// </para>
+    /// <para>
+    /// This once named both spellings, <c>mpegts,ts</c>, so that device profiles split over the
+    /// two would both match -- Jellyfin for Android lists only <c>mpegts</c>, Jellyfin's own probe
+    /// normaliser produces only <c>ts</c>, and the comparison splits both sides on commas. It
+    /// worked, and on a server with hardware acceleration it also produced
+    /// <c>-f mpegts,ts</c>, which is not a demuxer FFmpeg has: "Unknown input format", and no
+    /// channel played at all. Measured on a production server on 2026-08-26.
+    /// </para>
+    /// <para>
+    /// So one name it is, and this one, because it is what FFprobe reports, what this plugin's own
+    /// transport stream check already keys on, and a valid demuxer as it stands. The cost is that
+    /// a client whose profile lists only <c>ts</c> no longer matches on the container and is given
+    /// a remux instead of direct play -- a worse path for that client, where the alternative was
+    /// no path at all for every viewer on a hardware-accelerated server.
+    /// </para>
     /// </remarks>
-    public const string Container = "mpegts,ts";
+    public const string Container = "mpegts";
 
     /// <summary>
     /// How long FFmpeg may analyse the stream before it has to start producing output.

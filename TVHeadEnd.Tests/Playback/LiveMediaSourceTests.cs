@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
@@ -114,15 +115,15 @@ public class LiveMediaSourceTests
     }
 
     [Fact]
-    public void TheContainerIsNamedInBothSpellingsADeviceProfileMightUse()
+    public void TheContainerIsOneNameFFmpegCanOpen()
     {
-        // Jellyfin compares the two sides literally and splits each on commas, without knowing
-        // that mpegts and ts are the same container. Jellyfin for Android only ever lists
-        // mpegts; Jellyfin's own probe normaliser only ever produces ts.
+        // It has to be a name FFmpeg knows, because Jellyfin hands the container straight to it
+        // as -f whenever the server has hardware acceleration configured. Naming two spellings at
+        // once -- which device profiles would have liked, since they are split over mpegts and ts
+        // -- is what broke every channel on such a server: "-f mpegts,ts" is not a demuxer.
         var source = LiveMediaSource.CreatePending(ItemId, "Das Erste HD");
 
-        Assert.Contains("mpegts", source.Container!.Split(','));
-        Assert.Contains("ts", source.Container!.Split(','));
+        Assert.Equal("mpegts", source.Container);
     }
 
     [Fact]
