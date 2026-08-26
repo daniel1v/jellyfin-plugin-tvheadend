@@ -333,7 +333,12 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // address like the recordings in it.
         foreach (var recording in recordings)
         {
-            recording.ImageUrl = _artwork.AddressFor(recording.ImageReference, endpoint);
+            // The channel's logo where the recording has no picture of its own, which with a
+            // broadcast EPG is every recording: DVB EIT has no field for one.
+            recording.ImageUrl = _artwork.AddressFor(
+                recording.ImageReference,
+                _connection.Channels.Get(recording.ChannelId)?.Icon,
+                endpoint);
             recording.HasImage = !string.IsNullOrEmpty(recording.ImageUrl);
         }
 

@@ -316,6 +316,28 @@ which is also what clears the stored passwords.
 
 All three go through the same publisher, and all three are decided by the same rule.
 
+### When there is none
+
+Broadcast DVB EIT has no field for a picture, so on an over-the-air guide there is nothing to
+publish -- measured against a real server: 84 DVR entries and 300 EPG events, none carrying an
+image. A recording falls back to its channel's logo rather than to a blank tile. The logo is at
+least true, in that it says which broadcaster the recording came from, and it is not a poster
+invented for the programme.
+
+It sticks. Jellyfin's channel manager sets an item's image only when the item has none --
+`if (!string.IsNullOrEmpty(info.ImageUrl) && !item.HasImage(ImageType.Primary))` -- so once the
+logo is stored, artwork arriving later does not replace it on that item. Clearing the image is
+what makes it look again.
+
+The same clause is also why an existing recording picks artwork up at all: it sets `forceUpdate`
+itself, independently of the modification date the schema revision moves, so no revision is needed
+for a picture to appear.
+
+Programmes are deliberately not given the fallback. Jellyfin already shows the channel's logo
+beside a guide entry, so putting the same image on the entry itself would fill the guide with
+repetition and make it look as though the artwork were there.
+
+
 ### The credential rule
 
 **TVHeadend credentials only ever reach the configured TVHeadend endpoint.** That is a property of
