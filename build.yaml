@@ -1,7 +1,7 @@
 name: "TVHeadend"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
-version: "13.1.1.0"
+version: "13.2.0.0"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 owner: "daniel1v"
@@ -12,22 +12,15 @@ artifacts:
   - "TVHeadEnd.dll"
   - "Tvheadend.Htsp.dll"
 changelog: |-
-  Recordings play. They did not before this release, in any client.
+  Live TV starts, and starts quickly. Both halves were broken in ways that looked like client bugs.
 
-  - A recording was described by guesswork -- one video stream, one audio stream, index -1, no codec. Jellyfin maps streams by their position in that list, so FFmpeg's arguments landed on the EPG data stream and a subtitle track, the encoder received nothing, and the transcode ended before it began. What a recording contains is now established from a sample of it.
-  - Jellyfin never asked again. It saves a channel item's media sources when the item is new or when the modification date it stored has been passed, and compares no part of the description itself; the plugin never supplied that date, so every recording kept whatever it was first given. Both halves are fixed, and existing recordings are migrated once.
-  - The analysis reads a sample rather than the recording. TVHeadend answers range requests but does not advertise Accept-Ranges, so FFmpeg reads a recording from end to end -- 68.6 seconds for an 8 GB recording against 0.14 for the sample. Listing 84 recordings fell from 7.9 seconds to under two, because listings no longer analyse at all.
-  - Recordings are served by the plugin rather than by TVHeadend. FFmpeg seeks back to the start after analysing, and TVHeadend drops the connection when it does, which no plugin could otherwise prevent: the option that would settle it does not exist in Jellyfin.
-  - Broadcasts that carry no IDR frames -- the ARD network among them -- are re-encoded, as live TV already does for the same channels. Withholding direct play is not enough on its own, because a remux copies the video verbatim and the missing frames reach the client unchanged.
+  - Every channel was transcoded, whatever the client could play. Jellyfin narrows its audio candidates to the tracks marked as default whenever an account prefers default tracks -- which is how a new account is created -- and this plugin marked none. An empty candidate list is not read as "nothing fits" but as "no audio to check", so the compatibility test was skipped, direct play was granted, and the track it was labelled with was the first of the program map. The client pinned that track, asked again, and the second answer refused what the first one named. A track is now withheld only where the DVB tables say outright that it is an addition to the programme: the supplementary audio descriptor where it appears, otherwise the two unambiguous audio types. On the German broadcasts the AC-3 track is now chosen and copied, where MPEG audio was previously re-encoded to MP3.
+  - Where a transcode is genuinely needed it starts in about two seconds instead of nine and a half. Jellyfin holds an HLS playlist back until a minimum number of segments exist, and its defaults for a live stream being copied are three segments of three seconds. Both are ordinary parameters of its own HLS controller, and the plugin now asks for one of one -- on the playlists naming its own streams, and only where the client stated neither. A client that asks for particular segmentation keeps it.
+  - Channels stayed open with nobody watching. The consumer count counted calls to open a stream rather than viewers of one, and a client whose first attempt at playback fails negotiates again; three opens for one viewer, then one stop, left the count at two and the tuner held. Viewers are now counted the way the server counts sessions, by client and device.
 
-  Live TV, unchanged in behaviour but not in cost:
+  Live TV internals:
 
-  - The buffer is now a fixed-size ring. A channel left running wrote an unbounded file, roughly 2.7 GB an hour, deleted only when the stream closed. It is now 512 MB whatever the duration, configurable.
-  - The container is established rather than assumed. Neither the live stream nor a recording is guaranteed to be MPEG-TS; both follow profiles configured on the TVHeadend server, and a server set to one of the WebTV profiles serves Matroska, which the transport stream handling would have silently mangled.
-  - The encoder is fed through a pipe, so a channel that needs re-encoding no longer occupies a second tuner.
-  - The fallback that opened a second subscription and bypassed all of the above now refuses instead.
+  - An entry point now carries how strong a guarantee it is. A DVB random access point may be a recovery picture rather than an IDR, and a decoder that will not start without an IDR is put further back onto a point that carries one -- on a first join and after the ring buffer laps a reader alike. A nearer entry point is not a better one.
+  - The program map is read more completely: the supplementary audio descriptor, its editorial classification including the unspecified-supplementary case, and the language it may carry for the track it describes.
 
-  Internals:
-
-  - A timer and a recording are one DVR entry on the server, read once and projected twice, rather than the same message parsed into two unrelated shapes.
-  - Live channels and recordings are described by one component, carrying the two rules this plugin has broken in each path in turn: stream order is never touched, and the runtime never comes from the sample.
+  Known, and not worked around: Jellyfin's Android app hands Media3 a forced HLS mime type for any HTTP direct play source, so a raw transport stream is fetched and then parsed as a playlist. That is why Android takes the HLS path, and why the HLS path is the one that was made fast. No client detection and no URL trickery is used to hide it.
