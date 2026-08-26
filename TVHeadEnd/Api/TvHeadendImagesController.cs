@@ -91,16 +91,24 @@ namespace TVHeadEnd.Api
                 return NotFound();
             }
 
+            // Before the catalog is read, not after. Jellyfin fetches a channel image from a
+            // background task that can run before anything has asked for live TV, and an empty
+            // catalog answers every channel with "no icon" -- which Jellyfin records as a failure
+            // and clears the image for, so a cold server would lose the logo it just gained.
+            await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
+
             // What the channel says its icon is, from the catalog the HTSP connection keeps. The
             // token names the channel and nothing else, so no caller can choose the address this
             // fetches from.
             var icon = _connection.Channels.Get(channelId)?.Icon;
             if (string.IsNullOrEmpty(icon))
             {
+                _logger.LogDebug("TVHeadend channel {ChannelId}: no icon is known for it", channelId);
                 return NotFound();
             }
 
             var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
+
             var upstream = endpoint.ResolveImageUrl(icon);
             if (string.IsNullOrEmpty(upstream))
             {
