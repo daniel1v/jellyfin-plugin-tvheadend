@@ -250,7 +250,11 @@ public sealed class TvheadendDvr
     {
         ArgumentNullException.ThrowIfNull(info);
 
-        var serverOffset = await _connection.GetServerOffsetAsync(cancellationToken).ConfigureAwait(false);
+        // Only when the rule actually states a time. An "any time" rule is written as -1/-1 and
+        // has no clock in it at all.
+        var serverOffset = info.RecordAnyTime
+            ? TimeSpan.Zero
+            : await _connection.GetServerOffsetAsync(cancellationToken).ConfigureAwait(false);
 
         var request = HtspMessage.Create("addAutorecEntry")
             .Set("configName", _connection.Settings.DvrProfile);
@@ -274,11 +278,16 @@ public sealed class TvheadendDvr
     {
         ArgumentNullException.ThrowIfNull(info);
 
-        var serverOffset = await _connection.GetServerOffsetAsync(cancellationToken).ConfigureAwait(false);
-
         // The rule as TVHeadend has it. Everything Jellyfin could not show, and therefore could
         // not return, is read back from here rather than replaced by an editor default.
         var existing = _connection.SeriesRules.Find(info.Id);
+
+        // Asked for only where the answer is used: a rule keeping the window the server already
+        // has needs no conversion, and asking anyway would be one request per edit for a number
+        // nothing reads.
+        var serverOffset = NeedsServerClock(info, existing)
+            ? await _connection.GetServerOffsetAsync(cancellationToken).ConfigureAwait(false)
+            : TimeSpan.Zero;
 
         var request = HtspMessage.Create("updateAutorecEntry").Set("id", info.Id ?? string.Empty);
         ApplySeriesFields(request, info, existing, serverOffset);
@@ -337,11 +346,28 @@ public sealed class TvheadendDvr
             request.Set("serieslinkUri", seriesLink);
         }
 
-        // Always sent, series link or not. TVHeadend prefers the link when it has one and reads
-        // this as a regular expression when it does not, so a title with a bracket or a full stop
-        // in it has to arrive escaped -- unescaped, "Law & Order: S.V.U." matches titles nobody
-        // asked for, and a title of "(" is not a pattern at all.
-        request.Set("title", EscapeForTitleMatch(info.Name));
+        // The rule's readable name, which is what a person calls it. Always sent, and freely
+        // updated from Jellyfin: it is the one of the two title-ish fields Jellyfin actually has.
+        request.Set("name", info.Name ?? string.Empty);
+
+        // The pattern the rule matches programme titles with, which is a different field. Written
+        // once, when the rule is made: TVHeadend reads it as a regular expression, so it goes out
+        // escaped -- unescaped, "Law & Order: S.V.U." matches titles nobody asked for and a title
+        // of "(" is not a pattern at all.
+        //
+        // Never rewritten afterwards. Jellyfin has no editor for it, so an update carries no
+        // opinion about it; deriving it from the name again on every edit would overwrite a
+        // pattern somebody wrote by hand in TVHeadend, and would escape an already-escaped one a
+        // second time. Where the link is present TVHeadend matches on that and does not consult
+        // this at all.
+        if (string.IsNullOrEmpty(existing?.TitlePattern))
+        {
+            request.Set("title", EscapeForTitleMatch(info.Name));
+        }
+
+        // The note kept on the rule. Jellyfin shows it as the overview and can edit it, emptying
+        // included, so it is sent as it comes back.
+        request.Set("comment", info.Overview ?? string.Empty);
 
         // A negative channelId means "any channel" from HTSP v25 on; older servers read an
         // absent channelId the same way, so it is only sent for a channel-bound rule.
@@ -358,17 +384,37 @@ public sealed class TvheadendDvr
         // Always sent, including when it means every day. Leaving the field out on an update left
         // the old filter in place, so a rule somebody had narrowed to Mondays could never be
         // widened again from Jellyfin.
-        request.Set("daysOfWeek", SeriesRuleCatalog.ToDaysOfWeek(info.Days ?? []));
+        //
+        // What an empty list means depends on where it came from. A new timer that was never
+        // given any days is the ordinary daily rule, and TVHeadend spells that 0x7F. A rule the
+        // server itself has at zero -- which matches nothing -- reads back as the same empty list,
+        // and writing 0x7F for it would silently switch it on.
+        request.Set(
+            "daysOfWeek",
+            SeriesRuleCatalog.ToDaysOfWeek(
+                info.Days ?? [],
+                existing is null ? SeriesRuleCatalog.AllDaysOfWeek : SeriesRuleCatalog.NoDaysOfWeek));
 
-        // Minutes from midnight on the server's clock, with -1 meaning any time. A rule with no
-        // time restriction needs no conversion at all.
+        // Minutes from midnight on the server's clock, with -1 meaning any time.
         if (info.RecordAnyTime)
         {
             request.Set("start", SeriesRuleCatalog.AnyTime);
             request.Set("startWindow", SeriesRuleCatalog.AnyTime);
         }
+        else if (KeepsItsExistingWindow(info, existing))
+        {
+            // The rule already had a window and still wants one, and Jellyfin has no way to say
+            // anything else about it. The server's own numbers go back untouched -- converting
+            // them out and in again would move the rule by however much the server's offset had
+            // shifted since it was read, which across a daylight saving change is an hour.
+            request.Set("start", existing!.Start!.Value);
+            request.Set("startWindow", existing.StartWindow!.Value);
+        }
         else
         {
+            // A window being set for the first time, or a rule leaving "any time" for one. This
+            // is the moment Jellyfin's times mean something, and they are read with the offset the
+            // server reports now.
             var start = SeriesRuleCatalog.ToMinutesFromMidnight(info.StartDate, serverOffset);
             request.Set("start", start);
             request.Set("startWindow", WindowEndFor(info, existing, serverOffset, start));
@@ -430,6 +476,46 @@ public sealed class TvheadendDvr
 
         return escaped.ToString();
     }
+
+    /// <summary>
+    /// Reports whether writing this rule needs to know what the server's clock reads.
+    /// </summary>
+    /// <remarks>
+    /// Only when a time actually has to be converted: a rule with no time restriction is written
+    /// as -1/-1, and one that keeps the window the server already has is written from the server's
+    /// own numbers. Everything else -- padding, priority, days, the channel -- is the same on any
+    /// clock.
+    /// </remarks>
+    /// <param name="info">The series timer Jellyfin is asking for.</param>
+    /// <param name="existing">The rule as TVHeadend has it, if it exists yet.</param>
+    /// <returns>Whether the server has to be asked for its offset.</returns>
+    private static bool NeedsServerClock(SeriesTimerInfo info, SeriesRule? existing)
+        => !info.RecordAnyTime && !KeepsItsExistingWindow(info, existing);
+
+    /// <summary>
+    /// Reports whether a rule keeps the start window it already has.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It does whenever it had one and still wants one. Jellyfin's editor has no field for a start
+    /// window -- only the "any time" switch -- so an update carries no opinion about the minutes,
+    /// and the only change it can actually express is turning the restriction off.
+    /// </para>
+    /// <para>
+    /// Which means the times must not be recomputed. Jellyfin returns the instants this plugin
+    /// published, read with whatever the server's offset was then; reading them back with the
+    /// offset now moves the rule by any difference between the two, and a daylight saving change
+    /// between a listing and an unrelated edit is an hour. Changing the window itself is done in
+    /// TVHeadend, which is where the field lives.
+    /// </para>
+    /// </remarks>
+    /// <param name="info">The series timer Jellyfin is asking for.</param>
+    /// <param name="existing">The rule as TVHeadend has it, if it exists yet.</param>
+    /// <returns>Whether to send the server's own numbers back unchanged.</returns>
+    private static bool KeepsItsExistingWindow(SeriesTimerInfo info, SeriesRule? existing)
+        => !info.RecordAnyTime
+            && SeriesRuleCatalog.IsTimeOfDay(existing?.Start)
+            && SeriesRuleCatalog.IsTimeOfDay(existing?.StartWindow);
 
     /// <summary>
     /// Reports whether the broadcast type is one this plugin may write.

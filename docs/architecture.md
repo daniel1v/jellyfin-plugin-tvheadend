@@ -511,21 +511,57 @@ recordings are kept, and — where TVHeadend is set to one of the two broadcast 
 word for — whether only new broadcasts count.
 
 A new rule is bound to **TVHeadend's own series link** whenever the guide supplied one, because
-that is what the server matches on first. The title travels with it as a readable name and as the
-fallback the server uses when there is no link. TVHeadend reads that title as a **regular
-expression**, so it is escaped: a full stop in `S.W.A.T.` otherwise matches any character, and a
-bracket is a syntax error rather than a bracket. The match stays a substring match, as it always
-was; escaping makes a title mean itself, it does not anchor it.
+that is what the server matches on first.
+
+### `name` and `title` are two fields
+
+An autorec entry has both, and they answer different questions. `name` is what a person calls the
+rule. `title` is a **POSIX extended regular expression** matched against programme titles, and the
+server consults it only when the link does not settle the matter. TVHeadend's own series-link path
+writes the plain title into one and the escaped form into the other, and this does the same:
+
+- **creating**: `name` is the title as Jellyfin knows it, `title` is that title escaped — a full
+  stop in `S.W.A.T.` would otherwise match any character, and a bracket is a syntax error rather
+  than a bracket. The match stays a substring match; escaping makes a title mean itself, it does
+  not anchor it.
+- **updating**: `name` is written from Jellyfin, `title` is not written at all. Jellyfin has no
+  editor for a regular expression, so an update carries no opinion about one — and rebuilding it
+  from the name would escape an already-escaped pattern a second time on every edit, and would
+  overwrite a pattern somebody wrote by hand in TVHeadend.
+
+A rule with no `name` — one made by hand, or by a version of this plugin that did not know the
+difference — is shown by its pattern, as it stands. Unescaping it for display would be reading a
+regular expression as though it were a title.
+
+`comment` is the note TVHeadend keeps on a rule, and it is Jellyfin's overview. There is no
+`description` on an autorec entry; the field this once read was never announced.
 
 Jellyfin's series timer DTO carries no series identifier, so an edit comes back without one. The
 link is therefore read from the catalog's copy of the rule rather than from what Jellyfin returned,
 along with everything else the editor never showed. The same catalog copy is why a broadcast type
 TVHeadend supports and Jellyfin cannot name is left out of an update instead of being reset.
 
-Three fields are deliberately **not** mapped. `retention` is how long a finished recording is kept,
-not when a rule stops applying, so it is no longer reported as the timer's end date. `KeepUntil`
-and `SkipEpisodesInLibrary` describe what Jellyfin does with its own library and have no
-counterpart on the server. Nothing is invented for them.
+### Days, and the two ways of having none
+
+TVHeadend tells no days from every day: `0` matches nothing, `0x7F` matches everything. Jellyfin
+has one empty list for both, so which one it means depends on where it came from. A **new** timer
+that was never given any days is the ordinary daily rule and is written as `0x7F`; an **existing**
+rule returning an empty list is somebody having cleared the days, and is written as `0`. The field
+is always sent either way — omitting it leaves whatever filter the rule already had, so a rule
+narrowed to Mondays could never be widened again.
+
+### What is not mapped, and one that only half is
+
+`retention` is how long a finished recording is kept, not when a rule stops applying, so it is no
+longer reported as the timer's end date. `KeepUntil` and `SkipEpisodesInLibrary` describe what
+Jellyfin does with its own library and have no counterpart on the server. Nothing is invented for
+them.
+
+`maxCount` and `KeepUpTo` agree on every positive number and travel unchanged. They do not agree on
+zero: TVHeadend reads a rule's zero as "no limit of its own — use the DVR profile's", and Jellyfin
+has a number and no state for inheriting one. Zero is therefore carried across as zero and left to
+mean what each side means by it. Substituting some large number for "unlimited" would replace a
+limit the profile sets with one this plugin made up.
 
 ### The server's clock, and the one thing HTSP will not say
 
@@ -535,10 +571,22 @@ only when the two machines share one — a container in UTC beside a server in B
 rule by two hours.
 
 `getSysTime` answers with `gmtoffset`, the minutes east of GMT the server is at, and that is what
-the conversion uses. It is asked once per connection.
+the conversion uses. It is asked fresh each time it is needed, and only when it is needed: an HTSP
+connection can stand open for months, so an offset cached on one is right until the clocks change
+and wrong afterwards with nothing to notice.
 
-It is an offset, not a time zone, and HTSP offers nothing better. A rule read before a daylight
-saving change and written back after it moves by the hour that changed. Guessing a zone from an
+Most edits need no clock at all. Jellyfin's editor has no field for a start window — only the "any
+time" switch — so an update carries no opinion about the minutes, and the only change it can
+express is turning the restriction off. A rule that had a window and still wants one is therefore
+written back from **the server's own numbers**, untouched. That is what makes a daylight saving
+change between a listing and an unrelated edit harmless: nothing is converted, so nothing moves.
+The conversion happens where Jellyfin's times actually mean something — creating a rule, or leaving
+"any time" for a window — and there the offset is read at that moment.
+
+The consequence is worth stating: the start window of an existing rule cannot be changed from
+Jellyfin. It is changed in TVHeadend, which is where the field lives.
+
+`gmtoffset` is an offset, not a time zone, and HTSP offers nothing better. Guessing a zone from an
 offset would be a guess; this is the protocol's limit, stated rather than papered over.
 
 ## Known external issues

@@ -28,6 +28,11 @@ public sealed class SeriesRuleCatalog
     public const int AllDaysOfWeek = 0x7F;
 
     /// <summary>
+    /// No day of the week set, which is how TVHeadend spells a rule that matches nothing.
+    /// </summary>
+    public const int NoDaysOfWeek = 0;
+
+    /// <summary>
     /// What TVHeadend puts in <c>start</c> and <c>startWindow</c> for a rule with no time limit.
     /// </summary>
     public const int AnyTime = -1;
@@ -96,7 +101,8 @@ public sealed class SeriesRuleCatalog
             _rules.TryGetValue(id, out var existing);
             _rules[id] = new SeriesRule(
                 id,
-                message.GetString("title") ?? existing?.Title,
+                message.GetString("name") ?? existing?.Name,
+                message.GetString("title") ?? existing?.TitlePattern,
                 message.GetString("serieslinkUri") ?? existing?.SeriesLink,
                 message.GetInt32("channel")?.ToString(CultureInfo.InvariantCulture) ?? existing?.ChannelId,
                 message.GetInt32("daysOfWeek") ?? existing?.DaysOfWeek,
@@ -108,7 +114,7 @@ public sealed class SeriesRuleCatalog
                 message.GetInt32("priority") ?? existing?.Priority,
                 message.GetInt32("broadcastType") ?? existing?.BroadcastType,
                 message.GetInt32("maxCount") ?? existing?.MaxCount,
-                message.GetString("description") ?? existing?.Description);
+                message.GetString("comment") ?? existing?.Comment);
         }
     }
 
@@ -222,8 +228,18 @@ public sealed class SeriesRuleCatalog
         return new SeriesTimerInfo
         {
             Id = rule.Id,
-            Name = rule.Title,
-            Overview = rule.Description,
+
+            // The rule's own name, which is a different field from the pattern it matches titles
+            // with. Reporting the pattern as the name showed "S\.W\.A\.T\." in the library and,
+            // worse, invited the next edit to escape it again.
+            //
+            // A rule made before this plugin knew the difference, or by hand in the server's own
+            // interface, may have no name at all. The pattern is then all there is to show, and it
+            // is shown as it stands -- unescaping it would be reading a regular expression as if
+            // it were a title, which for a rule somebody wrote as a regular expression it is not.
+            Name = !string.IsNullOrEmpty(rule.Name) ? rule.Name : rule.TitlePattern,
+
+            Overview = rule.Comment,
 
             // What TVHeadend binds the rule to, where it has one. Not the title: a title is what
             // the rule is called, and saying it was the series meant every rule that happened to
@@ -252,8 +268,14 @@ public sealed class SeriesRuleCatalog
             // written back -- see TvheadendDvr.ApplySeriesFields.
             RecordNewOnly = rule.BroadcastType == BroadcastTypeNewOrUnknown,
 
-            // How many recordings the rule keeps, which is the same question Jellyfin asks. Zero
-            // is unlimited on both sides.
+            // How many recordings the rule keeps. A positive number means the same thing on both
+            // sides and travels unchanged.
+            //
+            // Zero does not. TVHeadend reads it as "no limit of its own, use the DVR profile's",
+            // and Jellyfin has no way to say that -- it has a number, and no state for inheriting
+            // one. So zero is carried across as zero and left to mean whatever each side means by
+            // it; inventing a large number to stand for "unlimited" would replace a limit the
+            // profile sets with one this plugin made up.
             KeepUpTo = rule.MaxCount is > 0 ? rule.MaxCount.Value : 0,
         };
     }
@@ -262,13 +284,22 @@ public sealed class SeriesRuleCatalog
     /// Turns the days of a series timer into TVHeadend's bit field.
     /// </summary>
     /// <remarks>
-    /// An empty list and a full one both mean every day, and both are written as every day: the
-    /// field is never omitted, because an omitted field leaves whatever filter the rule already
-    /// had.
+    /// <para>
+    /// The field is always sent, including when it means no restriction: an omitted field leaves
+    /// whatever filter the rule already had, so a rule narrowed to Mondays could never be widened.
+    /// </para>
+    /// <para>
+    /// TVHeadend tells no days from every day -- zero matches nothing, 0x7F matches everything --
+    /// and Jellyfin does not. An empty list reaches here from two different places: a new timer
+    /// that has not been given any days, which means the ordinary daily rule; and a rule the
+    /// server itself set to zero, read back and returned untouched. <paramref name="whenNoneGiven"/>
+    /// is which of those the caller is in.
+    /// </para>
     /// </remarks>
     /// <param name="days">The days.</param>
+    /// <param name="whenNoneGiven">What an empty list means here.</param>
     /// <returns>The bit field, Monday in the lowest bit.</returns>
-    public static int ToDaysOfWeek(IEnumerable<DayOfWeek> days)
+    public static int ToDaysOfWeek(IEnumerable<DayOfWeek> days, int whenNoneGiven)
     {
         ArgumentNullException.ThrowIfNull(days);
 
@@ -288,7 +319,7 @@ public sealed class SeriesRuleCatalog
             };
         }
 
-        return result == 0 ? AllDaysOfWeek : result;
+        return result == 0 ? whenNoneGiven : result;
     }
 
     /// <summary>
