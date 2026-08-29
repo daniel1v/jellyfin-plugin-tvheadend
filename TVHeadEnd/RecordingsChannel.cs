@@ -63,7 +63,7 @@ namespace TVHeadEnd
         /// change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 8;
+        private const int MediaSourceSchemaRevision = 9;
 
         /// <summary>
         /// The floor every recording's modification date is lifted to.
@@ -742,20 +742,24 @@ namespace TVHeadEnd
         /// </summary>
         /// <remarks>
         /// <para>
-        /// It carries no streams, because the listing does not analyse and must not guess. What
-        /// makes it a placeholder is <see cref="MediaSourceType.Placeholder"/> and nothing else:
-        /// it is the same source as the described one, in the state a listing can report it.
+        /// It carries no streams, because the listing does not analyse and must not guess.
         /// </para>
         /// <para>
-        /// So it carries the same identifier, and that is the whole of the fix it once was the
-        /// bug in. It used to be given a second, textually distinct identifier, on the reasoning
-        /// that a placeholder should never be mistakable for a description. Jellyfin does not read
-        /// it that way. <c>MediaSourceManager.SortMediaSources</c> drops every placeholder before
-        /// playback is decided, and <c>MediaInfoHelper.GetPlaybackMediaSources</c> then keeps only
-        /// the source whose identifier the client sent back. A client that had stored the listing
-        /// therefore returned an identifier belonging to a source that no longer existed, the
-        /// described source was filtered out for not matching it, and playback failed with no
-        /// compatible stream before anything was ever opened.
+        /// Its identifier must <b>not</b> be readable as a GUID, and that is not a stylistic
+        /// choice. This is a saved source, and <c>MediaSourceManager.GetStaticMediaSources</c>
+        /// keeps a saved source only when its identifier fails to parse as a GUID, or parses to
+        /// the item's own identifier, or names a library item the user can see. A GUID derived
+        /// from the recording is none of those, so the placeholder is discarded, the item is left
+        /// with no static source at all, and <c>GetPlaybackMediaSources</c> throws on
+        /// <c>mediaSources[0]</c> before any of this plugin is reached. Measured: every
+        /// PlaybackInfo request answered 500 with an ArgumentOutOfRangeException.
+        /// </para>
+        /// <para>
+        /// The described source keeps the GUID, because it is dynamic and that filter never sees
+        /// it, and because two places downstream parse it as a GUID. The two identifiers are
+        /// therefore different by necessity -- see <see cref="RecordingMediaSourceId"/> -- and
+        /// Jellyfin arranges for that to be harmless by dropping every placeholder before playback
+        /// is decided, so what a client is offered to name is always the described source.
         /// </para>
         /// </remarks>
         /// <param name="id">The TVHeadend recording identifier.</param>
@@ -766,7 +770,7 @@ namespace TVHeadEnd
 
             return new MediaSourceInfo
             {
-                Id = RecordingMediaSourceId(id),
+                Id = "tvheadend-recording-" + id,
                 Type = MediaSourceType.Placeholder,
                 Protocol = MediaProtocol.Http,
 

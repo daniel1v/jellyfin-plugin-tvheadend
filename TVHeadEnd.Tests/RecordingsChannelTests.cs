@@ -30,33 +30,66 @@ public class RecordingsChannelTests
     }
 
     [Fact]
-    public void APlaceholderIsTheSameSourceAsTheOneItStandsFor()
+    public void APlaceholderIsNotIdentifiedByAGuid()
     {
-        // One recording, one identifier. The placeholder and the described source are the same
-        // source in two states, and only Type says which state it is in.
+        // Measured, and the reason is entirely Jellyfin's. A placeholder is a *saved* source, and
+        // MediaSourceManager.GetStaticMediaSources keeps a saved source only when its identifier
+        // fails to parse as a GUID, or parses to the item's own identifier, or names a library
+        // item the user can see. A GUID derived from the recording is none of the three.
         //
-        // Giving them separate identifiers is what broke playback. Jellyfin drops placeholders
-        // before deciding, then keeps only the source whose identifier the client sent back -- so
-        // a client that had stored the listing named a source that no longer existed, and the
-        // described one was discarded for not matching it.
+        // Giving the placeholder the described source's GUID -- which looks like the tidier
+        // answer, one recording and one identifier -- therefore removes the item's only static
+        // source, and GetPlaybackMediaSources throws on mediaSources[0] before this plugin is
+        // reached at all. Every PlaybackInfo request answered 500.
         var placeholder = RecordingsChannel.BuildPlaceholderSource("1312160563");
 
-        Assert.Equal(RecordingsChannel.RecordingMediaSourceId("1312160563"), placeholder.Id);
+        Assert.False(Guid.TryParse(placeholder.Id, out _));
+        Assert.NotEqual(RecordingsChannel.RecordingMediaSourceId("1312160563"), placeholder.Id);
         Assert.Equal(MediaSourceType.Placeholder, placeholder.Type);
     }
 
     [Fact]
-    public void APlaceholderIsIdentifiedByTheSameGuidOnEveryCall()
+    public void APlaceholderKeepsItsIdentifierAcrossCalls()
     {
         // It reaches the client through a stored channel item and comes back much later, from a
-        // different process. Both halves matter: readable as a GUID, and the same one every time.
-        var first = RecordingsChannel.BuildPlaceholderSource("1312160563");
-        var second = RecordingsChannel.BuildPlaceholderSource("1312160563");
+        // different process.
+        Assert.Equal(
+            RecordingsChannel.BuildPlaceholderSource("1312160563").Id,
+            RecordingsChannel.BuildPlaceholderSource("1312160563").Id);
 
-        Assert.Equal(first.Id, second.Id);
-        Assert.True(Guid.TryParse(first.Id, out _));
-        Assert.NotEqual(first.Id, RecordingsChannel.BuildPlaceholderSource("962787396").Id);
+        Assert.NotEqual(
+            RecordingsChannel.BuildPlaceholderSource("1312160563").Id,
+            RecordingsChannel.BuildPlaceholderSource("962787396").Id);
     }
+
+    [Fact]
+    public void ASavedPlaceholderSurvivesTheFilterJellyfinPutsItThrough()
+    {
+        // The filter itself, written out because it is the whole reason the identifier looks the
+        // way it does. A saved source is kept only when one of three things holds, and for a
+        // recording only the first of them can.
+        var placeholder = RecordingsChannel.BuildPlaceholderSource("2061373994");
+        var itemId = Guid.NewGuid();
+
+        Assert.True(SurvivesTheStaticSourceFilter(placeholder.Id, itemId));
+
+        // What the GUID form would have done to it.
+        Assert.False(SurvivesTheStaticSourceFilter(RecordingsChannel.RecordingMediaSourceId("2061373994"), itemId));
+    }
+
+    /// <summary>
+    /// The test <c>MediaSourceManager.GetStaticMediaSources</c> puts every saved source through.
+    /// </summary>
+    /// <remarks>
+    /// No more of Jellyfin than the one predicate: an identifier that is not a GUID passes, one
+    /// that is the item's own passes, and any other GUID has to name a library item the user can
+    /// see -- which a recording's derived identifier never does.
+    /// </remarks>
+    /// <param name="sourceId">The saved source's identifier.</param>
+    /// <param name="itemId">The item the source belongs to.</param>
+    /// <returns>Whether the source is kept.</returns>
+    private static bool SurvivesTheStaticSourceFilter(string sourceId, Guid itemId)
+        => !Guid.TryParse(sourceId, out var parsed) || parsed.Equals(itemId);
 
     [Fact]
     public void TheDescribedSourceIsIdentifiedByAGuid()
@@ -118,52 +151,53 @@ public class RecordingsChannelTests
     }
 
     [Fact]
-    public void ARecordingSurvivesAClientAskingForItByTheIdentifierItWasListedUnder()
+    public void AClientThatNamesNoSourceGetsTheDescribedOne()
     {
-        // The failure, played out through the two steps Jellyfin actually takes.
-        //
-        // A client that browsed the library holds the stored item, whose one source is the
-        // placeholder. When it starts playback it names that source. Jellyfin then drops every
-        // placeholder from the candidates and keeps only the one the client named -- so if the
-        // described source carries a different identifier, nothing is left and playback fails
-        // with no compatible stream before the recording is ever opened.
+        // How playback is actually reached. The client asks without naming a source, Jellyfin
+        // drops the placeholder, and what is left is the described source -- whose identifier the
+        // client then uses for everything after.
         const string RecordingId = "2061373994";
 
-        var stored = RecordingsChannel.BuildPlaceholderSource(RecordingId);
-        var described = RecordingsChannel.BuildRecordingSource(RecordingId, "http://host:8096/x");
+        var chosen = AsJellyfinWouldChoose(
+            [
+                RecordingsChannel.BuildPlaceholderSource(RecordingId),
+                Described(RecordingId),
+            ],
+            requestedMediaSourceId: null);
+
+        var only = Assert.Single(chosen);
+        Assert.NotEqual(MediaSourceType.Placeholder, only.Type);
+        Assert.Equal(RecordingsChannel.RecordingMediaSourceId(RecordingId), only.Id);
+        Assert.Contains(only.MediaStreams, stream => stream.Type == MediaStreamType.Video);
+    }
+
+    [Fact]
+    public void AClientThatNamesTheDescribedSourceGetsIt()
+    {
+        // The second request of every playback: the client returns the identifier it was handed.
+        const string RecordingId = "2061373994";
+
+        var chosen = AsJellyfinWouldChoose(
+            [
+                RecordingsChannel.BuildPlaceholderSource(RecordingId),
+                Described(RecordingId),
+            ],
+            RecordingsChannel.RecordingMediaSourceId(RecordingId));
+
+        var only = Assert.Single(chosen);
+        Assert.NotEqual(MediaSourceType.Placeholder, only.Type);
+    }
+
+    private static MediaSourceInfo Described(string recordingId)
+    {
+        var described = RecordingsChannel.BuildRecordingSource(recordingId, "http://host:8096/x");
         described.MediaStreams =
         [
             new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264" },
             new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "mp2", IsDefault = true },
         ];
 
-        // What the client sends back is what it was given in the listing.
-        var requested = stored.Id;
-
-        var chosen = AsJellyfinWouldChoose([stored, described], requested);
-
-        var only = Assert.Single(chosen);
-        Assert.Equal(requested, only.Id);
-        Assert.NotEqual(MediaSourceType.Placeholder, only.Type);
-        Assert.Contains(only.MediaStreams, stream => stream.Type == MediaStreamType.Video);
-    }
-
-    [Fact]
-    public void AClientThatNamesNoSourceStillGetsTheDescribedOne()
-    {
-        // The other route into playback, which worked all along and must keep working: the client
-        // asks without naming a source and is handed whatever is left once placeholders are gone.
-        const string RecordingId = "2061373994";
-
-        var chosen = AsJellyfinWouldChoose(
-            [
-                RecordingsChannel.BuildPlaceholderSource(RecordingId),
-                RecordingsChannel.BuildRecordingSource(RecordingId, "http://host:8096/x"),
-            ],
-            requestedMediaSourceId: null);
-
-        var only = Assert.Single(chosen);
-        Assert.NotEqual(MediaSourceType.Placeholder, only.Type);
+        return described;
     }
 
     /// <summary>
