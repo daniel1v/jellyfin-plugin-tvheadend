@@ -36,7 +36,7 @@ namespace TVHeadEnd;
 /// described. There is no second playback policy here.
 /// </para>
 /// </remarks>
-public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvider
+public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvider, ISupportsNewTimerIds
 {
     private readonly TvheadendConnection _connection;
     private readonly LiveStreamOpener _opener;
@@ -286,6 +286,31 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <inheritdoc />
     public Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
         => _dvr.CreateTimerAsync(info, cancellationToken);
+
+    /// <summary>
+    /// Schedules a recording and answers with the identifier TVHeadend gave it.
+    /// </summary>
+    /// <remarks>
+    /// Jellyfin prefers this over <see cref="CreateTimerAsync"/> wherever a service offers it, and
+    /// keeps what comes back as the timer's external identifier. Without it Jellyfin had no
+    /// identifier for a timer it had just created: it announced the new timer under nothing at
+    /// all, and only the next refresh of the whole list connected the recording to the thing that
+    /// had asked for it.
+    /// </remarks>
+    /// <param name="info">The timer to create.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The TVHeadend identifier of the new entry.</returns>
+    public async Task<string> CreateTimer(TimerInfo info, CancellationToken cancellationToken)
+        => await _dvr.CreateTimerAsync(info, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+
+    /// <summary>
+    /// Creates a series rule and answers with the identifier TVHeadend gave it.
+    /// </summary>
+    /// <param name="info">The series timer to create.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The TVHeadend identifier of the new rule.</returns>
+    public async Task<string> CreateSeriesTimer(SeriesTimerInfo info, CancellationToken cancellationToken)
+        => await _dvr.CreateSeriesTimerAsync(info, cancellationToken).ConfigureAwait(false) ?? string.Empty;
 
     /// <inheritdoc />
     public Task UpdateTimerAsync(TimerInfo updatedTimer, CancellationToken cancellationToken)

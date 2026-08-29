@@ -17,25 +17,32 @@ namespace TVHeadEnd.Domain
         /// Gets a value indicating whether the entry belongs in Jellyfin's timer list.
         /// </summary>
         /// <remarks>
-        /// Only what has not started. A running recording is a timer as far as Jellyfin's model
-        /// goes -- RecordingStatus has InProgress for exactly that -- but reporting it there is a
-        /// change in what the timer list contains, not a migration, so it is left for its own
-        /// step.
+        /// Everything that has not finished, a recording in progress included. Jellyfin's model
+        /// has RecordingStatus.InProgress for exactly that, and it is what a timer list is for:
+        /// a recording that has started is still the thing a viewer stops, and stopping it is a
+        /// timer operation. Listing only what had not started left a running recording with no
+        /// entry anywhere that could be cancelled.
         /// </remarks>
         /// <param name="entry">The DVR entry.</param>
         /// <returns>Whether it belongs in the timer list.</returns>
         public static bool IsTimer(DvrEntry entry)
         {
             ArgumentNullException.ThrowIfNull(entry);
-            return entry.State == DvrState.Scheduled;
+            return entry.State is DvrState.Scheduled or DvrState.Recording;
         }
 
         /// <summary>
         /// Gets a value indicating whether the entry belongs in Jellyfin's recording list.
         /// </summary>
         /// <remarks>
-        /// Everything that has at least started. A scheduled entry has nothing to play, and an
-        /// entry whose file has been removed would offer a recording that answers nothing.
+        /// Everything with a file behind it. A recording in progress has one and plays -- that is
+        /// what continuing to watch what is being recorded means -- and a completed one has one
+        /// unless the server says it has gone.
+        /// <para>
+        /// Missed and invalid entries are not recordings. TVHeadend keeps them so that something
+        /// says why nothing was recorded, but they have no file, and offering them put items in
+        /// the library that could only fail when opened.
+        /// </para>
         /// </remarks>
         /// <param name="entry">The DVR entry.</param>
         /// <returns>Whether it belongs in the recording list.</returns>
@@ -48,7 +55,7 @@ namespace TVHeadEnd.Domain
                 return false;
             }
 
-            return entry.State is DvrState.Recording or DvrState.Completed or DvrState.Missed;
+            return entry.State is DvrState.Recording or DvrState.Completed;
         }
 
         /// <summary>

@@ -41,15 +41,45 @@ public class DvrEntryTests
 
     [Theory]
     [InlineData("scheduled", true, false)]
-    [InlineData("recording", false, true)]
+    [InlineData("recording", true, true)]
     [InlineData("completed", false, true)]
-    [InlineData("missed", false, true)]
+    [InlineData("missed", false, false)]
+    [InlineData("invalid", false, false)]
     public void TheTwoJellyfinViewsSplitTheSameEntry(string state, bool isTimer, bool isRecording)
     {
         var entry = DvrEntry.FromMessage(Message(id: 1, state: state))!;
 
         Assert.Equal(isTimer, JellyfinDvrMapper.IsTimer(entry));
         Assert.Equal(isRecording, JellyfinDvrMapper.IsRecording(entry));
+    }
+
+    [Fact]
+    public void ARecordingInProgressIsBothAtOnce()
+    {
+        // The one entry that has to be in both lists. It is still the thing a viewer stops, which
+        // is a timer operation, and it already has a file, which is what makes watching what is
+        // being recorded possible. Listing it only as a timer left nothing to play; listing it
+        // only as a recording left nothing to stop.
+        var entry = DvrEntry.FromMessage(Message(id: 1, state: "recording"))!;
+
+        Assert.True(JellyfinDvrMapper.IsTimer(entry));
+        Assert.True(JellyfinDvrMapper.IsRecording(entry));
+
+        Assert.Equal(RecordingStatus.InProgress, JellyfinDvrMapper.ToTimer(entry).Status);
+        Assert.Equal(RecordingStatus.InProgress, JellyfinDvrMapper.ToRecording(entry).Status);
+    }
+
+    [Theory]
+    [InlineData("missed")]
+    [InlineData("invalid")]
+    public void AnEntryThatNeverBecameAFileIsNotOfferedAsOne(string state)
+    {
+        // TVHeadend keeps these so that something says why nothing was recorded. They have no
+        // file, so offering them put items in the library that could only fail when opened.
+        var entry = DvrEntry.FromMessage(Message(id: 1, state: state))!;
+
+        Assert.False(JellyfinDvrMapper.IsRecording(entry));
+        Assert.False(JellyfinDvrMapper.IsTimer(entry));
     }
 
     [Fact]

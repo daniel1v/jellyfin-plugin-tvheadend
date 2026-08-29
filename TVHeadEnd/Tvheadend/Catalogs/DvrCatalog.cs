@@ -164,6 +164,29 @@ public sealed class DvrCatalog
     }
 
     /// <summary>
+    /// Gets one entry as the server last announced it.
+    /// </summary>
+    /// <remarks>
+    /// The only state worth deciding against: what an operation should do to an entry depends on
+    /// where that entry has got to, and the catalog is the one place that answer comes from the
+    /// server rather than from what the plugin last asked for.
+    /// </remarks>
+    /// <param name="id">The TVHeadend entry identifier.</param>
+    /// <returns>The entry, or <see langword="null"/> if the server has not announced one.</returns>
+    public DvrEntry? Find(string? id)
+    {
+        if (string.IsNullOrEmpty(id))
+        {
+            return null;
+        }
+
+        lock (_gate)
+        {
+            return _entries.TryGetValue(id, out var entry) ? entry : null;
+        }
+    }
+
+    /// <summary>
     /// Gets the entries Jellyfin should show as timers.
     /// </summary>
     /// <returns>The timers.</returns>
