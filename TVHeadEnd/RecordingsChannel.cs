@@ -15,6 +15,7 @@ using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Channels;
@@ -63,7 +64,7 @@ namespace TVHeadEnd
         /// change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 9;
+        private const int MediaSourceSchemaRevision = 10;
 
         /// <summary>
         /// The floor every recording's modification date is lifted to.
@@ -104,6 +105,7 @@ namespace TVHeadEnd
         private readonly LiveTvService _liveTvService;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _applicationHost;
+        private readonly ILibraryManager _libraryManager;
         private readonly RecordingDescriber _describer;
 
         // A finished recording never changes, so what an analysis found holds for as long as the
@@ -116,9 +118,11 @@ namespace TVHeadEnd
             LiveTvService liveTvService,
             IMediaEncoder mediaEncoder,
             IHttpClientFactory httpClientFactory,
-            IServerApplicationHost applicationHost)
+            IServerApplicationHost applicationHost,
+            ILibraryManager libraryManager)
         {
             _connection = connection;
+            _libraryManager = libraryManager;
             _liveTvService = liveTvService;
             _httpClientFactory = httpClientFactory;
             _applicationHost = applicationHost;
@@ -388,7 +392,7 @@ namespace TVHeadEnd
                 SeriesName = !string.IsNullOrEmpty(item.EpisodeTitle) ? item.Name : null,
                 OfficialRating = item.OfficialRating,
                 CommunityRating = item.CommunityRating,
-                ContentType = item.IsMovie ? ChannelMediaContentType.Movie : (item.IsSeries ? ChannelMediaContentType.Episode : ChannelMediaContentType.Clip),
+                ContentType = ContentTypeFor(item),
                 Genres = [.. item.Genres],
                 ImageUrl = item.ImageUrl,
                 Id = item.Id,
@@ -404,7 +408,7 @@ namespace TVHeadEnd
                 // playback is negotiated. The Placeholder type is what tells Jellyfin this is
                 // not a description it should act on; GetPlaybackMediaSources checks for exactly
                 // that before it would otherwise force a remote probe of its own.
-                MediaSources = [BuildPlaceholderSource(item.Id ?? string.Empty)],
+                MediaSources = [BuildPlaceholderSource(item)],
 
                 // Stated on the item, because the source deliberately carries nothing. Without a
                 // duration Jellyfin treats the recording as a stream of unknown length, which is
@@ -448,7 +452,12 @@ namespace TVHeadEnd
                 return [cached];
             }
 
-            var source = BuildRecordingMediaSource(id);
+            // Looked up once. The identifier the source is addressed by, the runtime and whether
+            // the description may be kept all come from the same recording, and three separate
+            // lookups of it are three chances for them to disagree.
+            var recording = await FindRecordingAsync(id, cancellationToken).ConfigureAwait(false);
+
+            var source = BuildRecordingMediaSource(id, recording);
             if (!await DescribeRecording(id, source, cancellationToken).ConfigureAwait(false))
             {
                 // Undescribed, and deliberately still without invented streams. Jellyfin falls
@@ -456,13 +465,13 @@ namespace TVHeadEnd
                 return [source];
             }
 
-            source.RunTimeTicks = await GetRecordingRuntime(id, cancellationToken).ConfigureAwait(false);
+            source.RunTimeTicks = recording is null ? null : Runtime(recording);
 
             // Kept only once the recording has finished. A recording still being written grows,
             // and what a sample of its opening said about it is not yet the whole truth -- an
             // audio track the broadcaster adds later would be missing from the description for
             // as long as the server runs.
-            if (await IsFinishedAsync(id, cancellationToken).ConfigureAwait(false))
+            if (recording is not null && recording.Status != MediaBrowser.Model.LiveTv.RecordingStatus.InProgress)
             {
                 _describedRecordings[id] = source;
             }
@@ -471,25 +480,15 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Reports whether TVHeadend has finished writing a recording, which is what makes its
-        /// description safe to keep.
+        /// Finds one recording among the ones TVHeadend holds.
         /// </summary>
-        private async Task<bool> IsFinishedAsync(string id, CancellationToken cancellationToken)
+        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The recording, or <see langword="null"/> if the server no longer lists it.</returns>
+        private async Task<MyRecordingInfo?> FindRecordingAsync(string id, CancellationToken cancellationToken)
         {
             var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
-            var recording = recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
-            return recording is not null && recording.Status != MediaBrowser.Model.LiveTv.RecordingStatus.InProgress;
-        }
-
-        /// <summary>
-        /// Gets how long the recording runs, from the times TVHeadend scheduled it for. An
-        /// analysis cannot supply it, because what is analysed is a sample.
-        /// </summary>
-        private async Task<long?> GetRecordingRuntime(string id, CancellationToken cancellationToken)
-        {
-            var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
-            var recording = recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
-            return recording is null ? null : Runtime(recording);
+            return recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
         }
 
         /// <summary>
@@ -639,24 +638,61 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// The identifier a client sends back as MediaSourceId, derived from the recording so it
-        /// is the same on every call and after a restart.
+        /// The identifier a client sends back as MediaSourceId: the recording item's own.
         /// </summary>
         /// <remarks>
-        /// It has to be readable as a GUID. Two places downstream parse it as one --
-        /// <c>DynamicHlsHelper.GetMasterPlaylistInternal</c> unconditionally, and
-        /// <c>StreamingHelpers.GetStreamingState</c> when its lookup by identifier finds nothing
-        /// -- and a TVHeadend recording number is not a GUID, so the request fails with
-        /// "Unrecognized Guid format" before playback starts. Deriving it keeps it stable, which
-        /// the stored media source and every later request depend on.
+        /// <para>
+        /// Jellyfin gives an ordinary library item a media source whose identifier <em>is</em> the
+        /// item's -- <c>BaseItem.GetVersionInfo</c> writes <c>item.Id.ToString("N")</c> -- and
+        /// clients are built on that. The native Android app, asked to play something it holds no
+        /// media source for, sends the item identifier as the media source identifier; the server
+        /// then keeps only the source that matches it. Measured: with any other identifier the
+        /// response carries no sources and no play session, the app's resolver fails, and the
+        /// screen stays black with no error anywhere.
+        /// </para>
+        /// <para>
+        /// It also has to be readable as a GUID, which an item identifier is. Two places
+        /// downstream parse it as one -- <c>DynamicHlsHelper.GetMasterPlaylistInternal</c>
+        /// unconditionally, and <c>StreamingHelpers.GetStreamingState</c> when its lookup finds
+        /// nothing. And it is the one GUID a saved source may carry:
+        /// <c>MediaSourceManager.GetStaticMediaSources</c> discards a saved source whose
+        /// identifier parses as a GUID unless it is the item's own, so the placeholder can share
+        /// it rather than needing a second identity.
+        /// </para>
         /// </remarks>
-        /// <param name="recordingId">The TVHeadend recording identifier.</param>
+        /// <param name="libraryManager">Jellyfin's library, which owns the derivation.</param>
+        /// <param name="recording">The recording, which decides the item type the identifier is derived with.</param>
         /// <returns>The media source identifier.</returns>
-        internal static string RecordingMediaSourceId(string recordingId)
+        internal static string RecordingMediaSourceId(ILibraryManager libraryManager, MyRecordingInfo recording)
         {
-            ArgumentException.ThrowIfNullOrEmpty(recordingId);
+            ArgumentNullException.ThrowIfNull(recording);
 
-            return ("TVHeadEnd_Recording_" + recordingId).GetMD5().ToString("N", CultureInfo.InvariantCulture);
+            return Playback.TvheadendItems.RecordingItemId(
+                    libraryManager,
+                    recording.Id ?? string.Empty,
+                    Playback.TvheadendItems.RecordingItemType(MediaTypeFor(recording.ChannelType), ContentTypeFor(recording)))
+                .ToString("N", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// What kind of thing a recording is published as.
+        /// </summary>
+        /// <remarks>
+        /// Read twice and therefore stated once: the channel item is published with it, and the
+        /// item identifier is derived from it. Two spellings of this would be two different items.
+        /// </remarks>
+        /// <param name="recording">The recording.</param>
+        /// <returns>The content type.</returns>
+        internal static ChannelMediaContentType ContentTypeFor(MyRecordingInfo recording)
+        {
+            ArgumentNullException.ThrowIfNull(recording);
+
+            if (recording.IsMovie)
+            {
+                return ChannelMediaContentType.Movie;
+            }
+
+            return recording.IsSeries ? ChannelMediaContentType.Episode : ChannelMediaContentType.Clip;
         }
 
         /// <summary>
@@ -762,15 +798,25 @@ namespace TVHeadEnd
         /// is decided, so what a client is offered to name is always the described source.
         /// </para>
         /// </remarks>
-        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="recording">The recording the listing is standing in for.</param>
         /// <returns>The placeholder source.</returns>
-        internal static MediaSourceInfo BuildPlaceholderSource(string id)
+        private MediaSourceInfo BuildPlaceholderSource(MyRecordingInfo recording)
         {
-            ArgumentException.ThrowIfNullOrEmpty(id);
+            ArgumentNullException.ThrowIfNull(recording);
+
+            return BuildPlaceholderSource(RecordingMediaSourceId(_libraryManager, recording));
+        }
+
+        /// <inheritdoc cref="BuildPlaceholderSource(MyRecordingInfo)"/>
+        /// <param name="mediaSourceId">The recording item's identifier.</param>
+        /// <returns>The placeholder source.</returns>
+        internal static MediaSourceInfo BuildPlaceholderSource(string mediaSourceId)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(mediaSourceId);
 
             return new MediaSourceInfo
             {
-                Id = "tvheadend-recording-" + id,
+                Id = mediaSourceId,
                 Type = MediaSourceType.Placeholder,
                 Protocol = MediaProtocol.Http,
 
@@ -802,16 +848,32 @@ namespace TVHeadEnd
         /// channel on the same footing as any other item in the library.
         /// </para>
         /// </remarks>
-        private MediaSourceInfo BuildRecordingMediaSource(string id)
-            => BuildRecordingSource(id, BuildRecordingUrl(id));
+        /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="recording">
+        /// The recording as TVHeadend lists it, which decides the item type the identifier is
+        /// derived with. <see langword="null"/> when the server no longer lists it: the identifier
+        /// is then derived as a plain video, which is what an unclassified recording is stored as.
+        /// A recording the server has forgotten cannot be played anyway, so the fallback only has
+        /// to be harmless.
+        /// </param>
+        private MediaSourceInfo BuildRecordingMediaSource(string id, MyRecordingInfo? recording)
+            => BuildRecordingSource(
+                id,
+                recording is not null
+                    ? RecordingMediaSourceId(_libraryManager, recording)
+                    : Playback.TvheadendItems.RecordingItemId(_libraryManager, id, typeof(Video))
+                        .ToString("N", CultureInfo.InvariantCulture),
+                BuildRecordingUrl(id));
 
         /// <inheritdoc cref="BuildRecordingMediaSource"/>
         /// <param name="id">The TVHeadend recording identifier.</param>
+        /// <param name="mediaSourceId">The recording item's identifier, which the source is addressed by.</param>
         /// <param name="url">The address this plugin serves the recording from.</param>
         /// <returns>The source.</returns>
-        internal static MediaSourceInfo BuildRecordingSource(string id, string url)
+        internal static MediaSourceInfo BuildRecordingSource(string id, string mediaSourceId, string url)
         {
             ArgumentException.ThrowIfNullOrEmpty(id);
+            ArgumentException.ThrowIfNullOrEmpty(mediaSourceId);
 
             return new MediaSourceInfo
             {
@@ -819,7 +881,7 @@ namespace TVHeadEnd
                 Protocol = MediaProtocol.File,
                 EncoderPath = url,
                 EncoderProtocol = MediaProtocol.Http,
-                Id = RecordingMediaSourceId(id),
+                Id = mediaSourceId,
 
                 // Replaced by whatever the sample turns out to be. TVHeadend's DVR profile
                 // decides the container, and a server on one of the WebTV profiles writes

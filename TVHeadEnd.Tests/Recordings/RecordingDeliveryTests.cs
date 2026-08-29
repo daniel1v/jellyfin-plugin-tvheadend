@@ -98,7 +98,7 @@ public class RecordingDeliveryTests
         // The same split live TV uses. EncodingHelper.AttachMediaSourceInfo prefers EncoderPath
         // and EncoderProtocol whenever both are set, so the server fetches over HTTP while the
         // client is told the plainest thing there is: a whole file it may play as it stands.
-        var source = RecordingsChannel.BuildRecordingSource("867835561", "http://host:8096/TVHeadend/Recordings/t/stream");
+        var source = RecordingsChannel.BuildRecordingSource("867835561", "1f6cf027e0f2168c8ffaab722d151bb1", "http://host:8096/TVHeadend/Recordings/t/stream");
 
         Assert.Equal(MediaProtocol.File, source.Protocol);
         Assert.False(string.IsNullOrEmpty(source.Path));
@@ -113,7 +113,7 @@ public class RecordingDeliveryTests
         // Nothing on the server reads it -- AttachMediaSourceInfo takes EncoderPath instead --
         // but a client configured for direct file access resolves what it is given against its
         // own filesystem. A path that looks real is the one that could resolve to something else.
-        var source = RecordingsChannel.BuildRecordingSource("867835561", "http://host:8096/x");
+        var source = RecordingsChannel.BuildRecordingSource("867835561", "1f6cf027e0f2168c8ffaab722d151bb1", "http://host:8096/x");
 
         Assert.DoesNotContain("://", source.Path, StringComparison.Ordinal);
         Assert.False(System.IO.Path.IsPathRooted(source.Path));
@@ -124,7 +124,7 @@ public class RecordingDeliveryTests
     {
         // The starting assumption only; DescribeFromSample replaces it with whatever the sample
         // turned out to be. What matters is that the two paths spell the one container alike.
-        var source = RecordingsChannel.BuildRecordingSource("867835561", "http://host:8096/x");
+        var source = RecordingsChannel.BuildRecordingSource("867835561", "1f6cf027e0f2168c8ffaab722d151bb1", "http://host:8096/x");
 
         Assert.Equal("ts", source.Container);
         Assert.Equal(TVHeadEnd.Playback.LiveMediaSource.Container, source.Container);
