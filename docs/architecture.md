@@ -1,4 +1,10 @@
-# How live TV works
+# Architecture
+
+How TVHeadend EX delivers what it delivers: live TV first, then artwork, recordings, and the
+contracts the two playback paths share. Most of what follows records a measurement or a failure,
+so a reasonable-looking change that contradicts a section here has probably been tried already.
+
+## How live TV works
 
 A live channel is one HTTP request.
 

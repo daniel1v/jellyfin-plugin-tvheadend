@@ -39,12 +39,21 @@ function Write-Json([string]$path, $value, [switch]$AsArray) {
     [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-$yaml = Get-Content (Join-Path $repo 'build.yaml')
-function Get-Scalar([string]$key) {
+# Explicitly UTF-8. Windows PowerShell 5.1 reads files in the system ANSI code page by default,
+# which turned every em dash in a changelog into mojibake on its way into the manifest.
+$yaml = [System.IO.File]::ReadAllLines((Join-Path $repo 'build.yaml'), (New-Object System.Text.UTF8Encoding($false)))
+function Get-Scalar([string]$key, [switch]$Optional) {
     $line = $yaml | Where-Object { $_ -match "^$key\s*:" } | Select-Object -First 1
-    if (-not $line) { throw "build.yaml has no '$key'" }
+    if (-not $line) {
+        if ($Optional) { return $null }
+        throw "build.yaml has no '$key'"
+    }
     return ($line -replace "^$key\s*:\s*", '').Trim('"', ' ')
 }
+
+# Optional, and currently absent: the plugin has no artwork of its own since it stopped
+# presenting itself as the official plugin, and borrowing that one back would undo the point.
+$imageUrl = Get-Scalar 'imageUrl' -Optional
 
 $changelogStart = ($yaml | Select-String -Pattern '^changelog\s*:').LineNumber
 $changelog = (($yaml[$changelogStart..($yaml.Count - 1)] | ForEach-Object { $_ -replace '^  ', '' }) -join "`n").Trim()
@@ -62,25 +71,26 @@ Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
 # meta.json is what Jellyfin reads out of the installed plugin folder.
-Write-Json (Join-Path $stage 'meta.json') ([ordered]@{
+$meta = [ordered]@{
     category    = Get-Scalar 'category'
     changelog   = $changelog
     description = Get-Scalar 'description'
     guid        = Get-Scalar 'guid'
-    imageUrl    = Get-Scalar 'imageUrl'
     name        = Get-Scalar 'name'
     overview    = Get-Scalar 'overview'
     owner       = Get-Scalar 'owner'
     targetAbi   = Get-Scalar 'targetAbi'
     timestamp   = $timestamp
     version     = $version
-})
+}
+if ($imageUrl) { $meta['imageUrl'] = $imageUrl }
+Write-Json (Join-Path $stage 'meta.json') $meta
 
 foreach ($artifact in ($yaml | Select-String -Pattern '^\s+-\s+"(.+)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value })) {
     Copy-Item (Join-Path $repo "TVHeadEnd\bin\Release\net10.0\$artifact") $stage
 }
 
-$zip = Join-Path $dist "tvheadend_$version.zip"
+$zip = Join-Path $dist "tvheadend-ex_$version.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
 Remove-Item $stage -Recurse -Force
 
@@ -90,7 +100,7 @@ $entry = [ordered]@{
     version    = $version
     changelog  = $changelog
     targetAbi  = Get-Scalar 'targetAbi'
-    sourceUrl  = "$RepositoryUrl/releases/download/v$version/tvheadend_$version.zip"
+    sourceUrl  = "$RepositoryUrl/releases/download/v$version/tvheadend-ex_$version.zip"
     checksum   = $checksum
     timestamp  = $timestamp
 }
@@ -101,7 +111,9 @@ $manifestPath = Join-Path $repo 'manifest.json'
 # twice. The plugin object is rebuilt from build.yaml every time, so the two cannot drift apart.
 $previous = @()
 if (Test-Path $manifestPath) {
-    $existing = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    # Explicitly UTF-8, for the same reason build.yaml is: read in the ANSI code page, the
+    # changelogs already in the manifest come back mangled and are written back out worse.
+    $existing = [System.IO.File]::ReadAllText($manifestPath, (New-Object System.Text.UTF8Encoding($false))) | ConvertFrom-Json
     foreach ($plugin in @($existing)) {
         foreach ($v in @($plugin.versions)) {
             if ($v -and $v.version -ne $version) { $previous += $v }
@@ -109,16 +121,18 @@ if (Test-Path $manifestPath) {
     }
 }
 
-$manifest = @([ordered]@{
+$package = [ordered]@{
     guid        = Get-Scalar 'guid'
     name        = Get-Scalar 'name'
     description = Get-Scalar 'description'
     overview    = Get-Scalar 'overview'
     owner       = Get-Scalar 'owner'
     category    = Get-Scalar 'category'
-    imageUrl    = Get-Scalar 'imageUrl'
-    versions    = @([PSCustomObject]$entry) + $previous
-})
+}
+if ($imageUrl) { $package['imageUrl'] = $imageUrl }
+$package['versions'] = @([PSCustomObject]$entry) + $previous
+
+$manifest = @($package)
 
 Write-Json $manifestPath $manifest -AsArray
 
@@ -138,7 +152,7 @@ if ($Publish) {
     # Always a prerelease. This fork ships alphas, and the manifest cannot say so itself.
     & gh release create "v$version" $zip `
         --repo $repoSlug `
-        --title "TVHeadend $version (alpha)" `
+        --title "TVHeadend EX $version (alpha)" `
         --notes-file $notes `
         --prerelease
     if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }

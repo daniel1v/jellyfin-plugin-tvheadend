@@ -117,17 +117,17 @@ Remove-Item $staging -Recurse -Force
 $meta = [ordered]@{
     category    = 'LiveTV'
     changelog   = "Local development build from $branch ($commit)."
-    description = 'Provides live TV using TVHeadend as the source.'
-    guid        = '3fd018e5-5e78-4e58-b280-a0c068febee0'
-    name        = 'TVHeadend'
-    overview    = 'Manage TVHeadend from Jellyfin'
-    owner       = 'jellyfin'
+    description = 'Provides live TV and recordings using TVHeadend as the source. An independent, unofficial plugin; not the TVHeadend plugin published by the Jellyfin project.'
+    guid        = 'e55d13e1-3874-40a5-ac05-1569c06767bc'
+    name        = 'TVHeadend EX'
+    overview    = 'Live TV and recordings from TVHeadend'
+    owner       = 'daniel1v'
     targetAbi   = '12.0.0.0'
     timestamp   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')
     version     = $version
     status      = 'Active'
     autoUpdate  = $false
-    imagePath   = (Join-Path $pluginDirectory 'jellyfin-plugin-tvheadend.png')
+    imagePath   = ''
     assemblies  = @()
 }
 
@@ -168,8 +168,8 @@ $session = Invoke-RestMethod -Uri 'http://127.0.0.1:8097/Users/AuthenticateByNam
 $plugins = Invoke-RestMethod -Uri 'http://127.0.0.1:8097/Plugins' `
     -Headers @{ Authorization = "$auth, Token=`"$($session.AccessToken)`"" } -TimeoutSec 30
 
-$plugin = $plugins | Where-Object { $_.Id -eq '3fd018e55e784e58b280a0c068febee0' }
-if (-not $plugin) { throw 'The server started but does not list the TVHeadend plugin.' }
-if ($plugin.Status -ne 'Active') { throw "The TVHeadend plugin is '$($plugin.Status)', not Active." }
+$plugin = $plugins | Where-Object { $_.Id -eq 'e55d13e1387440a5ac051569c06767bc' }
+if (-not $plugin) { throw 'The server started but does not list the TVHeadend EX plugin.' }
+if ($plugin.Status -ne 'Active') { throw "The TVHeadend EX plugin is '$($plugin.Status)', not Active." }
 
-Write-Host "TVHeadend $($plugin.Version) is Active on http://localhost:8097."
+Write-Host "TVHeadend EX $($plugin.Version) is Active on http://localhost:8097."

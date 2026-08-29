@@ -1,174 +1,128 @@
-<h1 align="center">Jellyfin TVHeadend Plugin</h1>
-<h3 align="center">An alpha fork of the <a href="https://github.com/jellyfin/jellyfin-plugin-tvheadend">Jellyfin project's plugin</a></h3>
+# TVHeadend EX
 
-<p align="center">
-<img alt="Plugin Banner" src="https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/plugins/SVG/jellyfin-plugin-tvheadend.svg?sanitize=true"/>
-<br/>
-<br/>
-<a href="https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases">
-<img alt="Latest alpha" src="https://img.shields.io/github/v/release/daniel1v/jellyfin-plugin-tvheadend?include_prereleases&amp;label=alpha"/>
-</a>
-<a href="https://github.com/daniel1v/jellyfin-plugin-tvheadend/blob/master/LICENSE">
-<img alt="MIT License" src="https://img.shields.io/github/license/daniel1v/jellyfin-plugin-tvheadend.svg"/>
-</a>
-</p>
+**An independent, unofficial TVHeadend integration for Jellyfin.**
 
-## About
+[![Latest alpha](https://img.shields.io/github/v/release/daniel1v/jellyfin-plugin-tvheadend?include_prereleases&label=alpha)](https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases)
+[![MIT License](https://img.shields.io/github/license/daniel1v/jellyfin-plugin-tvheadend.svg)](LICENSE)
 
-This plugin allows you to manage TVHeadend from Jellyfin.
+TVHeadend EX started life as a fork of the official
+[jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend) and has
+since gone its own way: its own playback architecture, its own release line, and — as of this
+version — its own plugin GUID, so it installs and updates as a plugin in its own right.
 
-**This is a fork, and it publishes alphas.** Live TV and recording delivery have been reworked so
-that both play on the official Jellyfin Android app; see [How live TV works](#how-live-tv-works)
-and [docs/live-tv-architecture.md](docs/live-tv-architecture.md) for what that changed and why.
-Releases are marked as GitHub prereleases and are not proven — read the changelog before
-installing one.
+It is **not** supported by, endorsed by, or affiliated with the Jellyfin project or the TVHeadend
+project. It is not an official successor to the plugin it came from.
 
-Add it to Jellyfin as a plugin repository:
+## Why TVHeadend EX
 
-```
-https://raw.githubusercontent.com/daniel1v/jellyfin-plugin-tvheadend/master/manifest.json
-```
+Live TV worked, in the sense that it usually started eventually and usually on one of your devices.
+The differences are mostly about the gap between "usually" and "reliably":
 
+- **Faster cold start.** Tuning a channel takes a couple of seconds rather than the best part of
+  ten.
+- **Direct play or a remux wherever possible.** The plugin describes the stream honestly enough
+  that Jellyfin can copy it through instead of re-encoding a broadcast it did not need to touch.
+- **The awkward DVB and Android cases handled on purpose.** Broadcasters that never send the frame
+  a phone waits for, streams a client will not accept as described — these are dealt with
+  deliberately rather than left to chance.
+- **Artwork that shows up.** Channel logos, programme images and recording artwork are fetched with
+  the credentials TVHeadend actually wants, and a guide entry or recording with no picture of its
+  own can fall back to its channel's logo. There is a switch if you would rather it did not.
+- **Recordings that play properly**, seeking included.
 
-## How live TV works
+If you want to know how any of that works, it is written down in [docs/architecture.md](docs/architecture.md).
 
-A live channel is one HTTP request. TVHeadend serves the broadcast through its `pass` profile —
-the original MPEG-TS, forwarded untouched — and that same stream is the only description of itself
-the plugin needs.
+## Project status
 
-The Program Map Table the broadcast carries is the table libavformat walks to decide what streams
-the file has and in what order, so reading it here is not a second opinion about the stream; it is
-the same source FFmpeg will use, read earlier. From it the plugin takes the stream order, what
-medium each stream carries, the codec, the language and the hearing-impaired flag.
+This is a personal hobby project, built first and foremost for the author's own Jellyfin and
+TVHeadend setup. Please take that at face value:
 
-The plugin then:
+- Every release is an **alpha**. They are marked as prereleases and they mean it.
+- There is no support commitment, no LTS, no promised maintenance window, no roadmap and no release
+  schedule.
+- There is no claim to cover every TVHeadend configuration, every tuner or every Jellyfin client.
+  Plenty of them have never been near this code.
 
-- conditions the transport stream only as far as safety requires — it drops the DVB EIT, waits for
-  a point a decoder can start at, and captures PAT/PMT so a viewer joining a channel already
-  running gets the tables it needs;
-- describes the result to Jellyfin as facts, leaving unknown fields unset.
+A significant part of the design, implementation and review here is done with **AI-assisted
+development tools**. That is worth saying plainly rather than hiding. There is a test suite, changes
+are reviewed, and decisions that cost something to get wrong are written down in the architecture
+notes — but none of that turns a hobby project into a professionally supported product, and it
+should not be mistaken for one.
 
-Resolution, frame rate, bit rate and codec profile are **not** established. None of them is in a
-PMT, none is needed for the playback decision, and an absent optional value is something Jellyfin
-handles — a wrong one is not.
+Bug reports and fixes are welcome. Guarantees are not on offer.
 
-**Jellyfin** then decides — from the device profile the client sent — whether to direct play, remux
-or transcode. The plugin expresses no opinion about clients, and offers exactly one media source per
-channel.
+## Tested setup
 
-There is no FFprobe in the live path, no second subscription, and no service or PID lookup.
+Regularly exercised against:
 
-### TVHeadend permissions
+- Jellyfin Android
+- Jellyfin Android TV
+- Jellyfin Web
+- mostly **German free-to-air DVB channels**
 
-An ordinary **streaming** account. Live TV touches no administrative API.
-
-Recordings additionally need whatever DVR rights the operations you use require.
-
-### Known Jellyfin issues
-
-- Jellyfin overwrites `IsInterlaced` to `true` on the video stream of **every** external live TV
-  service, in `LiveTvMediaSourceProvider.Normalize`, regardless of what the plugin reported. Device
-  profiles that key on interlacing may therefore choose transcoding unnecessarily. This is a server
-  bug and is deliberately **not** worked around here; a plugin-side hack would only hide it.
-
-For the details, see [docs/live-tv-architecture.md](docs/live-tv-architecture.md).
+That is the testing matrix, not a claim of coverage: not every German free-to-air channel is
+tested either. Other clients, countries, broadcasters and DVB or IPTV configurations may well work
+— several probably do — but they are not part of what gets checked before a release.
 
 ## Installation
 
-Add this fork as a plugin repository in Jellyfin under *Dashboard → Plugins → Repositories*:
+Requires Jellyfin 12 (`targetAbi` 12.0.0.0).
+
+Add this repository in Jellyfin under *Dashboard → Plugins → Repositories*:
 
 ```
 https://raw.githubusercontent.com/daniel1v/jellyfin-plugin-tvheadend/master/manifest.json
 ```
 
-TVHeadend then appears in the plugin catalogue. It carries the same plugin GUID as the official
-plugin, so it replaces rather than accompanies it — uninstall the official one first if it is
-present. Requires Jellyfin 12 (`targetAbi` 12.0.0.0).
+*TVHeadend EX* then appears in the plugin catalogue. Install it, restart Jellyfin, and configure it
+under *Dashboard → Plugins → TVHeadend EX*.
 
-For the general mechanics, [see the official documentation](https://jellyfin.org/docs/general/server/plugins/index.html#installing).
+**Upgrading from an earlier build of this fork.** Versions up to 14.0.0.3 shipped under the official
+TVHeadend plugin's GUID, so Jellyfin cannot see the new plugin as an update of the old one.
+Uninstall the old *TVHeadend* plugin first, then install *TVHeadend EX*. Your settings survive: they
+live in a configuration file named after the assembly, which did not change.
 
-## Build
+Both plugins also carry an assembly called `TVHeadEnd.dll`, and Jellyfin refuses to load two copies
+of the same assembly — so TVHeadend EX and the official plugin cannot be installed side by side on
+one server, even though they are now separate entries in the catalogue.
 
-1. To build this plugin you will need the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+For the general mechanics, [see the Jellyfin documentation](https://jellyfin.org/docs/general/server/plugins/index.html#installing).
 
-2. Build the plugin with the following command:
+## TVHeadend permissions
 
-  ```sh
-  dotnet publish TVHeadEnd/TVHeadEnd.csproj --configuration Release --output bin
-  ```
+An ordinary **streaming** account is enough for live TV. Nothing here touches an administrative API.
 
-3. Place `bin/TVHeadEnd.dll` in the `plugins/tvheadend` folder (you might need to create the folders) of your Jellyfin install.
+Recordings additionally need whatever DVR rights the operations you use require.
 
-## Development
+## Origin and credits
 
-The build enforces the shared Jellyfin analyzer set (StyleCop, .NET code analysis, SerilogAnalyzer and MultithreadingAnalyzer) with `TreatWarningsAsErrors`, so warnings fail the build.
-Before pushing, check formatting and analyzer compliance:
+TVHeadend EX exists because of the official
+[jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend), which
+is the foundation this was built on and remains the work of the Jellyfin project and its
+contributors. Thank you.
 
-```sh
-dotnet format TVHeadEnd.slnx --verify-no-changes
-dotnet build TVHeadEnd.slnx -c Release
-```
+It is now developed and released independently, and it is a different plugin, not a newer version of
+that one. Two things follow from that:
 
-`dotnet format TVHeadEnd.slnx` (without the flag) applies the fixes it can automatically.
+- **Do not report TVHeadend EX problems to the official plugin's maintainers.** They did not write
+  this and cannot fix it. Report them [here](https://github.com/daniel1v/jellyfin-plugin-tvheadend/issues).
+- Jellyfin and TVHeadend are independent projects and carry no responsibility for TVHeadend EX.
 
-## Releasing
-
-Upstream publishes through the Jellyfin project's own infrastructure, which a fork cannot use, so
-this repository packages and publishes itself. Bump the version in `build.yaml` and
-`Directory.Build.props`, describe the release in the `changelog` block of `build.yaml`, then:
-
-```powershell
-& .\tools\release.ps1 -Publish
-git commit -am "Publish 14.0.0.0" && git push
-```
-
-`-Publish` creates the GitHub release as well as the package. Without it the script only leaves the
-zip in `dist/` and updates `manifest.json`, which is what you want when checking what a release would
-contain.
-
-`tools/release.ps1` takes every package detail from `build.yaml`, so the zip, the `meta.json` inside
-it and the `manifest.json` entry cannot drift apart. The checksum Jellyfin verifies is the MD5 of the
-zip, which is why the manifest is written after the zip is final — and why the script uploads exactly
-the file it produced rather than leaving that to be done by hand. Upstream's route via
-[JPRM](https://github.com/oddstr13/jellyfin-plugin-repository-manager) remains an alternative.
-
-### Alpha releases
-
-Release notes are written for the person installing the plugin, not for the person who wrote it:
-what changed for them, what they have to do, a few short paragraphs. Being funny is fine. Internal
-mechanics belong in the commit message and in the architecture notes, which stay as thorough as
-they are.
-
-Every release this fork makes is an alpha, and the script marks it as a GitHub prerelease itself
-rather than leaving the flag to be remembered. That flag, the plugin name and the release title are
-the only places the word can appear: Jellyfin parses a manifest version with `Version.Parse`, so a
-version cannot carry a `-alpha` suffix. Use the fourth component for the alpha number.
-
-Alphas accumulate. A published one stays published when the next supersedes it, and a defect found
-in one afterwards is not a reason to remove it — being unproven is what the label already says. Each
-release adds an entry to `manifest.json` alongside the ones before it, which the script does on its
-own.
-
-The exception was a one-off: everything up to and including 14.0.0.0 was withdrawn when the alpha
-line started, because each of those was broken in a way only found after publishing and none was
-worth installing. The tags remain, so nothing is lost from the history; only the downloads are gone.
-That was a clean slate, not a policy.
-
-
+If your issue is with the official plugin rather than this one, it belongs
+[upstream](https://github.com/jellyfin/jellyfin-plugin-tvheadend), under the Jellyfin project's
+[contributing guidelines](https://github.com/jellyfin/.github/blob/master/CONTRIBUTING.md).
 
 ## Contributing
 
-This is a personal fork. Anything that is not about the changes described above belongs upstream,
-at [jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend),
-under the Jellyfin project's
-[contributing guidelines](https://github.com/jellyfin/.github/blob/master/CONTRIBUTING.md) — the
-plugin is theirs and fixes are worth more there.
+Issues and pull requests about TVHeadend EX are welcome here. Before touching the live TV or
+recording path, read [docs/architecture.md](docs/architecture.md) first: most of it records a
+measurement or a failure that a reasonable-looking change would reintroduce.
 
-Issues about what this fork changed are welcome here. If you are working on the live TV or
-recording path, read [docs/live-tv-architecture.md](docs/live-tv-architecture.md) first: most of
-it records a measurement or a failure that a reasonable-looking change would reintroduce.
+## Development
 
+Build, test and release instructions live in [docs/development.md](docs/development.md).
+How the plugin works lives in [docs/architecture.md](docs/architecture.md).
 
 ## Licence
 
-This plugins code and packages are distributed under the MIT License. See [LICENSE](./LICENSE) for more information.
+MIT. See [LICENSE](LICENSE).
