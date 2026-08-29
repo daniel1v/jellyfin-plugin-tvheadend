@@ -165,6 +165,30 @@ namespace TVHeadEnd
         public float? CommunityRating { get; set; }
 
         /// <summary>
+        /// Gets or sets which season of its series the recording belongs to.
+        /// </summary>
+        /// <remarks>
+        /// What the broadcast said, and nothing where it said nothing. Together with
+        /// <see cref="EpisodeNumber"/> this is also what makes a recording a series entry when the
+        /// broadcast carried no episode title -- see <see cref="IsSeries"/>.
+        /// </remarks>
+        public int? SeasonNumber { get; set; }
+
+        /// <summary>
+        /// Gets or sets which episode of its season the recording is.
+        /// </summary>
+        public int? EpisodeNumber { get; set; }
+
+        /// <summary>
+        /// Gets or sets the year the recorded programme was made.
+        /// </summary>
+        /// <remarks>
+        /// The broadcast's own copyright year. Never the year it was recorded in, which is a
+        /// different fact about a different thing.
+        /// </remarks>
+        public int? ProductionYear { get; set; }
+
+        /// <summary>
         /// Gets or sets supply the image path if it can be accessed directly from the file system.
         /// </summary>
         /// <value>The image path.</value>

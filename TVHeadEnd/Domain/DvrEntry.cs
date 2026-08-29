@@ -76,6 +76,45 @@ public sealed record DvrEntry
     public string? Description { get; init; }
 
     /// <summary>
+    /// Gets which season of its series the recording belongs to, where the broadcast said.
+    /// </summary>
+    public int? SeasonNumber { get; init; }
+
+    /// <summary>
+    /// Gets which episode of its season the recording is, where the broadcast said.
+    /// </summary>
+    public int? EpisodeNumber { get; init; }
+
+    /// <summary>
+    /// Gets how the broadcast wrote its own episode number, where it wrote one at all.
+    /// </summary>
+    /// <remarks>
+    /// TVHeadend sends this on a DVR entry as <c>episode</c> and on a guide event as
+    /// <c>episodeOnscreen</c> -- the same field of the same structure under two names. It is free
+    /// text, "S02E14" or "Folge 3", and it is what remains when the broadcast numbered its
+    /// episodes in a form nothing could parse into <see cref="SeasonNumber"/> and
+    /// <see cref="EpisodeNumber"/>. Kept because it is evidence that a recording is an episode
+    /// even when the numbers are not there.
+    /// </remarks>
+    public string? EpisodeOnscreen { get; init; }
+
+    /// <summary>
+    /// Gets the year the recorded programme was made, where the broadcast stated one.
+    /// </summary>
+    public int? ProductionYear { get; init; }
+
+    /// <summary>
+    /// Gets the parental rating the broadcast carried, in the words the broadcaster used.
+    /// </summary>
+    /// <remarks>
+    /// Taken as text and not interpreted. TVHeadend has already resolved this from whichever
+    /// rating authority the broadcast named, and what it hands over is the label meant to be
+    /// shown -- converting a German FSK number into an American certificate, or the other way
+    /// round, would be this plugin inventing a claim about what a viewer may watch.
+    /// </remarks>
+    public string? RatingLabel { get; init; }
+
+    /// <summary>
     /// Gets when the recording is scheduled to start.
     /// </summary>
     public DateTime StartUtc { get; init; }
@@ -274,6 +313,16 @@ public sealed record DvrEntry
                 ?? message.GetString("summary")
                 ?? message.GetString("subtitle"),
 
+            // The same episode structure the guide sends, under the name TVHeadend gives it on a
+            // DVR entry: seasonNumber and episodeNumber are spelled alike, but the free-text form
+            // arrives as "episode" here and as "episodeOnscreen" on an event.
+            SeasonNumber = ReadPositive(message, "seasonNumber"),
+            EpisodeNumber = ReadPositive(message, "episodeNumber"),
+            EpisodeOnscreen = message.GetString("episode"),
+
+            ProductionYear = BroadcastProductionYear.FromCopyrightYear(message.GetInt32("copyrightYear")),
+            RatingLabel = message.GetString("ratingLabel"),
+
             StartUtc = ReadUnixTime(message, "start"),
             StopUtc = ReadUnixTime(message, "stop"),
 
@@ -329,6 +378,17 @@ public sealed record DvrEntry
             Priority = message.Contains("priority") ? updated.Priority : existing.Priority,
             ContentType = message.Contains("contentType") ? updated.ContentType : existing.ContentType,
 
+            // The metadata a recording is described by. TVHeadend sends a bare statistics update
+            // every few seconds while a recording runs -- bytes written, errors counted, and
+            // nothing else -- so a field taken from the update unconditionally would be erased
+            // within seconds of being learned, and the recording would go back to being a
+            // programme with no season, no episode, no year and no rating.
+            SeasonNumber = message.Contains("seasonNumber") ? updated.SeasonNumber : existing.SeasonNumber,
+            EpisodeNumber = message.Contains("episodeNumber") ? updated.EpisodeNumber : existing.EpisodeNumber,
+            EpisodeOnscreen = message.Contains("episode") ? updated.EpisodeOnscreen : existing.EpisodeOnscreen,
+            ProductionYear = message.Contains("copyrightYear") ? updated.ProductionYear : existing.ProductionYear,
+            RatingLabel = message.Contains("ratingLabel") ? updated.RatingLabel : existing.RatingLabel,
+
             // An update mentions the file list only when it changed, and a state change does not.
             // Replacing it unconditionally would empty it every time a recording moved on -- and
             // the move from recording to completed, the one update that settles a file's stop, is
@@ -359,6 +419,17 @@ public sealed record DvrEntry
 
     private static string? ReadId(HtspMessage message, string field)
         => message.GetInt32(field)?.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Reads a count TVHeadend states as an unsigned number, where it states a real one.
+    /// </summary>
+    /// <remarks>
+    /// Zero is how the server says "not known" for these -- it omits the field entirely in that
+    /// case, and a sender that does not is saying the same thing. Season zero and episode zero
+    /// would both be published as real numbers otherwise.
+    /// </remarks>
+    private static int? ReadPositive(HtspMessage message, string field)
+        => message.GetInt32(field) is { } value && value > 0 ? value : null;
 
     /// <summary>
     /// Reads the <c>files</c> list, keeping the server's order and every entry in it.

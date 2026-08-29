@@ -86,7 +86,8 @@ public sealed class ChannelCatalog
                 message.GetString("channelName") ?? existing?.Name,
                 number,
                 message.GetString("channelIcon") ?? existing?.Icon,
-                ReadServiceType(message) ?? existing?.ServiceType);
+                ReadServiceType(message) ?? existing?.ServiceType,
+                ReadTagIds(message) ?? existing?.TagIds ?? []);
         }
     }
 
@@ -155,9 +156,17 @@ public sealed class ChannelCatalog
     /// <summary>
     /// Describes the channels for Jellyfin.
     /// </summary>
+    /// <remarks>
+    /// The tag catalogue is passed in rather than held, so that neither catalogue has to know the
+    /// other exists. Names are looked up here, at the moment the description is built, which is
+    /// what makes a tag renamed on the server show its new name without any channel being touched.
+    /// </remarks>
+    /// <param name="tags">The channel tags, for naming the ones each channel references.</param>
     /// <returns>The channels Jellyfin should offer.</returns>
-    public IReadOnlyList<ChannelInfo> ToChannelInfos()
+    public IReadOnlyList<ChannelInfo> ToChannelInfos(ChannelTagCatalog tags)
     {
+        ArgumentNullException.ThrowIfNull(tags);
+
         List<TvheadendChannel> snapshot;
         lock (_gate)
         {
@@ -187,6 +196,13 @@ public sealed class ChannelCatalog
                 IsHD = channel.ServiceType is not null
                     && !string.Equals(channel.ServiceType, "sdtv", StringComparison.OrdinalIgnoreCase)
                     && type == ChannelType.TV,
+
+                // The server's own grouping of its channels, passed on as the server states it.
+                // Nothing is added here from the service type, the channel kind or the name --
+                // those are already published as what they are, and a tag invented from one would
+                // be this plugin putting words in the server's mouth.
+                Tags = [.. tags.Resolve(channel.TagIds)],
+
                 ImagePath = string.Empty,
             });
         }
@@ -225,5 +241,40 @@ public sealed class ChannelCatalog
     {
         var services = message.GetMapList("services");
         return services.Count == 0 ? null : services[0].GetString("type");
+    }
+
+    /// <summary>
+    /// Reads the tags the message states, or nothing at all where it states none.
+    /// </summary>
+    /// <remarks>
+    /// The distinction between "no tags" and "nothing said about tags" is the whole point. An
+    /// update that changes only a channel's name carries no <c>tags</c> field, and reading that as
+    /// an empty list would strip every channel of its groups the first time one was renamed. A
+    /// message that does carry the field replaces what was there, empty list included, because
+    /// that is the server saying the channel is now in no tags at all.
+    /// </remarks>
+    private static IReadOnlyList<int>? ReadTagIds(HtspMessage message)
+    {
+        if (!message.Contains("tags"))
+        {
+            return null;
+        }
+
+        var tags = message.GetInt64List("tags");
+        if (tags.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = new List<int>(tags.Count);
+        foreach (var tag in tags)
+        {
+            if (tag is >= int.MinValue and <= int.MaxValue)
+            {
+                ids.Add((int)tag);
+            }
+        }
+
+        return ids;
     }
 }

@@ -175,6 +175,27 @@ public sealed class HtspMessage
     }
 
     /// <summary>
+    /// Sets a list field of strings, the shape the server sends <c>category</c> and
+    /// <c>keyword</c> in.
+    /// </summary>
+    /// <remarks>
+    /// The client has nothing to send this way; it is here so the type can state a list of
+    /// strings at all, which is what lets a reader of one be tested against a message this
+    /// library built rather than against a hand-assembled field dictionary.
+    /// </remarks>
+    /// <param name="name">The field name.</param>
+    /// <param name="values">The values.</param>
+    /// <returns>This message, so calls can be chained.</returns>
+    public HtspMessage Set(string name, IEnumerable<string> values)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentNullException.ThrowIfNull(values);
+
+        _fields[name] = values.Select(value => (object)value).ToList();
+        return this;
+    }
+
+    /// <summary>
     /// Removes a field.
     /// </summary>
     /// <param name="name">The field name.</param>
@@ -258,6 +279,26 @@ public sealed class HtspMessage
         }
 
         return [.. list.OfType<long>()];
+    }
+
+    /// <summary>
+    /// Gets a list field as the strings it contains, skipping any element that is not one.
+    /// </summary>
+    /// <remarks>
+    /// The shape TVHeadend's <c>string_list_serialize</c> writes: a list whose elements are
+    /// unnamed strings. Its categories and keywords arrive this way. Channel tags do not -- those
+    /// are a list of integers and belong to <see cref="GetInt64List"/>.
+    /// </remarks>
+    /// <param name="name">The field name.</param>
+    /// <returns>The strings, empty when the field is absent or not a list.</returns>
+    public IReadOnlyList<string> GetStringList(string name)
+    {
+        if (!_fields.TryGetValue(name, out var value) || value is not IReadOnlyList<object> list)
+        {
+            return [];
+        }
+
+        return [.. list.OfType<string>()];
     }
 
     /// <summary>

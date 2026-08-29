@@ -334,6 +334,94 @@ Only the playlists, too. Segment requests are not adjusted: by the time one is f
 naming it has already been released. Radio takes Jellyfin's audio route and is left alone, because
 the nine seconds being cut here is the wait for video segments.
 
+## What a broadcast says about itself
+
+Everything below is a field TVHeadend already sends. None of it is fetched from anywhere else, and
+none of it is inferred from a field that happens to be nearby.
+
+| HTSP field | Where it goes | Note |
+| --- | --- | --- |
+| `serieslinkUri` | `ProgramInfo.SeriesId` | which broadcasts belong together |
+| `episodeUri` | `ProgramInfo.ShowId` | which programme this one is |
+| `seasonNumber`, `episodeNumber` | season and episode | zero means "not known" and is dropped |
+| `copyrightYear` | `ProductionYear` | never taken from the start time or `firstAired` |
+| `ratingLabel` | `OfficialRating` | the broadcaster's own words, never converted |
+| `starRating` | `CommunityRating` | a percentage — see below |
+| `isNew` | `IsPremiere` | never inferred from a missing field |
+| `category[]` | `Genres` | the broadcaster's own words |
+| `contentType` | `Genres`, and the movie/sport/news/kids flags | the DVB table |
+| `episode` (DVR) / `episodeOnscreen` (EPG) | series evidence | the same field under two names |
+
+**`starRating` is not a number of stars.** The only thing in TVHeadend that produces one is its
+XMLTV grabber, which parses "3.3/5" and stores `(100 × 3.3) / 5` — 66 — in a byte. Jellyfin's
+community rating is what clients render as "x out of ten". So it is divided by ten, in one place,
+and a value above 100 is dropped rather than clamped: the percentage reading no longer holds there
+and there is nothing else the number could be.
+
+**Genres come from both accounts and neither wins.** The content descriptor is a byte from a fixed
+table and is the same everywhere; the free text is whatever the broadcaster wrote, in the
+broadcaster's own language. "Krimi" and "Detective" are both true of the same programme, so both
+are published — the broadcaster's words first, duplicates dropped without regard to case. There is
+no table here translating one vocabulary into the other, because such a table would need
+maintaining per language and per broadcaster and would be wrong for the first channel nobody
+thought of. The DVB byte still decides the movie, sport, news and kids flags on its own: those are
+what the recordings channel groups by, and free text must not reach them.
+
+**The guide is asked in the viewer's language.** TVHeadend holds a broadcast's title, summary and
+description once per language it was given them in and picks between them per request, so
+`getEvents` carries Jellyfin's own `PreferredMetadataLanguage` as `language`. It resolves
+two-letter codes and strips a region, so "de" and "pt-BR" both arrive as something the server
+understands. Where Jellyfin has no preference the field is left out entirely and TVHeadend falls
+back to the language the connection authenticated with — better than anything this could invent,
+and "und" would ask for the one language that means "undetermined".
+
+**What makes a recording an episode.** Any one of: an episode title, a season number, an episode
+number, or the episode number written out. The episode title alone was too narrow — a German
+broadcast numbers its episodes far more often than it names them, so a series arrived as a shelf of
+unrelated films. The series rule that created a recording is deliberately *not* evidence: an
+autorec entry is a saved search, and a viewer may perfectly well save one for a keyword or a
+channel.
+
+**Where the metadata reaches, and where it does not.** Jellyfin's `ChannelManager` assigns most of
+what a channel item says — name, genres, index numbers, production year, ratings, overview — inside
+`if (isNew)`, and never re-reads it for an item that already exists. Forcing a save does not help:
+it stores the item as it stands, and those fields were never reassigned. So this metadata reaches
+recordings stored from now on, and the schema revision was deliberately **not** raised for it,
+because raising it would rewrite every existing recording once and deliver nothing. The few fields
+`ChannelManager` does re-read — `SeriesName`, `ExternalId`, `RunTimeTicks`, and the media sources —
+reach existing recordings on their own.
+
+## Channel tags
+
+TVHeadend groups its own channels, and the grouping is two things on the wire: a `tagAdd` carrying
+`tagId` and `tagName`, and a `channelAdd` carrying `tags`, a list of the numbers it is in.
+
+```
+tagAdd / tagUpdate / tagDelete          channelAdd / channelUpdate
+            ↓                                      ↓
+     ChannelTagCatalog                        TagIds on the channel
+            └──────────────┬───────────────────────┘
+                    ToChannelInfos(tags)
+                           ↓
+                    ChannelInfo.Tags
+```
+
+They are kept apart, which is the whole design. A tag's name lives once; a channel keeps only the
+number. So renaming "TV channels" on the server renames it for all hundred and thirty channels at
+the next listing, and not one channel record is rewritten to make that true. The names are resolved
+where the two are put together, so neither catalogue holds a reference to the other.
+
+A tag nobody announced is left out rather than shown as its number, an unnamed one is left out, and
+two tags that read the same are one label. Nothing is invented from the service type, the channel
+kind or the name: those are already published as what they are.
+
+The partial-update rule applies here as everywhere. A `channelUpdate` that changes only the name
+carries no `tags` field, and reading that as "no tags" would strip every channel of its groups the
+first time one was renamed — so a missing field keeps what was there and a present one replaces it,
+empty list included. The same for a tag: TVHeadend sends every tag twice during the initial sync,
+the second time carrying the member list and nothing else, so a name is never taken from a message
+that does not have one.
+
 ## Artwork
 
 Three kinds — a channel logo, an EPG programme image, a recording's poster — and one problem

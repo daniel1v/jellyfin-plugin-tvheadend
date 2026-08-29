@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
@@ -67,7 +68,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         TvheadendConnection connection,
         ILibraryManager libraryManager,
         IHttpClientFactory httpClientFactory,
-        IConfigurationManager configurationManager,
+        IServerConfigurationManager configurationManager,
         IServerApplicationHost applicationHost,
         IHttpContextAccessor httpContextAccessor,
         OpenLiveStreams openStreams)
@@ -94,7 +95,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             bufferDirectory,
             _logger);
         _dvr = new TvheadendDvr(connection, _logger);
-        _guide = new TvheadendGuide(connection, _artwork, _logger);
+        _guide = new TvheadendGuide(connection, _artwork, configurationManager, _logger);
     }
 
     /// <inheritdoc />
@@ -115,7 +116,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
 
         _connection.Channels.SetTypeForOther(_connection.Settings.ChannelTypeForOther);
-        var channels = _connection.Channels.ToChannelInfos();
+        var channels = _connection.Channels.ToChannelInfos(_connection.ChannelTags);
         var endpoint = _connection.HttpEndpoint;
 
         foreach (var channel in channels)

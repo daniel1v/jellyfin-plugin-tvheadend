@@ -39,9 +39,9 @@ namespace TVHeadEnd
         /// ChannelManager rewrites a stored channel item only when the item is new or when
         /// ChannelItemInfo.DateModified is strictly later than the date it stored. It compares no
         /// part of MediaSources, and DataVersion does not help either -- that only discards the
-        /// cached listing response, not the items already in the database. So an upgrade that
-        /// changes how a recording is described has no way to reach the recordings somebody
-        /// already has, and they keep whatever description the previous version gave them.
+        /// cached listing response, not the items already in the database. So a changed media
+        /// source has no way to reach the recordings somebody already has, and they keep whatever
+        /// the previous version gave them.
         /// </para>
         /// <para>
         /// What reaches them is an offset added to the recording's own anchor, not a date of its
@@ -52,9 +52,21 @@ namespace TVHeadEnd
         /// measured from the recording rather than the calendar.
         /// </para>
         /// <para>
+        /// <strong>What it does not carry.</strong> Most of what a channel item says about the
+        /// programme -- the name, the genres, the index numbers, the production year, the official
+        /// and community ratings, the overview -- is assigned inside <c>if (isNew)</c> in
+        /// ChannelManager.GetChannelItemEntity and is never re-read for an item that already
+        /// exists. Forcing a save does not change that: it stores the item as it stands, and the
+        /// fields were never reassigned. So raising this for a change that only adds item metadata
+        /// would rewrite every recording once and deliver nothing, and it is deliberately not
+        /// raised for one. The few fields ChannelManager does re-read -- SeriesName, ExternalId,
+        /// RunTimeTicks, and the media sources -- reach existing recordings on their own, each
+        /// forcing the save itself when it differs.
+        /// </para>
+        /// <para>
         /// Counted in whole days, because one increment has to clear how far short of its booking
         /// a recording fell as well as the seconds earlier versions stepped in. Raise it by one per
-        /// change to the published shape.
+        /// change to the published <em>media source</em> shape.
         /// </para>
         /// </remarks>
         private const int MediaSourceSchemaRevision = 10;
@@ -372,10 +384,36 @@ namespace TVHeadEnd
         {
             _logger.LogDebug("[TVHclient] ConvertToChannelItem - Creating ChannelItemInfo");
 
+            return BuildChannelItem(item, RecordingMediaSourceId(_libraryManager, item));
+        }
+
+        /// <summary>
+        /// Describes one recording as the item Jellyfin stores for it.
+        /// </summary>
+        /// <param name="item">The recording.</param>
+        /// <param name="mediaSourceId">
+        /// The identifier the recording's media source is addressed by, which is the item's own --
+        /// see <see cref="RecordingMediaSourceId"/>.
+        /// </param>
+        /// <returns>The channel item.</returns>
+        internal static ChannelItemInfo BuildChannelItem(MyRecordingInfo item, string mediaSourceId)
+        {
+            ArgumentNullException.ThrowIfNull(item);
+
             var channelItem = new ChannelItemInfo
             {
+                // What to call it, and what it belongs to, are two questions. The episode title is
+                // the better name where there is one; the series name follows from whether this is
+                // an episode at all, which a broadcast can say by numbering it rather than naming
+                // it. Tying the series name to the episode title left a numbered episode of
+                // "Tatort" standing on its own, in a library that had every other episode of it.
                 Name = string.IsNullOrEmpty(item.EpisodeTitle) ? item.Name : item.EpisodeTitle,
-                SeriesName = !string.IsNullOrEmpty(item.EpisodeTitle) ? item.Name : null,
+                SeriesName = item.IsSeries ? item.Name : null,
+
+                IndexNumber = item.EpisodeNumber,
+                ParentIndexNumber = item.SeasonNumber,
+                ProductionYear = item.ProductionYear,
+
                 OfficialRating = item.OfficialRating,
                 CommunityRating = item.CommunityRating,
                 ContentType = ContentTypeFor(item),
@@ -394,13 +432,12 @@ namespace TVHeadEnd
                 // playback is negotiated. The Placeholder type is what tells Jellyfin this is
                 // not a description it should act on; GetPlaybackMediaSources checks for exactly
                 // that before it would otherwise force a remote probe of its own.
-                MediaSources = [BuildPlaceholderSource(item)],
+                MediaSources = [BuildPlaceholderSource(mediaSourceId)],
 
                 // Stated on the item, because the source deliberately carries nothing. Without a
                 // duration Jellyfin treats the recording as a stream of unknown length, which is
                 // exactly right while it is still being written and exactly wrong once it is not.
                 RunTimeTicks = Runtime(item),
-                // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,
                 DateCreated = item.StartDate,
                 // Two reasons the stored item can be out of date: the recording itself changed,

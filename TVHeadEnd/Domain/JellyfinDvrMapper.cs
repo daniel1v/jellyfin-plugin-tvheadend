@@ -134,6 +134,14 @@ namespace TVHeadEnd.Domain
                 // which for a recording cut short is a future that never arrived.
                 DateLastUpdated = entry.RecordedActivityUtc,
 
+                // What the broadcast said about the programme itself, carried across unaltered.
+                // None of it is filled in from something else where the broadcast said nothing:
+                // a missing season is a missing season, not season one.
+                SeasonNumber = entry.SeasonNumber,
+                EpisodeNumber = entry.EpisodeNumber,
+                ProductionYear = entry.ProductionYear,
+                OfficialRating = entry.RatingLabel,
+
                 // Left empty on purpose: a path here makes Jellyfin bypass this plugin and try to
                 // open a file that lives on the TVHeadend server, not on its own.
                 Path = string.Empty,
@@ -143,8 +151,9 @@ namespace TVHeadEnd.Domain
             if (!string.IsNullOrEmpty(entry.Subtitle))
             {
                 recording.EpisodeTitle = entry.Subtitle;
-                recording.IsSeries = true;
             }
+
+            recording.IsSeries = IsSeriesEntry(entry);
 
             // The same reading of the same byte the guide gives a programme. It was being thrown
             // away here, which is why the Movies, Sports, News and Kids folders of the recordings
@@ -167,6 +176,34 @@ namespace TVHeadEnd.Domain
 
             return recording;
         }
+
+        /// <summary>
+        /// Gets a value indicating whether the recording is an episode of something.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Every answer here is the broadcast's own statement about itself: an episode title, a
+        /// season number, an episode number, or the episode number written out in words. Any one
+        /// of them is a broadcaster saying "this is part of a series", and the episode title alone
+        /// was too narrow -- a German broadcast numbers its episodes far more often than it names
+        /// them, so a series with no episode titles arrived as a shelf of unrelated films.
+        /// </para>
+        /// <para>
+        /// The rule that is deliberately absent: the series rule that created the recording. An
+        /// autorec entry is a saved search, and a viewer may perfectly well save one for a title,
+        /// a keyword or a channel; treating everything it catches as a television series would
+        /// turn a standing search for "Tatort" and a standing search for "Fußball" into the same
+        /// claim. Nor is anything guessed from the title, the content type or how often a name
+        /// repeats -- those are patterns, not statements.
+        /// </para>
+        /// </remarks>
+        /// <param name="entry">The DVR entry.</param>
+        /// <returns>Whether the broadcast said this is part of a series.</returns>
+        internal static bool IsSeriesEntry(DvrEntry entry)
+            => !string.IsNullOrEmpty(entry.Subtitle)
+            || entry.SeasonNumber is not null
+            || entry.EpisodeNumber is not null
+            || !string.IsNullOrEmpty(entry.EpisodeOnscreen);
 
         /// <summary>
         /// Gets how long a recording actually runs, or nothing where that is not yet knowable.

@@ -79,6 +79,56 @@ public class HtspCodecTests
     }
 
     [Fact]
+    public void AListOfStringsKeepsItsOrder()
+    {
+        // The shape TVHeadend's string_list_serialize writes: unnamed strings in a list. Its
+        // categories and keywords arrive this way.
+        var decoded = RoundTrip(HtspMessage.Create("eventAdd").Set("category", ["Krimi", "Drama"]));
+
+        Assert.Equal(["Krimi", "Drama"], decoded.GetStringList("category"));
+    }
+
+    [Fact]
+    public void AStringListThatIsNotThereIsEmpty()
+    {
+        // Most events carry no categories at all -- measured on the live server, none of 5174 did.
+        // A missing field is an ordinary answer here and never an error.
+        Assert.Empty(HtspMessage.Create("eventAdd").GetStringList("category"));
+    }
+
+    [Fact]
+    public void AFieldThatIsNotAListIsNotReadAsOne()
+    {
+        Assert.Empty(HtspMessage.Create("eventAdd").Set("category", "Krimi").GetStringList("category"));
+        Assert.Empty(HtspMessage.Create("eventAdd").Set("category", 42).GetStringList("category"));
+    }
+
+    [Fact]
+    public void ElementsOfTheWrongTypeAreSkippedRatherThanFatal()
+    {
+        // A list is not typed on the wire, so nothing guarantees the elements are all strings.
+        // Reading what is readable is the same rule the other list getters follow.
+        var mixed = RoundTrip(HtspMessage.Create("eventAdd").Set(
+            "mixed",
+            [new HtspMessage().Set("a", 1)]));
+
+        Assert.Empty(mixed.GetStringList("mixed"));
+        Assert.Single(mixed.GetMapList("mixed"));
+    }
+
+    [Fact]
+    public void ChannelTagsAreIntegersAndAreReadAsIntegers()
+    {
+        // Not every list TVHeadend sends is strings. A channel's tags are the numbers of the tags
+        // it is in -- measured on the live server -- and reading them as strings would silently
+        // put every channel in no groups at all.
+        var decoded = RoundTrip(HtspMessage.Create("channelAdd").Set("tags", [1L, 2L]));
+
+        Assert.Equal([1, 2], decoded.GetInt64List("tags"));
+        Assert.Empty(decoded.GetStringList("tags"));
+    }
+
+    [Fact]
     public void BinaryFieldsSurviveUntouched()
     {
         // The authentication challenge is binary, and a digest taken over a mangled one fails

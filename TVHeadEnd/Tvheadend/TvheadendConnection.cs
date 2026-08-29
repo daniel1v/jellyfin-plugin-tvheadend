@@ -57,6 +57,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         Channels = new ChannelCatalog(loggerFactory.CreateLogger<ChannelCatalog>());
         Dvr = new DvrCatalog(loggerFactory.CreateLogger<DvrCatalog>());
         SeriesRules = new SeriesRuleCatalog(loggerFactory.CreateLogger<SeriesRuleCatalog>());
+        ChannelTags = new ChannelTagCatalog();
     }
 
     /// <summary>
@@ -73,6 +74,11 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// Gets the series rules TVHeadend has announced.
     /// </summary>
     public SeriesRuleCatalog SeriesRules { get; }
+
+    /// <summary>
+    /// Gets the channel tags TVHeadend has announced, which are its own grouping of its channels.
+    /// </summary>
+    public ChannelTagCatalog ChannelTags { get; }
 
     /// <summary>
     /// Gets the validated settings, reading them if this is the first ask.
@@ -384,6 +390,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         Channels.Clear();
         Dvr.Clear();
         SeriesRules.Clear();
+        ChannelTags.Clear();
 
         var session = new HtspSession(connection, settings, NormalizeWebRoot(connection.Hello?.WebRoot));
 
@@ -486,17 +493,30 @@ public sealed class TvheadendConnection : IAsyncDisposable
                 SeriesRules.Remove(message);
                 break;
 
+            // The server's own grouping of its channels. It sends these before the channels that
+            // reference them, and then a second round carrying the members it has worked out --
+            // which is why the catalogue merges rather than replaces.
+            case "tagAdd":
+            case "tagUpdate":
+                ChannelTags.AddOrUpdate(message);
+                break;
+
+            case "tagDelete":
+                ChannelTags.Remove(message);
+                break;
+
             case "initialSyncCompleted":
                 _logger.LogInformation(
-                    "TVHeadend finished its initial sync: {ChannelCount} channels, {DvrCount} DVR entries, {RuleCount} series rules",
+                    "TVHeadend finished its initial sync: {ChannelCount} channels, {TagCount} tags, {DvrCount} DVR entries, {RuleCount} series rules",
                     Channels.Count,
+                    ChannelTags.Count,
                     Dvr.Count,
                     SeriesRules.Count);
                 session.InitialSync.TrySetResult();
                 break;
 
             default:
-                // Tags, timerec entries and the EPG feed, none of which this plugin surfaces.
+                // Timerec entries and the EPG feed, neither of which this plugin surfaces.
                 break;
         }
     }
