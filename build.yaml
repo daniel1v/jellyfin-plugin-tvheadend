@@ -17,6 +17,22 @@ changelog: |-
   replacement for the official one, which means Jellyfin cannot update you into it: uninstall the
   old TVHeadend plugin, then install this one. Your settings are waiting for you on the other side.
 
+  Recordings play in the Android app again. It was asking the server for a recording under a name
+  the server had never heard of, getting an answer with nothing in it, and showing you a black
+  screen without a word of explanation. It now asks under the name Jellyfin itself gave the
+  recording.
+
+  And they bring their sound with them. A recording's audio tracks now arrive labelled the way a
+  live channel's always were, so your client can tell the German soundtrack from the audio
+  description and pick one it can actually decode -- instead of starting, playing nothing, and
+  stopping a second later.
+
+  Recordings from the stubborn channels play too. A few broadcasters, Das Erste among them, never
+  send the kind of frame Android's decoder refuses to start without, so their recordings were a
+  spinner that never resolved. Those are now re-encoded on the way out -- but only those, and only
+  for the clients that need it. Everything else, on every other device, is still handed to you
+  exactly as TVHeadend stored it.
+
   Recordings finally sort themselves out. Movies, Sports, News and Kids were empty folders in every
   version so far, because the plugin was reading what a recording is and then throwing it away. It
   no longer does, so a film lands with the films.
