@@ -65,7 +65,7 @@ namespace TVHeadEnd
         /// between here and the database. Raise it by one per change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 4;
+        private const int MediaSourceSchemaRevision = 5;
 
         /// <summary>
         /// The floor every recording's modification date is lifted to, unchanged since 13.2.x.
