@@ -63,7 +63,7 @@ namespace TVHeadEnd
         /// change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 7;
+        private const int MediaSourceSchemaRevision = 8;
 
         /// <summary>
         /// The floor every recording's modification date is lifted to.
@@ -741,10 +741,22 @@ namespace TVHeadEnd
         /// to play yet.
         /// </summary>
         /// <remarks>
-        /// It carries no streams, because the listing does not analyse and must not guess. Its
-        /// identifier is deliberately the TVHeadend one rather than a GUID: the identifier a
-        /// client comes back with has to be the described source, and keeping the two textually
-        /// distinct means a placeholder can never be mistaken for a description.
+        /// <para>
+        /// It carries no streams, because the listing does not analyse and must not guess. What
+        /// makes it a placeholder is <see cref="MediaSourceType.Placeholder"/> and nothing else:
+        /// it is the same source as the described one, in the state a listing can report it.
+        /// </para>
+        /// <para>
+        /// So it carries the same identifier, and that is the whole of the fix it once was the
+        /// bug in. It used to be given a second, textually distinct identifier, on the reasoning
+        /// that a placeholder should never be mistakable for a description. Jellyfin does not read
+        /// it that way. <c>MediaSourceManager.SortMediaSources</c> drops every placeholder before
+        /// playback is decided, and <c>MediaInfoHelper.GetPlaybackMediaSources</c> then keeps only
+        /// the source whose identifier the client sent back. A client that had stored the listing
+        /// therefore returned an identifier belonging to a source that no longer existed, the
+        /// described source was filtered out for not matching it, and playback failed with no
+        /// compatible stream before anything was ever opened.
+        /// </para>
         /// </remarks>
         /// <param name="id">The TVHeadend recording identifier.</param>
         /// <returns>The placeholder source.</returns>
@@ -754,7 +766,7 @@ namespace TVHeadEnd
 
             return new MediaSourceInfo
             {
-                Id = "tvheadend-recording-" + id,
+                Id = RecordingMediaSourceId(id),
                 Type = MediaSourceType.Placeholder,
                 Protocol = MediaProtocol.Http,
 
