@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using Tvheadend.Htsp.Protocol;
 
@@ -65,14 +66,29 @@ public sealed record DvrEntry
     public string? Description { get; init; }
 
     /// <summary>
-    /// Gets when the recording starts.
+    /// Gets when the recording is scheduled to start.
     /// </summary>
     public DateTime StartUtc { get; init; }
 
     /// <summary>
-    /// Gets when the recording stops.
+    /// Gets when the recording is scheduled to stop.
     /// </summary>
+    /// <remarks>
+    /// What was planned, not what happened. A recording stopped by hand ends before this, and
+    /// until it has, this is a time in the future -- see <see cref="Files"/> for the times of the
+    /// bytes that actually exist.
+    /// </remarks>
     public DateTime StopUtc { get; init; }
+
+    /// <summary>
+    /// Gets the files TVHeadend has written for this entry, in the order the server lists them.
+    /// </summary>
+    /// <remarks>
+    /// Empty for an entry that has not started, and for a server too old to send the list at all.
+    /// The order is the server's own and is kept, because which file is last is what decides
+    /// <see cref="PlayableFile"/>.
+    /// </remarks>
+    public IReadOnlyList<DvrRecordingFile> Files { get; init; } = [];
 
     /// <summary>
     /// Gets the padding before the scheduled start.
@@ -144,6 +160,71 @@ public sealed record DvrEntry
         Error is not null && Error.Contains("missing", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Gets the file a viewer actually gets, which is the last one.
+    /// </summary>
+    /// <remarks>
+    /// Not a choice this plugin makes. TVHeadend serves <c>/dvrfile/&lt;id&gt;</c> from the last
+    /// file of the entry, so describing anything else -- the first, or the several joined together
+    /// -- would describe something nobody can play. An entry split across several files is
+    /// therefore reported as its last part, and the parts before it are not offered at all.
+    /// </remarks>
+    public DvrRecordingFile? PlayableFile => Files.Count == 0 ? null : Files[^1];
+
+    /// <summary>
+    /// Gets how long the file a viewer gets actually runs.
+    /// </summary>
+    /// <remarks>
+    /// <see langword="null"/> while the recording is still being written, and where the server
+    /// gave no usable times for it.
+    /// </remarks>
+    public TimeSpan? RecordedDuration => PlayableFile?.Duration;
+
+    /// <summary>
+    /// Gets how long the recording was scheduled to run.
+    /// </summary>
+    public TimeSpan? ScheduledDuration => StopUtc > StartUtc ? StopUtc - StartUtc : null;
+
+    /// <summary>
+    /// Gets the latest moment this entry is known to have really reached.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Used as the recording's modification date, which Jellyfin compares against what it stored
+    /// to decide whether to rewrite the item. It has to be real and it has to only ever rise.
+    /// </para>
+    /// <para>
+    /// The scheduled stop is neither. For a recording still running it is in the future, and for
+    /// one stopped early it is a future that never happened -- so an item was dated by something
+    /// that had not occurred, and a recording cut short claimed to have been modified after the
+    /// last time anything touched it. Only times that have actually passed are considered here:
+    /// the file's close, its start, and failing both the entry's own start, which for anything
+    /// with a file has been and gone.
+    /// </para>
+    /// </remarks>
+    public DateTime LastActivityUtc
+    {
+        get
+        {
+            var latest = StartUtc;
+
+            if (PlayableFile is { } file)
+            {
+                if (file.StartUtc is { } fileStart && fileStart > latest)
+                {
+                    latest = fileStart;
+                }
+
+                if (file.StopUtc is { } fileStop && fileStop > latest)
+                {
+                    latest = fileStop;
+                }
+            }
+
+            return latest;
+        }
+    }
+
+    /// <summary>
     /// Reads an entry from the HTSP message TVHeadend sent for it.
     /// </summary>
     /// <param name="message">The <c>dvrEntryAdd</c> or <c>dvrEntryUpdate</c> message.</param>
@@ -183,6 +264,7 @@ public sealed record DvrEntry
 
             Priority = message.GetInt32("priority"),
             ContentType = message.GetInt32("contentType"),
+            Files = ReadFiles(message),
             FilePath = message.GetString("path"),
             Url = message.GetString("url"),
             Error = message.GetString("error"),
@@ -227,6 +309,12 @@ public sealed record DvrEntry
             PostPadding = message.Contains("stopExtra") ? updated.PostPadding : existing.PostPadding,
             Priority = message.Contains("priority") ? updated.Priority : existing.Priority,
             ContentType = message.Contains("contentType") ? updated.ContentType : existing.ContentType,
+
+            // An update mentions the file list only when it changed, and a state change does not.
+            // Replacing it unconditionally would empty it every time a recording moved on -- and
+            // the move from recording to completed, the one update that settles a file's stop, is
+            // exactly when losing it would cost the real duration.
+            Files = message.Contains("files") ? updated.Files : existing.Files,
             FilePath = message.Contains("path") ? updated.FilePath : existing.FilePath,
             Url = message.Contains("url") ? updated.Url : existing.Url,
             Error = message.Contains("error") ? updated.Error : existing.Error,
@@ -252,6 +340,32 @@ public sealed record DvrEntry
 
     private static string? ReadId(HtspMessage message, string field)
         => message.GetInt32(field)?.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Reads the <c>files</c> list, keeping the server's order and every entry in it.
+    /// </summary>
+    /// <remarks>
+    /// A file the server described incompletely is kept rather than skipped. Which file is last is
+    /// what decides the one a viewer gets, so dropping one would silently make the entry describe
+    /// a part nobody is served; an incomplete file simply has no duration to offer, and the mapper
+    /// falls back from there.
+    /// </remarks>
+    private static IReadOnlyList<DvrRecordingFile> ReadFiles(HtspMessage message)
+    {
+        var files = message.GetMapList("files");
+        if (files.Count == 0)
+        {
+            return [];
+        }
+
+        var read = new List<DvrRecordingFile>(files.Count);
+        foreach (var file in files)
+        {
+            read.Add(DvrRecordingFile.FromMessage(file));
+        }
+
+        return read;
+    }
 
     private static DateTime ReadUnixTime(HtspMessage message, string field)
     {

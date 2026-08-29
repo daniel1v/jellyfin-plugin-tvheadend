@@ -199,6 +199,21 @@ namespace TVHeadEnd
         public string? FanartReference { get; set; }
 
         /// <summary>
+        /// Gets or sets how long the recording actually runs, in ticks.
+        /// </summary>
+        /// <remarks>
+        /// Measured from the file TVHeadend serves, not from the times the recording was scheduled
+        /// for -- see <see cref="Domain.DvrEntry.PlayableFile"/>. <see langword="null"/> means the
+        /// length is not knowable yet, which is what a recording still being written is, and is
+        /// deliberately not the same as zero.
+        /// <para>
+        /// Stated once and read by both the listing and the media source, because two independent
+        /// answers to how long a recording is are two answers that can disagree.
+        /// </para>
+        /// </remarks>
+        public long? RunTimeTicks { get; set; }
+
+        /// <summary>
         /// Gets or sets the date last updated.
         /// </summary>
         /// <value>The date last updated.</value>

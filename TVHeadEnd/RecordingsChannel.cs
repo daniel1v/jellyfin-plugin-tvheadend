@@ -65,17 +65,30 @@ namespace TVHeadEnd
         /// between here and the database. Raise it by one per change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 5;
+        private const int MediaSourceSchemaRevision = 6;
 
         /// <summary>
-        /// The floor every recording's modification date is lifted to, unchanged since 13.2.x.
+        /// The floor every recording's modification date is lifted to.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// It exists so that a recording TVHeadend has not touched in years still carries a date
-        /// the schema revision can be counted from. It is not itself the revision and never moves
-        /// again; moving it would break the monotonicity of every stored date at once.
+        /// the schema revision can be counted from. It is not itself the revision, and it may only
+        /// ever move <em>forward</em>: raising it raises the published date of every recording
+        /// below it, which is what keeps those dates monotone; lowering it would drop them all at
+        /// once and freeze every stored item.
+        /// </para>
+        /// <para>
+        /// Moved from 2026-08-19 when the runtime and modification date stopped coming from the
+        /// scheduled times. The revision alone could not carry that change: it adds one second,
+        /// while a recording stopped an hour early now publishes a date an hour <em>earlier</em>
+        /// than the version before it published -- below what Jellyfin stored, so the item would
+        /// never be rewritten, and the recordings the correction exists for would be exactly the
+        /// ones that never received it. Lifting the floor past them puts every existing recording
+        /// above its stored date again.
+        /// </para>
         /// </remarks>
-        private static readonly DateTime MediaSourceDateFloorUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
+        private static readonly DateTime MediaSourceDateFloorUtc = new(2026, 8, 29, 0, 0, 0, DateTimeKind.Utc);
 
         /// <summary>
         /// Tells this run of the server apart from every other one.
@@ -355,8 +368,19 @@ namespace TVHeadEnd
             };
         }
 
-        private static long? Runtime(MyRecordingInfo recording)
-            => recording.EndDate > recording.StartDate ? (recording.EndDate - recording.StartDate).Ticks : null;
+        /// <summary>
+        /// How long a recording runs, as one answer for the listing and the media source alike.
+        /// </summary>
+        /// <remarks>
+        /// It used to be <c>EndDate - StartDate</c>, which is how long the recording was
+        /// <em>scheduled</em> for. A recording stopped by hand was published at its planned length,
+        /// so a client could seek into minutes that were never written. What is published now is
+        /// measured from the file TVHeadend actually serves, and is absent -- not zero, not the
+        /// plan -- while that file is still growing.
+        /// </remarks>
+        /// <param name="recording">The recording.</param>
+        /// <returns>The runtime in ticks, or <see langword="null"/> where it is not knowable.</returns>
+        internal static long? Runtime(MyRecordingInfo recording) => recording.RunTimeTicks;
 
         private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item)
         {
@@ -386,9 +410,9 @@ namespace TVHeadEnd
                 // that before it would otherwise force a remote probe of its own.
                 MediaSources = [BuildPlaceholderSource(item.Id ?? string.Empty)],
 
-                // Stated on the item, because the source deliberately carries nothing. TVHeadend
-                // knows how long it scheduled the recording for, and without a duration Jellyfin
-                // treats the recording as a stream of unknown length.
+                // Stated on the item, because the source deliberately carries nothing. Without a
+                // duration Jellyfin treats the recording as a stream of unknown length, which is
+                // exactly right while it is still being written and exactly wrong once it is not.
                 RunTimeTicks = Runtime(item),
                 // ParentIndexNumber = item.ParentIndexNumber,
                 PremiereDate = item.StartDate,

@@ -115,13 +115,24 @@ namespace TVHeadEnd.Domain
                 FanartReference = entry.FanartImage,
                 HasImage = !string.IsNullOrEmpty(entry.Image),
 
+                // How long the file a viewer actually gets runs, which is not how long the
+                // recording was scheduled for. A recording stopped by hand was being published
+                // with the duration nobody let it reach, so a client seeked into minutes that
+                // do not exist and every progress bar was wrong. Null while it is still being
+                // written: a growing file has no finished length, and inventing one is worse
+                // than saying nothing -- see RecordedRuntimeTicks.
+                RunTimeTicks = RecordedRuntimeTicks(entry),
+
                 // When this recording last became something different. Jellyfin re-saves a
                 // channel item -- and with it the description of what it contains -- only when
                 // the item is new or something it compares has changed, and the modification
-                // date is the only one of those a plugin controls. Left unset, as it was, it
-                // stays at DateTime.MinValue, is never greater than what Jellyfin stored, and
-                // the description of an existing recording can never be corrected.
-                DateLastUpdated = entry.StopUtc > entry.StartUtc ? entry.StopUtc : entry.StartUtc,
+                // date is the only one of those a plugin controls. Left unset it stays at
+                // DateTime.MinValue, is never greater than what Jellyfin stored, and the
+                // description of an existing recording can never be corrected.
+                //
+                // Taken from what has actually happened rather than from the scheduled stop,
+                // which for a recording cut short is a future that never arrived.
+                DateLastUpdated = entry.LastActivityUtc,
 
                 // Left empty on purpose: a path here makes Jellyfin bypass this plugin and try to
                 // open a file that lives on the TVHeadend server, not on its own.
@@ -155,6 +166,43 @@ namespace TVHeadEnd.Domain
             }
 
             return recording;
+        }
+
+        /// <summary>
+        /// Gets how long a recording actually runs, or nothing where that is not yet knowable.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The file TVHeadend serves is the one measured -- the last one of the entry, which is
+        /// what <c>/dvrfile/&lt;id&gt;</c> hands over.
+        /// </para>
+        /// <para>
+        /// A recording still being written has no answer, and the scheduled duration is not one:
+        /// stating it would tell a client the file already reaches an end it has not been written
+        /// to. Unknown length is what a growing file is, and it is what chase playback needs to be
+        /// told.
+        /// </para>
+        /// <para>
+        /// The scheduled duration is used only where the recording is over and the server offered
+        /// no usable file times -- an entry from before HTSP carried the file list, where the plan
+        /// is the only account of the recording there is.
+        /// </para>
+        /// </remarks>
+        /// <param name="entry">The DVR entry.</param>
+        /// <returns>The runtime in ticks, or <see langword="null"/>.</returns>
+        private static long? RecordedRuntimeTicks(DvrEntry entry)
+        {
+            if (entry.RecordedDuration is { } recorded)
+            {
+                return recorded.Ticks;
+            }
+
+            if (entry.State == DvrState.Recording)
+            {
+                return null;
+            }
+
+            return entry.ScheduledDuration?.Ticks;
         }
 
         private static RecordingStatus ToRecordingStatus(DvrState state) => state switch

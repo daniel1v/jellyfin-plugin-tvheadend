@@ -334,6 +334,34 @@ public class RecordingDeliveryTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ARecordingCutShortStillReceivesTheCorrectionMadeForIt()
+    {
+        // The awkward half of moving the modification date off the scheduled stop. Jellyfin
+        // rewrites a stored item only when the published date is later than the one it holds, and
+        // for a recording stopped an hour early the new date is an hour *earlier* than what the
+        // previous version published. The revision adds a second, which does not cover an hour --
+        // so without lifting the floor past those recordings, the ones the correction exists for
+        // would be exactly the ones that never got it.
+        var plannedStop = new DateTime(2026, 8, 25, 21, 45, 0, DateTimeKind.Utc);
+        var reallyStoppedAt = plannedStop.AddHours(-1);
+
+        // What the version before this one wrote into the database: the scheduled stop.
+        var stored = plannedStop.AddSeconds(SchemaRevision() - 1);
+
+        Assert.True(
+            RecordingsChannel.PublishedDateFor(reallyStoppedAt) > stored,
+            "A recording stopped early would keep its old, scheduled-length description.");
+    }
+
+    [Fact]
+    public void TheFloorOnlyEverMovesForward()
+    {
+        // Raising it raises every recording below it, which keeps those dates monotone. Lowering
+        // it would drop them all at once and freeze every stored item at whatever it says now.
+        Assert.True(DateFloor() >= new DateTime(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc));
+    }
+
     private static int SchemaRevision()
     {
         var field = typeof(RecordingsChannel).GetField(

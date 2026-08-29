@@ -170,7 +170,12 @@ public class DvrEntryTests
         var recording = JellyfinDvrMapper.ToRecording(entry);
 
         Assert.NotEqual(default, recording.DateLastUpdated);
-        Assert.Equal(entry.StopUtc, recording.DateLastUpdated);
+
+        // From what actually happened. This used to be the scheduled stop, which for a recording
+        // cut short is a future that never arrived -- see RecordingRuntimeTests. With no files
+        // announced, the entry's own start is the only real time there is.
+        Assert.Equal(entry.LastActivityUtc, recording.DateLastUpdated);
+        Assert.NotEqual(entry.StopUtc, recording.DateLastUpdated);
     }
     [Fact]
     public void ArtworkTheServerSentIsKept()
