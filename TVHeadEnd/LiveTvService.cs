@@ -269,7 +269,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     public async Task<IEnumerable<SeriesTimerInfo>> GetSeriesTimersAsync(CancellationToken cancellationToken)
     {
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
-        return _connection.SeriesRules.ToSeriesTimers();
+        return _connection.SeriesRules.ToSeriesTimers(
+            await _connection.GetServerOffsetAsync(cancellationToken).ConfigureAwait(false));
     }
 
     /// <inheritdoc />
@@ -278,6 +279,12 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         {
             PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
             PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
+
+            // The configured default, and the only place it belongs. A series rule is written
+            // with the priority it carries, so that editing one does not reset it -- which means
+            // a new one has to arrive here already carrying the default rather than picking it up
+            // at the moment it is written. LiveTvManager copies this onto every timer it creates.
+            Priority = _connection.Settings.Priority,
             RecordAnyChannel = true,
             RecordAnyTime = true,
             RecordNewOnly = false,

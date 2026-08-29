@@ -133,11 +133,7 @@ public sealed class TvheadendGuide
                 ?? entry.GetString("subtitle"),
         };
 
-        if (entry.GetString("subtitle") is { Length: > 0 } episodeTitle)
-        {
-            program.EpisodeTitle = episodeTitle;
-            program.IsSeries = true;
-        }
+        ApplySeriesFacts(program, entry.GetString("subtitle"));
 
         if (entry.GetInt64("firstAired") is { } firstAired)
         {
@@ -177,5 +173,33 @@ public sealed class TvheadendGuide
         }
 
         return program;
+    }
+
+    /// <summary>
+    /// Says whether a programme belongs to a series, and what it is called within it.
+    /// </summary>
+    /// <remarks>
+    /// Two independent facts, and neither stands in for the other. This used to make a programme
+    /// a series only when it carried an episode title, so an episode without one -- which on DVB
+    /// is common -- was offered as a one-off, and the series link the server had already sent went
+    /// unused. The link is TVHeadend saying in its own words that these broadcasts belong
+    /// together, and it is what a series recording is bound to.
+    /// </remarks>
+    /// <param name="program">The programme, with its series identifier already read.</param>
+    /// <param name="subtitle">The episode title the broadcast carried, if any.</param>
+    internal static void ApplySeriesFacts(ProgramInfo program, string? subtitle)
+    {
+        ArgumentNullException.ThrowIfNull(program);
+
+        if (!string.IsNullOrEmpty(subtitle))
+        {
+            program.EpisodeTitle = subtitle;
+            program.IsSeries = true;
+        }
+
+        if (!string.IsNullOrEmpty(program.SeriesId))
+        {
+            program.IsSeries = true;
+        }
     }
 }

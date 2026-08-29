@@ -502,6 +502,45 @@ a demuxer either.
 
 
 
+## Series rules
+
+A Jellyfin series timer is a TVHeadend autorec entry, and the two models do not line up. What
+survives a read, an edit and a write back is the part they genuinely agree on: the series link,
+the channel binding, the days of the week, the start window, the padding, the priority, how many
+recordings are kept, and — where TVHeadend is set to one of the two broadcast types Jellyfin has a
+word for — whether only new broadcasts count.
+
+A new rule is bound to **TVHeadend's own series link** whenever the guide supplied one, because
+that is what the server matches on first. The title travels with it as a readable name and as the
+fallback the server uses when there is no link. TVHeadend reads that title as a **regular
+expression**, so it is escaped: a full stop in `S.W.A.T.` otherwise matches any character, and a
+bracket is a syntax error rather than a bracket. The match stays a substring match, as it always
+was; escaping makes a title mean itself, it does not anchor it.
+
+Jellyfin's series timer DTO carries no series identifier, so an edit comes back without one. The
+link is therefore read from the catalog's copy of the rule rather than from what Jellyfin returned,
+along with everything else the editor never showed. The same catalog copy is why a broadcast type
+TVHeadend supports and Jellyfin cannot name is left out of an update instead of being reset.
+
+Three fields are deliberately **not** mapped. `retention` is how long a finished recording is kept,
+not when a rule stops applying, so it is no longer reported as the timer's end date. `KeepUntil`
+and `SkipEpisodesInLibrary` describe what Jellyfin does with its own library and have no
+counterpart on the server. Nothing is invented for them.
+
+### The server's clock, and the one thing HTSP will not say
+
+An autorec start window is minutes from midnight **on the TVHeadend server's clock**. Reading them
+as UTC is right only for a server at UTC, and reading them in Jellyfin's own time zone is right
+only when the two machines share one — a container in UTC beside a server in Berlin moved every
+rule by two hours.
+
+`getSysTime` answers with `gmtoffset`, the minutes east of GMT the server is at, and that is what
+the conversion uses. It is asked once per connection.
+
+It is an offset, not a time zone, and HTSP offers nothing better. A rule read before a daylight
+saving change and written back after it moves by the hour that changed. Guessing a zone from an
+offset would be a guess; this is the protocol's limit, stated rather than papered over.
+
 ## Known external issues
 
 `LiveTvMediaSourceProvider.Normalize` in Jellyfin overwrites `IsInterlaced` to `true` on the video

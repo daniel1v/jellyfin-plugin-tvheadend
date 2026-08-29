@@ -127,6 +127,80 @@ public sealed class TvheadendConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Gets how far the TVHeadend server's own clock is from UTC.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Needed for one thing only: an autorec entry states its start window as minutes from
+    /// midnight on the <em>server's</em> clock. Reading those with this process's own time zone
+    /// is wrong whenever Jellyfin and TVHeadend are not in the same one -- a container running in
+    /// UTC beside a server in Berlin moved every rule by two hours -- and reading them as UTC, as
+    /// this did, is wrong whenever the server is not.
+    /// </para>
+    /// <para>
+    /// <c>getSysTime</c> answers with <c>gmtoffset</c>, the minutes east of GMT the server is
+    /// currently at. That is an offset and not a time zone: it is correct now, and it is the only
+    /// thing the protocol offers. A rule read before a daylight saving change and written back
+    /// after it will move by the hour that changed, and there is nothing here that could know
+    /// better -- HTSP never names the zone. Asked once per connection, because a reconnection is
+    /// the natural moment to ask again and nothing else would notice the change anyway.
+    /// </para>
+    /// </remarks>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The offset from UTC.</returns>
+    public async Task<TimeSpan> GetServerOffsetAsync(CancellationToken cancellationToken)
+    {
+        var session = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (session.ServerOffset is { } known)
+        {
+            return known;
+        }
+
+        try
+        {
+            var reply = await session.Connection
+                .SendRequestAsync(HtspMessage.Create("getSysTime"), cancellationToken)
+                .ConfigureAwait(false);
+
+            var offset = ReadServerOffset(reply);
+            session.ServerOffset = offset;
+            return offset;
+        }
+        catch (HtspException exception)
+        {
+            // A server that will not say. UTC is the same assumption as before this existed, and
+            // a series rule read an hour out is better than one that cannot be read at all.
+            _logger.LogWarning(exception, "TVHeadend would not report its clock; assuming UTC");
+            session.ServerOffset = TimeSpan.Zero;
+            return TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>
+    /// Reads the server's offset from a <c>getSysTime</c> reply.
+    /// </summary>
+    /// <remarks>
+    /// <c>gmtoffset</c> is minutes east of GMT. A server that does not send it is taken to be at
+    /// UTC, which is what this plugin assumed of every server before it asked.
+    /// </remarks>
+    /// <param name="reply">The reply.</param>
+    /// <returns>The offset from UTC.</returns>
+    internal static TimeSpan ReadServerOffset(HtspMessage reply)
+    {
+        ArgumentNullException.ThrowIfNull(reply);
+
+        if (reply.GetInt32("gmtoffset") is not { } minutes)
+        {
+            return TimeSpan.Zero;
+        }
+
+        // Beyond a day either way is not an offset any clock has, so it is a field this reply
+        // means something else by.
+        return minutes is > -1440 and < 1440 ? TimeSpan.FromMinutes(minutes) : TimeSpan.Zero;
+    }
+
+    /// <summary>
     /// Sends a request, connecting first if necessary.
     /// </summary>
     /// <param name="request">The request.</param>
@@ -488,6 +562,16 @@ public sealed class TvheadendConnection : IAsyncDisposable
         internal TvheadendHttpEndpoint Endpoint { get; }
 
         internal TaskCompletionSource InitialSync { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>
+        /// Gets or sets how far this server's clock is from UTC, once it has been asked.
+        /// </summary>
+        /// <remarks>
+        /// On the session rather than the connection object, so that a reconnection asks again --
+        /// which is also the only moment a change of server, or of the server's offset, could
+        /// matter.
+        /// </remarks>
+        internal TimeSpan? ServerOffset { get; set; }
 
         /// <summary>
         /// Gets a value indicating whether this session has been superseded by a configuration

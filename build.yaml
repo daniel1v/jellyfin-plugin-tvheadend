@@ -29,6 +29,13 @@ changelog: |-
   seeking into them found nothing. The length now comes from the file itself. One that is still
   recording no longer claims a finished length at all, which is what it is.
 
+  Series recordings know what a series is. A new one is tied to the link TVHeadend itself uses to
+  connect the episodes, so it follows the programme rather than hunting for its title — and a
+  title with a full stop or a bracket in it no longer quietly matches half the schedule. Rules you
+  already had are read properly at last: the right days, the right time of day on the server's own
+  clock, and the settings TVHeadend has that Jellyfin cannot show are left alone instead of being
+  wiped every time you edit one.
+
   Artwork that arrives after a recording is scheduled now actually reaches it, instead of being
   quietly dropped every time.
 
