@@ -32,13 +32,6 @@ namespace TVHeadEnd
     public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IRequiresMediaInfoCallback, IHasCacheKey
     {
         /// <summary>
-        /// How much of a recording is fetched to analyse it. The program tables and a sample of
-        /// every elementary stream sit at the very front; this is generous for that and still a
-        /// tenth of a second over a local network.
-        /// </summary>
-        private const int AnalysisSampleLength = 8 * 1024 * 1024;
-
-        /// <summary>
         /// How many times the shape of a recording's media sources has changed since that floor.
         /// </summary>
         /// <remarks>
@@ -103,31 +96,24 @@ namespace TVHeadEnd
         private readonly ILogger<LiveTvService> _logger;
         private readonly TvheadendConnection _connection;
         private readonly LiveTvService _liveTvService;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _applicationHost;
         private readonly ILibraryManager _libraryManager;
-        private readonly RecordingDescriber _describer;
-
-        // A finished recording never changes, so what an analysis found holds for as long as the
-        // server runs. Without this every listing of a folder would analyse its contents again.
-        private readonly ConcurrentDictionary<string, MediaSourceInfo> _describedRecordings = new(StringComparer.OrdinalIgnoreCase);
+        private readonly RecordingAnalysisService _analysisService;
 
         public RecordingsChannel(
             ILoggerFactory loggerFactory,
             TvheadendConnection connection,
             LiveTvService liveTvService,
-            IMediaEncoder mediaEncoder,
-            IHttpClientFactory httpClientFactory,
+            RecordingAnalysisService analysisService,
             IServerApplicationHost applicationHost,
             ILibraryManager libraryManager)
         {
             _connection = connection;
             _libraryManager = libraryManager;
             _liveTvService = liveTvService;
-            _httpClientFactory = httpClientFactory;
+            _analysisService = analysisService;
             _applicationHost = applicationHost;
             _logger = loggerFactory.CreateLogger<LiveTvService>();
-            _describer = new RecordingDescriber(mediaEncoder, _logger);
             _logger.LogDebug("[TVHclient] RecordingsChannel()");
         }
 
@@ -447,18 +433,29 @@ namespace TVHeadEnd
         {
             ArgumentException.ThrowIfNullOrEmpty(id);
 
-            if (_describedRecordings.TryGetValue(id, out var cached))
-            {
-                return [cached];
-            }
-
             // Looked up once. The identifier the source is addressed by, the runtime and whether
-            // the description may be kept all come from the same recording, and three separate
+            // the analysis may be kept all come from the same recording, and three separate
             // lookups of it are three chances for them to disagree.
             var recording = await FindRecordingAsync(id, cancellationToken).ConfigureAwait(false);
 
             var source = BuildRecordingMediaSource(id, recording);
-            if (!await DescribeRecording(id, source, cancellationToken).ConfigureAwait(false))
+
+            // The address, not the name. Path is the virtual file the client is told about and is
+            // always set; whether the recording can be reached at all is EncoderPath.
+            if (string.IsNullOrEmpty(source.EncoderPath))
+            {
+                return [source];
+            }
+
+            // A recording still being written grows, and what a sample of its opening says about
+            // it is not yet the whole truth -- an audio track the broadcaster adds later would be
+            // missing from the description for as long as the server runs. A finished one is
+            // finished, so the analysis of it holds.
+            var finished = recording is not null
+                && recording.Status != MediaBrowser.Model.LiveTv.RecordingStatus.InProgress;
+
+            var analysis = await _analysisService.AnalyseAsync(id, finished, cancellationToken).ConfigureAwait(false);
+            if (!RecordingDescriber.Describe(source, analysis))
             {
                 // Undescribed, and deliberately still without invented streams. Jellyfin falls
                 // back to what it can work out itself rather than being told something untrue.
@@ -466,15 +463,6 @@ namespace TVHeadEnd
             }
 
             source.RunTimeTicks = recording is null ? null : Runtime(recording);
-
-            // Kept only once the recording has finished. A recording still being written grows,
-            // and what a sample of its opening said about it is not yet the whole truth -- an
-            // audio track the broadcaster adds later would be missing from the description for
-            // as long as the server runs.
-            if (recording is not null && recording.Status != MediaBrowser.Model.LiveTv.RecordingStatus.InProgress)
-            {
-                _describedRecordings[id] = source;
-            }
 
             return [source];
         }
@@ -489,152 +477,6 @@ namespace TVHeadEnd
         {
             var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
             return recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
-        }
-
-        /// <summary>
-        /// Fills in what a recording contains, from a sample of its opening.
-        /// </summary>
-        /// <remarks>
-        /// Reading a sample rather than the recording is what makes the analysis affordable.
-        /// TVHeadend answers range requests but does not advertise Accept-Ranges, so FFmpeg
-        /// treats a recording as an unseekable stream and reads it from end to end -- measured at
-        /// 68.6 seconds for an 8 GB recording against 0.14 for the sample.
-        /// </remarks>
-        /// <returns><see langword="true"/> when the sample described the recording.</returns>
-        private async Task<bool> DescribeRecording(string id, MediaSourceInfo source, CancellationToken cancellationToken)
-        {
-            // The address, not the name. Path is the virtual file the client is told about and
-            // is always set; whether the recording can be reached at all is EncoderPath.
-            if (string.IsNullOrEmpty(source.EncoderPath))
-            {
-                return false;
-            }
-
-            var sample = Path.Combine(Path.GetTempPath(), $"tvheadend-analysis-{Guid.NewGuid():N}.ts");
-            try
-            {
-                // Straight from TVHeadend, not through the endpoint this plugin serves clients
-                // from: that one exists to make FFmpeg's seeking work, and going through it here
-                // would only route the request back out through Jellyfin.
-                var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
-                var upstream = endpoint.CreateApiUrl("dvrfile/" + id);
-                await FetchAnalysisSample(upstream, sample, cancellationToken).ConfigureAwait(false);
-
-                // What the sample says the recording contains, and nothing beyond that. An
-                // earlier version also scanned it for H.264 IDR frames and, finding none in the
-                // first few megabytes, withheld direct play and re-encoded the whole recording.
-                // A bounded sample cannot establish the absence of something: a recording that
-                // opens on a recovery point and carries IDR frames a minute later looks exactly
-                // the same. That inference is gone, along with the re-encode it forced.
-                return await _describer
-                    .DescribeFromSample(source, sample, $"recording {id}", cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                // The placeholder the source was built with stands, so the recording behaves as
-                // it did before rather than failing outright.
-                _logger.LogError(exception, "TVHeadend recording {RecordingId} could not be analysed", id);
-                return false;
-            }
-            finally
-            {
-                try
-                {
-                    File.Delete(sample);
-                }
-                catch (IOException)
-                {
-                    // Left behind in the temporary directory; harmless.
-                }
-            }
-        }
-
-        /// <summary>
-        /// Copies the opening of the recording to a local file, which is seekable and therefore
-        /// analysable in a fraction of the time the recording itself would take.
-        /// </summary>
-        /// <remarks>
-        /// The range request states how much is wanted, but a server is free to ignore it: a
-        /// TVHeadend without range support, or a proxy in between, answers 200 with the whole
-        /// recording. Copying that to the end would pull gigabytes across for an analysis that
-        /// needs megabytes, so the limit is enforced while reading rather than assumed from the
-        /// response. A short answer is equally fine -- whatever arrived is what gets analysed.
-        /// </remarks>
-        private async Task FetchAnalysisSample(string url, string destination, CancellationToken cancellationToken)
-        {
-            using var client = _httpClientFactory.CreateClient();
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, AnalysisSampleLength - 1);
-            foreach (var header in _connection.HttpEndpoint.CreateHeaders())
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-
-            // A server that cannot satisfy the range says so rather than failing outright; the
-            // analysis then has nothing to work from and the caller keeps its placeholder.
-            if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
-            {
-                throw new InvalidOperationException($"TVHeadend rejected the range request for the analysis sample of {url}.");
-            }
-
-            response.EnsureSuccessStatusCode();
-
-            var target = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
-            await using (target.ConfigureAwait(false))
-            {
-                var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                await using (body.ConfigureAwait(false))
-                {
-                    await CopyAtMost(body, target, AnalysisSampleLength, cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Copies at most <paramref name="limit"/> bytes, whatever the source offers.
-        /// </summary>
-        /// <param name="source">The stream to read.</param>
-        /// <param name="destination">The stream to write.</param>
-        /// <param name="limit">The most that may be copied.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The number of bytes copied.</returns>
-        internal static async Task<long> CopyAtMost(Stream source, Stream destination, long limit, CancellationToken cancellationToken)
-        {
-            ArgumentNullException.ThrowIfNull(source);
-            ArgumentNullException.ThrowIfNull(destination);
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
-
-            var buffer = ArrayPool<byte>.Shared.Rent(81920);
-            try
-            {
-                long copied = 0;
-                while (copied < limit)
-                {
-                    var wanted = (int)Math.Min(buffer.Length, limit - copied);
-                    var read = await source.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken).ConfigureAwait(false);
-                    if (read == 0)
-                    {
-                        break;
-                    }
-
-                    await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                    copied += read;
-                }
-
-                return copied;
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
         }
 
         /// <summary>

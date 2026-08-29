@@ -72,7 +72,7 @@ public static class RecordedProgramMap
         var programMapPid = -1;
         var read = 0;
 
-        while (read < SearchLimit && ReadPacket(stream, packet))
+        while (read < SearchLimit && TransportStreamPacket.ReadFrom(stream, packet))
         {
             read += packet.Length;
 
@@ -108,22 +108,5 @@ public static class RecordedProgramMap
         }
 
         return null;
-    }
-
-    private static bool ReadPacket(Stream stream, byte[] packet)
-    {
-        var filled = 0;
-        while (filled < packet.Length)
-        {
-            var read = stream.Read(packet, filled, packet.Length - filled);
-            if (read == 0)
-            {
-                return false;
-            }
-
-            filled += read;
-        }
-
-        return true;
     }
 }

@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using TVHeadEnd;
+using TVHeadEnd.Recordings;
 using Xunit;
 
 namespace TVHeadEnd.Tests;
@@ -15,7 +15,7 @@ public class RecordingSampleTests
         var source = new MemoryStream(Pattern(4096));
         var destination = new MemoryStream();
 
-        var copied = await RecordingsChannel.CopyAtMost(source, destination, 8192, CancellationToken.None);
+        var copied = await RecordingAnalysisService.CopyAtMost(source, destination, 8192, CancellationToken.None);
 
         Assert.Equal(4096, copied);
         Assert.Equal(4096, destination.Length);
@@ -30,7 +30,7 @@ public class RecordingSampleTests
         var source = new MemoryStream(Pattern(1024 * 1024));
         var destination = new MemoryStream();
 
-        var copied = await RecordingsChannel.CopyAtMost(source, destination, 4096, CancellationToken.None);
+        var copied = await RecordingAnalysisService.CopyAtMost(source, destination, 4096, CancellationToken.None);
 
         Assert.Equal(4096, copied);
         Assert.Equal(4096, destination.Length);
@@ -43,7 +43,7 @@ public class RecordingSampleTests
         var source = new MemoryStream(Pattern(100));
         var destination = new MemoryStream();
 
-        var copied = await RecordingsChannel.CopyAtMost(source, destination, 4096, CancellationToken.None);
+        var copied = await RecordingAnalysisService.CopyAtMost(source, destination, 4096, CancellationToken.None);
 
         Assert.Equal(100, copied);
     }
@@ -51,7 +51,7 @@ public class RecordingSampleTests
     [Fact]
     public async Task AnEmptyAnswerCopiesNothingRatherThanHanging()
     {
-        var copied = await RecordingsChannel.CopyAtMost(
+        var copied = await RecordingAnalysisService.CopyAtMost(
             new MemoryStream([]),
             new MemoryStream(),
             4096,
@@ -66,7 +66,7 @@ public class RecordingSampleTests
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RecordingsChannel.CopyAtMost(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RecordingAnalysisService.CopyAtMost(
             new MemoryStream(Pattern(4096)),
             new MemoryStream(),
             4096,
@@ -76,7 +76,7 @@ public class RecordingSampleTests
     [Fact]
     public async Task ALimitOfNothingIsRefused()
     {
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => RecordingsChannel.CopyAtMost(
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => RecordingAnalysisService.CopyAtMost(
             new MemoryStream(Pattern(16)),
             new MemoryStream(),
             0,

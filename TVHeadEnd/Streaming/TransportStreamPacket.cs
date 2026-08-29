@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace TVHeadEnd.Streaming
 {
@@ -118,5 +119,36 @@ namespace TVHeadEnd.Streaming
         /// <returns>Whether it is video.</returns>
         public static bool IsVideoStreamType(byte streamType)
             => streamType is 0x01 or 0x02 or 0x10 or 0x1B or 0x24;
+
+        /// <summary>
+        /// Fills <paramref name="packet"/> with the next whole packet from a stream.
+        /// </summary>
+        /// <remarks>
+        /// A read that returns less than a packet is not the end of anything; only a read that
+        /// returns nothing is. Treating a short read as the end would stop a scan part way
+        /// through a file for no reason but the size of the operating system's buffer.
+        /// </remarks>
+        /// <param name="stream">The bytes of a transport stream, aligned to a packet boundary.</param>
+        /// <param name="packet">A buffer of <see cref="Length"/> bytes to fill.</param>
+        /// <returns><see langword="false"/> when the stream ended before a whole packet.</returns>
+        public static bool ReadFrom(Stream stream, byte[] packet)
+        {
+            ArgumentNullException.ThrowIfNull(stream);
+            ArgumentNullException.ThrowIfNull(packet);
+
+            var filled = 0;
+            while (filled < packet.Length)
+            {
+                var read = stream.Read(packet, filled, packet.Length - filled);
+                if (read == 0)
+                {
+                    return false;
+                }
+
+                filled += read;
+            }
+
+            return true;
+        }
     }
 }
