@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace TVHeadEnd.LiveTv;
+namespace TVHeadEnd.Domain;
 
 /// <summary>
 /// Reads the DVB <c>content_descriptor</c> byte TVHeadend forwards as <c>contentType</c>.

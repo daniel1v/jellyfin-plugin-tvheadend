@@ -135,6 +135,25 @@ namespace TVHeadEnd.Domain
                 recording.IsSeries = true;
             }
 
+            // The same reading of the same byte the guide gives a programme. It was being thrown
+            // away here, which is why the Movies, Sports, News and Kids folders of the recordings
+            // channel were always empty: the channel groups on exactly these flags, and nothing
+            // ever set them.
+            if (entry.ContentType is { } contentType)
+            {
+                var described = DvbContentType.Describe(contentType);
+
+                foreach (var genre in described.Genres)
+                {
+                    recording.Genres.Add(genre);
+                }
+
+                recording.IsMovie = described.IsMovie;
+                recording.IsSports = described.IsSports;
+                recording.IsNews = described.IsNews;
+                recording.IsKids = described.IsKids;
+            }
+
             return recording;
         }
 

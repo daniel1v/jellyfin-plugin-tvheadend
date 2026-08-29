@@ -69,11 +69,11 @@ public sealed class TvheadendDvr
     /// </summary>
     /// <param name="info">The timer to create.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>
-    /// The identifier TVHeadend gave the new entry, or <see langword="null"/> if the reply carried
-    /// none.
-    /// </returns>
-    public async Task<string?> CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
+    /// <returns>The identifier TVHeadend gave the new entry.</returns>
+    /// <exception cref="HtspException">
+    /// TVHeadend refused the request, or accepted it without naming the entry it made.
+    /// </exception>
+    public async Task<string> CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(info);
 
@@ -84,7 +84,7 @@ public sealed class TvheadendDvr
         // announces it with dvrEntryAdd, which is the same moment a recording made in the web
         // interface appears, and having one path that guesses and another that is told is how the
         // two disagree.
-        return ReadNewEntryId(reply);
+        return RequireNewEntryId(reply, "a recording");
     }
 
     /// <summary>
@@ -157,6 +157,24 @@ public sealed class TvheadendDvr
     }
 
     /// <summary>
+    /// Reads the identifier of a newly created entry, insisting there is one.
+    /// </summary>
+    /// <remarks>
+    /// Jellyfin is told this identifier through ISupportsNewTimerIds and keeps it as the timer's
+    /// own, so an empty one is not a smaller answer than a real one -- it is a timer Jellyfin
+    /// records under nothing, cannot find again, and cannot update or cancel. An accepted request
+    /// that names no entry is the server not keeping its side of the protocol, and saying so where
+    /// it happened is the only place it can still be understood.
+    /// </remarks>
+    /// <param name="reply">The accepted reply TVHeadend sent.</param>
+    /// <param name="what">What was being created, for the message.</param>
+    /// <returns>The identifier.</returns>
+    /// <exception cref="HtspException">The reply named no entry.</exception>
+    internal static string RequireNewEntryId(HtspMessage reply, string what)
+        => ReadNewEntryId(reply)
+            ?? throw new HtspException($"TVHeadend accepted {what} but did not say which entry it made.");
+
+    /// <summary>
     /// Changes the padding of a scheduled recording.
     /// </summary>
     /// <param name="info">The timer to update.</param>
@@ -224,7 +242,7 @@ public sealed class TvheadendDvr
     /// <param name="info">The series timer to create.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes once TVHeadend has accepted it.</returns>
-    public async Task<string?> CreateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
+    public async Task<string> CreateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(info);
 
@@ -237,7 +255,7 @@ public sealed class TvheadendDvr
         // What the rule is made of is unchanged; only its identifier now travels back, because
         // ISupportsNewTimerIds asks for both create methods and answering one of them with
         // nothing would leave series rules worse off than they are.
-        return ReadNewEntryId(reply);
+        return RequireNewEntryId(reply, "a series rule");
     }
 
     /// <summary>

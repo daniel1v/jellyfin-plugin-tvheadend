@@ -1,8 +1,10 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using TVHeadEnd.Playback;
 using Xunit;
 
 namespace TVHeadEnd.Tests;
@@ -100,7 +102,88 @@ public class PluginIdentityTests
             // until somebody tries to install it.
             Assert.Contains($"/v{number}/", source, StringComparison.Ordinal);
             Assert.Contains(number!, source[(source.LastIndexOf('/') + 1)..], StringComparison.Ordinal);
+
+            // The package name follows the plugin's name, not the one it forked from.
+            Assert.Contains("tvheadend-ex_", source, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void TheManifestListsNothingBuiltUnderTheOldPluginIdentity()
+    {
+        // 14.0.0.1 to 14.0.0.3 were built and published while this fork still carried the official
+        // plugin's GUID. Carrying them into the EX manifest offered them under an identity they
+        // were never built with: installing one hands the server an assembly naming the old GUID,
+        // which then drops out of this plugin's update path and reports itself as a different
+        // plugin. A version history belongs to the plugin that made it.
+        using var manifest = JsonDocument.Parse(ReadRepositoryFile("manifest.json"));
+        var package = Assert.Single(manifest.RootElement.EnumerateArray());
+
+        var lastPreExVersion = new Version(14, 0, 0, 3);
+
+        foreach (var entry in package.GetProperty("versions").EnumerateArray())
+        {
+            var version = Version.Parse(entry.GetProperty("version").GetString()!);
+            Assert.True(
+                version > lastPreExVersion,
+                $"The manifest lists {version}, which predates the TVHeadend EX identity.");
+        }
+    }
+
+    [Fact]
+    public void TheVersionBeingBuiltIsPastTheOnesTheOldIdentityUsed()
+    {
+        // A first EX build reusing 14.0.0.3 would collide with the release already published under
+        // that number, and with the tag the release script derives from it.
+        var yaml = ReadRepositoryFile("build.yaml");
+        var version = Version.Parse(ReadScalar(yaml, "version"));
+
+        Assert.True(version > new Version(14, 0, 0, 3), $"build.yaml is still at {version}.");
+
+        // The assembly is built from Directory.Build.props, the package from build.yaml. Two
+        // numbers for one release is two releases as far as anything reading them is concerned.
+        var props = ReadRepositoryFile("Directory.Build.props");
+        Assert.Contains($"<Version>{version}</Version>", props, StringComparison.Ordinal);
+        Assert.Contains($"<AssemblyVersion>{version}</AssemblyVersion>", props, StringComparison.Ordinal);
+        Assert.Contains($"<FileVersion>{version}</FileVersion>", props, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReleaseScriptRefusesAVersionHistoryFromADifferentPlugin()
+    {
+        // The rule that stops the last mistake happening again: the script carries earlier versions
+        // forward only where the manifest it is reading describes the same plugin.
+        var script = ReadRepositoryFile("tools/release.ps1");
+
+        Assert.Contains("$plugin.guid -ne $guid", script, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("ServiceName", "TVHclient LiveTvService")]
+    [InlineData("RecordingsChannelName", "TVHeadEnd Recordings")]
+    public void TheNamesJellyfinDerivesItsOwnIdentifiersFromDoNotMove(string constant, string name)
+    {
+        // These are not product names and renaming them is not cosmetic. Jellyfin hashes them into
+        // the identifiers it stores against every recording and every live TV item, so changing one
+        // orphans everything already in the database from the plugin that put it there. The visible
+        // product is called TVHeadend EX; these stay as they are.
+        var field = typeof(TvheadendItems).GetField(constant, BindingFlags.Public | BindingFlags.Static);
+
+        Assert.NotNull(field);
+        Assert.Equal(name, field!.GetRawConstantValue());
+    }
+
+    private static string ReadScalar(string yaml, string key)
+    {
+        foreach (var line in yaml.Split('\n'))
+        {
+            if (line.StartsWith(key + ":", StringComparison.Ordinal))
+            {
+                return line[(key.Length + 1)..].Trim().Trim('"');
+            }
+        }
+
+        throw new InvalidOperationException($"build.yaml has no '{key}'");
     }
 
     private static string ReadRepositoryFile(string relativePath)

@@ -149,6 +149,55 @@ public class DvrLifecycleTests
     }
 
     [Fact]
+    public void AnAcceptedCreateThatNamesNoEntryIsAFailure()
+    {
+        // Jellyfin keeps what comes back as the timer's own identifier, so an empty one is not a
+        // smaller answer than a real one: it is a timer recorded under nothing, which cannot be
+        // found, updated or cancelled again. Handing back string.Empty made that look like success.
+        var reply = new HtspMessage();
+        reply.Set("success", 1);
+
+        var broken = Assert.Throws<HtspException>(
+            () => TvheadendDvr.RequireNewEntryId(reply, "a recording"));
+
+        Assert.Contains("a recording", broken.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnAcceptedCreateThatNamesAnEntryHandsItOverUnchanged()
+    {
+        var reply = new HtspMessage();
+        reply.Set("success", 1);
+        reply.Set("id", 4711);
+
+        Assert.Equal("4711", TvheadendDvr.RequireNewEntryId(reply, "a recording"));
+    }
+
+    [Fact]
+    public void AnAcceptedSeriesRuleThatNamesNoEntryIsAFailureToo()
+    {
+        var reply = new HtspMessage();
+        reply.Set("success", 1);
+
+        Assert.Throws<HtspException>(() => TvheadendDvr.RequireNewEntryId(reply, "a series rule"));
+    }
+
+    [Fact]
+    public void ARefusalIsStillARefusalRatherThanAMissingIdentifier()
+    {
+        // The two failures are different and must stay so: one is the server saying no, the other
+        // is the server saying yes without saying what to. EnsureAccepted runs first, so a refusal
+        // never reaches the identifier check and keeps the reason TVHeadend gave.
+        var reply = new HtspMessage();
+        reply.Set("success", 0);
+        reply.Set("error", "Access denied");
+
+        var refused = Assert.Throws<HtspException>(() => TvheadendDvr.EnsureAccepted(reply));
+
+        Assert.Contains("Access denied", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ARefusedCreateIsStillAFailureEvenWhereItCarriesAnIdentifier()
     {
         var reply = new HtspMessage();

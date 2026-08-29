@@ -300,8 +300,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <param name="info">The timer to create.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The TVHeadend identifier of the new entry.</returns>
-    public async Task<string> CreateTimer(TimerInfo info, CancellationToken cancellationToken)
-        => await _dvr.CreateTimerAsync(info, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+    public Task<string> CreateTimer(TimerInfo info, CancellationToken cancellationToken)
+        => _dvr.CreateTimerAsync(info, cancellationToken);
 
     /// <summary>
     /// Creates a series rule and answers with the identifier TVHeadend gave it.
@@ -309,8 +309,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <param name="info">The series timer to create.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The TVHeadend identifier of the new rule.</returns>
-    public async Task<string> CreateSeriesTimer(SeriesTimerInfo info, CancellationToken cancellationToken)
-        => await _dvr.CreateSeriesTimerAsync(info, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+    public Task<string> CreateSeriesTimer(SeriesTimerInfo info, CancellationToken cancellationToken)
+        => _dvr.CreateSeriesTimerAsync(info, cancellationToken);
 
     /// <inheritdoc />
     public Task UpdateTimerAsync(TimerInfo updatedTimer, CancellationToken cancellationToken)
@@ -365,6 +365,12 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // address like the recordings in it.
         foreach (var recording in recordings)
         {
+            // From the channel it was recorded from. The mapper reads one DVR entry, and a DVR
+            // entry does not say whether its channel carries pictures -- so left unset it took the
+            // enum's default, and every radio recording was published as video. The recordings
+            // channel reads this to decide between an audio and a video item.
+            recording.ChannelType = _connection.Channels.GetChannelType(recording.ChannelId);
+
             // The channel's logo where the recording has no picture of its own, which with a
             // broadcast EPG is every recording: DVB EIT has no field for one. Published as a
             // poster, because Jellyfin draws a recording's primary image as one and a 400x240

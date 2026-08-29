@@ -109,12 +109,24 @@ $manifestPath = Join-Path $repo 'manifest.json'
 
 # Earlier versions are carried over; republishing one replaces its entry rather than listing it
 # twice. The plugin object is rebuilt from build.yaml every time, so the two cannot drift apart.
+#
+# Only versions of the same plugin. A version entry says nothing about which plugin built it, so
+# a manifest whose guid has changed carries a history that belongs to the plugin it used to be:
+# Jellyfin would offer those packages under the new identity, and installing one hands the server
+# an assembly that names the old guid, drops out of the new plugin's update path, and reports
+# itself as a different plugin entirely. That is what happened when this fork took its own guid.
 $previous = @()
+$guid = Get-Scalar 'guid'
 if (Test-Path $manifestPath) {
     # Explicitly UTF-8, for the same reason build.yaml is: read in the ANSI code page, the
     # changelogs already in the manifest come back mangled and are written back out worse.
     $existing = [System.IO.File]::ReadAllText($manifestPath, (New-Object System.Text.UTF8Encoding($false))) | ConvertFrom-Json
     foreach ($plugin in @($existing)) {
+        if ($plugin.guid -ne $guid) {
+            Write-Warning "Skipping the version history of $($plugin.name) ($($plugin.guid)): a different plugin."
+            continue
+        }
+
         foreach ($v in @($plugin.versions)) {
             if ($v -and $v.version -ne $version) { $previous += $v }
         }
@@ -122,7 +134,7 @@ if (Test-Path $manifestPath) {
 }
 
 $package = [ordered]@{
-    guid        = Get-Scalar 'guid'
+    guid        = $guid
     name        = Get-Scalar 'name'
     description = Get-Scalar 'description'
     overview    = Get-Scalar 'overview'

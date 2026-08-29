@@ -7,6 +7,7 @@ using MediaBrowser.Controller.LiveTv;
 using Microsoft.Extensions.Logging;
 using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Tvheadend;
+using DvbContentType = TVHeadEnd.Domain.DvbContentType;
 
 namespace TVHeadEnd.LiveTv;
 

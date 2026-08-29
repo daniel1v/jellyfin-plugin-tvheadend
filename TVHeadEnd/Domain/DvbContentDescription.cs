@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace TVHeadEnd.LiveTv;
+namespace TVHeadEnd.Domain;
 
 /// <summary>
 /// What a DVB content type says a programme is.

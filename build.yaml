@@ -1,6 +1,6 @@
 name: "TVHeadend EX"
 guid: "e55d13e1-3874-40a5-ac05-1569c06767bc"
-version: "14.0.0.3"
+version: "14.0.0.4"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 owner: "daniel1v"
@@ -11,10 +11,21 @@ artifacts:
   - "TVHeadEnd.dll"
   - "Tvheadend.Htsp.dll"
 changelog: |-
-  Channel logos have room to breathe.
+  A new plugin, and a tidier shelf of recordings.
 
-  Jellyfin was drawing them edge to edge, so every channel looked like a badly cropped billboard. They now sit in the middle of their tile with a proper margin, the way recordings and guide entries already did.
+  This is the first release under the name TVHeadend EX. It is a separate plugin now rather than a
+  replacement for the official one, which means Jellyfin cannot update you into it: uninstall the
+  old TVHeadend plugin, then install this one. Your settings are waiting for you on the other side.
 
-  Artwork the broadcaster actually sent is left alone. A picture should fill its frame; a logo should not.
+  Recordings finally sort themselves out. Movies, Sports, News and Kids were empty folders in every
+  version so far, because the plugin was reading what a recording is and then throwing it away. It
+  no longer does, so a film lands with the films.
 
-  Nothing to do — the logos swap themselves out on the next guide refresh.
+  Radio recordings are radio. They were being published as video, which is a lot of black screen
+  for a concert.
+
+  Artwork that arrives after a recording is scheduled now actually reaches it, instead of being
+  quietly dropped every time.
+
+  And the list of recordings no longer goes stale. After a restart Jellyfin could serve you the
+  previous run's recordings for hours; it now notices the moment TVHeadend changes something.

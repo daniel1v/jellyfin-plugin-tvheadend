@@ -6,29 +6,6 @@
     "owner":  "daniel1v",
     "category":  "LiveTV",
     "versions":  [
-                     {
-                         "version":  "14.0.0.3",
-                         "changelog":  "Channel logos have room to breathe.\n\nJellyfin was drawing them edge to edge, so every channel looked like a badly cropped billboard. They now sit in the middle of their tile with a proper margin, the way recordings and guide entries already did.\n\nArtwork the broadcaster actually sent is left alone. A picture should fill its frame; a logo should not.\n\nNothing to do — the logos swap themselves out on the next guide refresh.",
-                         "targetAbi":  "12.0.0.0",
-                         "sourceUrl":  "https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases/download/v14.0.0.3/tvheadend_14.0.0.3.zip",
-                         "checksum":  "e7538b82a28b06156988939f5343b0c7",
-                         "timestamp":  "2026-08-26T22:06:16Z"
-                     },
-                     {
-                         "version":  "14.0.0.2",
-                         "changelog":  "Pictures. At last.\n\nChannel logos, programme images and recording artwork were all invisible, because Jellyfin kept asking TVHeadend for them without ever mentioning it had a password. The plugin now fetches them itself and hands them over ready to use.\n\nWhere a broadcast listing carries no artwork at all — which, on DVB, is always — a recording or a guide entry can borrow its channel's logo instead of showing an empty tile. There is a switch in the settings if you would rather keep the empty tile, and a button to forget the pictures you already have.\n\nAlso: a recording TVHeadend refused to schedule now says so, instead of nodding politely and doing nothing.",
-                         "targetAbi":  "12.0.0.0",
-                         "sourceUrl":  "https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases/download/v14.0.0.2/tvheadend_14.0.0.2.zip",
-                         "checksum":  "c31b5b48668b459867a732096a12d814",
-                         "timestamp":  "2026-08-26T21:40:30Z"
-                     },
-                     {
-                         "version":  "14.0.0.1",
-                         "changelog":  "Housekeeping on alpha 1.\n\nRecordings had been left out of a compatibility fix that channels already had, so some clients sat there re-encoding them for no reason at all.\n\nTwo people watching the same channel at once could also be handed each other's stream, which is exactly as awkward as it sounds.\n\nNothing about playback itself changed. If alpha 1 worked for you, this one works better.",
-                         "targetAbi":  "12.0.0.0",
-                         "sourceUrl":  "https://github.com/daniel1v/jellyfin-plugin-tvheadend/releases/download/v14.0.0.1/tvheadend_14.0.0.1.zip",
-                         "checksum":  "8752a429049a0b6fbcbc00a089e50fb6",
-                         "timestamp":  "2026-08-26T18:22:01Z"
-                     }
+
                  ]
 }]

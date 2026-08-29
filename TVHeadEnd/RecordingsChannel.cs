@@ -28,7 +28,7 @@ using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd
 {
-    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IRequiresMediaInfoCallback
+    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IRequiresMediaInfoCallback, IHasCacheKey
     {
         /// <summary>
         /// How much of a recording is fetched to analyse it. The program tables and a sample of
@@ -76,6 +76,19 @@ namespace TVHeadEnd
         /// again; moving it would break the monotonicity of every stored date at once.
         /// </remarks>
         private static readonly DateTime MediaSourceDateFloorUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
+
+        /// <summary>
+        /// Tells this run of the server apart from every other one.
+        /// </summary>
+        /// <remarks>
+        /// The DVR revision counts changes since the connection was made, so it starts again at
+        /// zero every time Jellyfin restarts -- while the channel cache it keys does not: that is
+        /// written to disk and outlives the process. A restarted server would therefore ask for
+        /// the listing under a key a previous run had already written, and be handed that run's
+        /// recordings. Mixing in something that cannot repeat makes the first request after a
+        /// restart a miss, which is the one time the cache is certainly stale.
+        /// </remarks>
+        private static readonly string ProcessEpoch = Guid.NewGuid().ToString("N");
 
         private readonly ILogger<LiveTvService> _logger;
         private readonly TvheadendConnection _connection;
@@ -165,15 +178,48 @@ namespace TVHeadEnd
         /// Gets the key Jellyfin caches this channel's listing under.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Only what actually changes the listing. This used to mix in the day, the hour and a
         /// five-minute bucket, which discarded the cache on a timer whether or not anything had
         /// happened; the recordings themselves change when TVHeadend says they do, and that is
         /// what the key follows.
+        /// </para>
+        /// <para>
+        /// The signature matters as much as the value. It was <c>string</c> rather than
+        /// <c>string?</c> and the class did not declare <see cref="IHasCacheKey"/>, so
+        /// ChannelManager -- which reaches this only through that interface -- never called it at
+        /// all, and every recording listing was cached under an empty key that nothing could
+        /// invalidate.
+        /// </para>
         /// </remarks>
         /// <param name="userId">The user the listing is for. Every user sees the same recordings.</param>
         /// <returns>The cache key.</returns>
-        public string GetCacheKey(string userId)
-            => GetService().RecordingRevision.ToString(CultureInfo.InvariantCulture);
+        public string? GetCacheKey(string? userId)
+            => ComposeCacheKey(ProcessEpoch, GetService().RecordingRevision);
+
+        /// <summary>
+        /// Builds the cache key from the two things that make a listing different.
+        /// </summary>
+        /// <param name="processEpoch">What tells this run of the server from any other.</param>
+        /// <param name="recordingRevision">How many DVR changes TVHeadend has announced.</param>
+        /// <returns>The cache key.</returns>
+        internal static string ComposeCacheKey(string processEpoch, long recordingRevision)
+            => processEpoch + "-" + recordingRevision.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// Gets what kind of item a recording from this sort of channel is published as.
+        /// </summary>
+        /// <remarks>
+        /// A radio recording published as video is a concert behind a black screen. It happened
+        /// because the recording was never told what its channel carried and took the enum's
+        /// default, which is TV -- see LiveTvService.GetRecordingsAsync for where it is told.
+        /// </remarks>
+        /// <param name="channelType">What the channel it was recorded from carries.</param>
+        /// <returns>The media type to publish.</returns>
+        internal static ChannelMediaType MediaTypeFor(MediaBrowser.Model.LiveTv.ChannelType channelType)
+            => channelType == MediaBrowser.Model.LiveTv.ChannelType.Radio
+                ? ChannelMediaType.Audio
+                : ChannelMediaType.Video;
 
         public InternalChannelFeatures GetChannelFeatures()
         {
@@ -326,7 +372,7 @@ namespace TVHeadEnd
                 Genres = [.. item.Genres],
                 ImageUrl = item.ImageUrl,
                 Id = item.Id,
-                MediaType = item.ChannelType == MediaBrowser.Model.LiveTv.ChannelType.TV ? ChannelMediaType.Video : ChannelMediaType.Audio,
+                MediaType = MediaTypeFor(item.ChannelType),
                 IsLiveStream = false,
 
                 // A placeholder, carrying no streams at all. The listing must not analyse the

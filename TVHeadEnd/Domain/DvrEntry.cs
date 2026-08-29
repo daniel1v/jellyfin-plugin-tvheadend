@@ -90,6 +90,17 @@ public sealed record DvrEntry
     public int? Priority { get; init; }
 
     /// <summary>
+    /// Gets the DVB content type the entry was recorded under, where the server states one.
+    /// </summary>
+    /// <remarks>
+    /// The same <c>content_descriptor</c> byte the guide carries, copied onto the DVR entry when
+    /// the recording was scheduled -- so it outlives the event it came from, which for a recording
+    /// is most of its life. It is what says whether a recording is a film, sport, news or for
+    /// children, and the recordings channel groups by exactly that.
+    /// </remarks>
+    public int? ContentType { get; init; }
+
+    /// <summary>
     /// Gets the path of the recording on the TVHeadend server. Of no use to Jellyfin, which
     /// generally runs elsewhere, but it is what the server reports.
     /// </summary>
@@ -171,6 +182,7 @@ public sealed record DvrEntry
             PostPadding = TimeSpan.FromMinutes(message.GetInt64("stopExtra") ?? 0),
 
             Priority = message.GetInt32("priority"),
+            ContentType = message.GetInt32("contentType"),
             FilePath = message.GetString("path"),
             Url = message.GetString("url"),
             Error = message.GetString("error"),
@@ -214,9 +226,17 @@ public sealed record DvrEntry
             PrePadding = message.Contains("startExtra") ? updated.PrePadding : existing.PrePadding,
             PostPadding = message.Contains("stopExtra") ? updated.PostPadding : existing.PostPadding,
             Priority = message.Contains("priority") ? updated.Priority : existing.Priority,
+            ContentType = message.Contains("contentType") ? updated.ContentType : existing.ContentType,
             FilePath = message.Contains("path") ? updated.FilePath : existing.FilePath,
             Url = message.Contains("url") ? updated.Url : existing.Url,
             Error = message.Contains("error") ? updated.Error : existing.Error,
+
+            // Artwork was missing from this list, so a picture the server sent later -- which is
+            // when it arrives, once the entry has been scheduled and the metadata catches up --
+            // was read into the update and then dropped on the floor. Every field the merge does
+            // not mention keeps the old value forever, which for artwork meant "none".
+            Image = message.Contains("image") ? updated.Image : existing.Image,
+            FanartImage = message.Contains("fanartImage") ? updated.FanartImage : existing.FanartImage,
         };
     }
 

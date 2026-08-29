@@ -83,9 +83,18 @@ what changed for them, what they have to do, a few short paragraphs. Being funny
 mechanics belong in the commit message and in [architecture.md](architecture.md), which stays as
 thorough as it is.
 
-### Versions published before the rename
+### A version history belongs to the plugin that made it
 
-`manifest.json` still lists 14.0.0.1 through 14.0.0.3. Those were built under the old plugin GUID,
-so a server that installs one of them from this repository ends up with a plugin that identifies
-itself as the old fork and stops being offered TVHeadend EX updates. They are kept because a
-published alpha is not withdrawn, not because installing one is a good idea. Install the newest.
+`manifest.json` lists nothing before 14.0.0.4, because nothing before it was TVHeadend EX.
+14.0.0.1 through 14.0.0.3 were built and published while this fork still carried the official
+plugin's GUID; carrying them into the EX manifest offered them under an identity they were never
+built with. A server installing one would get an assembly naming the old GUID, drop out of this
+plugin's update path, and report itself as a different plugin.
+
+The GitHub releases for those versions stay published — a published alpha is not withdrawn, and
+they are still what was released, under the name they were released as. Only the EX update feed
+does not claim them.
+
+`tools/release.ps1` carries earlier versions forward **only from a manifest with the same GUID**,
+and warns when it skips one. A GUID change now starts a fresh history rather than adopting
+somebody else's.
