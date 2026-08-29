@@ -271,6 +271,47 @@ Two viewers of such a channel who need different things get two subscriptions, b
 source cannot both offer and withhold direct play. A channel whose H.264 does carry IDR pictures,
 and everything that is not H.264, is shared by everyone as before.
 
+### The same question about a recording
+
+A recording is the same broadcast with the same access points, so it fails on the same client for
+the same reason. Nothing else about it is the same:
+
+|                  | Live TV                                          | Recording                                              |
+| ---------------- | ------------------------------------------------ | ------------------------------------------------------ |
+| When it is asked | While a stream is being opened, for one viewer   | While a request asks how to play an item                |
+| What answers     | The conditioner, on the packets going past       | A probe over the sample already fetched to describe it  |
+| How far it looks | The first three signalled access points          | The whole sample, so a later IDR still counts           |
+| Where it lands   | The media source built for that open             | Three parameters of that one request                    |
+
+The reason for the split is that a recording's media source is written when the channel is listed,
+long before anybody plays it, and it is the same source for every viewer. Making it depend on the
+client would mean remembering one client's answer under the recording's name and handing it to the
+next one along — which is exactly the bug an earlier version had, when a recording that looked
+IDR-less in its first megabytes was re-encoded for everybody, for ever.
+
+So the recording half is a request-local decision and nothing else. A global MVC action filter
+watches `POST /Items/{itemId}/PlaybackInfo`; when the authenticated session names an affected
+client, the item is one of this plugin's recordings, and the analysis of that recording says its
+H.264 access points were read and none carried an IDR, it sets `enableDirectPlay=false`,
+`enableDirectStream=false` and `allowVideoStreamCopy=false` on that request. It never touches
+`enableTranscoding`: what Jellyfin may do instead is Jellyfin's to decide.
+
+Every other outcome leaves the request as it arrived — an item the library does not know, another
+plugin's item, one of our own live channels, a recording with no TVHeadend identifier, an analysis
+that failed, a sample too short to say, MPEG-2. The failure this guards against is a black screen
+on one client; the failure it must not cause is re-encoding everybody's recordings on a guess.
+
+Three pieces are shared with live TV rather than written twice: `H264AccessPointClassifier` reads
+the pictures, `PlaybackClient.NeedsIdrEntryPointFor` reads the client, and
+`PlaybackCompatibilityPolicy.RequiresVideoReencode` is the whole rule — this client needs an IDR
+**and** the material was examined and found to offer none. Not having looked is never evidence of
+absence, which is what keeps MPEG-2 and short samples out of it entirely.
+
+The two paths still reach Jellyfin through different hooks, and that is deliberate.
+`/LiveStreams/Open` takes no such parameters at all, and Jellyfin re-runs `SetDeviceSpecificData`
+after a live stream is opened and puts `allowVideoStreamCopy` back to true — so live TV needs the
+request middleware and cannot be served by the filter.
+
 ## How long a viewer waits
 
 Where direct play is not possible Jellyfin remuxes to HLS, and it holds the playlist back until a
@@ -408,9 +449,19 @@ A separate path, and deliberately less clever than it was.
 
 A recording is described from a sample of its opening, because analysing the whole file means
 reading gigabytes across the network. That sample establishes what the recording contains — and
-nothing else. It is explicitly **not** used to conclude that the recording lacks something: a
+nothing else. It is explicitly **not** used to conclude anything about the recording as a whole: a
 bounded probe cannot establish an absence, and an earlier version used exactly that inference to
-withhold direct play and serve a re-encode for whole recordings.
+withhold direct play and serve a re-encode of its own for whole recordings, for every viewer.
+
+The sample is fetched once, by `RecordingAnalysisService`, and everyone who asks about the same
+recording shares the reading: the channel filling in the media source and the playback filter
+deciding about one request arrive within milliseconds of each other and must not cause two eight
+megabyte downloads and two FFprobe runs. What the service remembers is the analysis — the streams,
+the broadcast's own program map, and what its H.264 access points were found to open on — and
+nothing about who asked. A finished recording never changes, so its analysis is kept for as long as
+the server runs; one still being written is kept only long enough for a single playback's requests
+to share it. The one decision drawn from any of this lives in the request that needs it — see [The
+same question about a recording](#the-same-question-about-a-recording).
 
 HEAD and GET therefore describe the same resource identically: one method, proxying TVHeadend,
 advertising the same length, the same range support and the same content type to both.
