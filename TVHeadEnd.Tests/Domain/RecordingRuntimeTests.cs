@@ -155,26 +155,39 @@ public class RecordingRuntimeTests
     }
 
     [Fact]
-    public void TheModificationDateOnlyEverRisesAsTheRecordingProgresses()
+    public void TheRealActivityTimeRisesAsTheRecordingProgresses()
     {
-        // Jellyfin rewrites a stored item only when this is later than what it holds, so a date
-        // that went backwards would freeze the recording at whatever it was first described as.
-        var scheduled = Entry("scheduled");
+        // The file opened, then the file closed. Both have happened by the time they are reported,
+        // which is what makes this the truthful half of what used to be one overloaded value.
         var running = Entry("recording", File(PlannedStart, stop: null));
         var finished = Entry("completed", File(PlannedStart, PlannedStart.AddMinutes(20)));
 
-        Assert.True(running.LastActivityUtc >= scheduled.LastActivityUtc);
-        Assert.True(finished.LastActivityUtc > running.LastActivityUtc);
+        Assert.Equal(PlannedStart, running.RecordedActivityUtc);
+        Assert.Equal(PlannedStart.AddMinutes(20), finished.RecordedActivityUtc);
+        Assert.True(finished.RecordedActivityUtc > running.RecordedActivityUtc);
     }
 
     [Fact]
-    public void ARecordingWithNoFilesIsDatedByTheOnlyRealTimeThereIs()
+    public void AnEntryWithNoFileHasDoneNothingAndSaysSo()
     {
-        // Its own start, which for anything that has a recording to show has been and gone. Never
-        // the scheduled stop.
-        var entry = Entry("completed");
+        // Not the scheduled start, and not the scheduled stop. Nothing has happened, so the
+        // truthful answer is that there is no time to give -- the version marker Jellyfin compares
+        // is built separately and has the scheduled times to fall back on.
+        Assert.Null(Entry("completed").RecordedActivityUtc);
+        Assert.Null(Entry("scheduled").RecordedActivityUtc);
+    }
 
-        Assert.Equal(PlannedStart, entry.LastActivityUtc);
+    [Fact]
+    public void APrePaddedRecordingDoesNotClaimItsScheduledStartHasArrived()
+    {
+        // Pre-padding opens the file before the booking begins, so while it runs the scheduled
+        // start is still in the future. Reporting that as the last thing that happened was the
+        // failure of using one value for both jobs.
+        var openedEarly = PlannedStart.AddMinutes(-5);
+        var entry = Entry("recording", File(openedEarly, stop: null));
+
+        Assert.Equal(openedEarly, entry.RecordedActivityUtc);
+        Assert.True(entry.RecordedActivityUtc < entry.StartUtc);
     }
 
     [Fact]

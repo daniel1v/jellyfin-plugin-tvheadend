@@ -6,8 +6,10 @@ name: 'CI'
 # the publish, changelog, label and bot-command ones drive Jellyfin's own infrastructure. This
 # fork packages and publishes itself through tools/release.ps1.
 #
-# Note that GitHub Actions are not enabled on this fork, so nothing here has ever run. It is
-# written to be correct for the day they are.
+# This does run, on every push to master. The note that used to sit here saying it did not was
+# wrong, and being wrong it hid a genuine failure for days: the tests need SkiaSharp's native
+# library, the test project referenced only the Windows build of it, and every run failed on
+# ubuntu-latest while the local ones passed. Read the runs.
 
 on:
   push:

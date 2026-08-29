@@ -104,15 +104,30 @@ public sealed class DvrCatalog
 
         lock (_gate)
         {
-            _revision++;
-
             if (!_entries.TryGetValue(updated.Id, out var existing))
             {
+                // An entry this connection has not been told about. Announced or not, it is new
+                // here, so it counts.
                 _entries[updated.Id] = updated;
+                _revision++;
                 return;
             }
 
-            _entries[updated.Id] = DvrEntry.Merge(existing, updated, message);
+            var merged = DvrEntry.Merge(existing, updated, message);
+
+            // Only when the entry actually says something different. TVHeadend sends an update
+            // for a running recording every few seconds carrying only its statistics -- bytes
+            // written, disk space, errors counted -- none of which this plugin reads, and all of
+            // which used to count as a change. Since the recordings channel started supplying a
+            // cache key built on this number, that meant the whole listing was discarded and
+            // rebuilt every few seconds for as long as anything was recording.
+            if (merged.HasSameContentAs(existing))
+            {
+                return;
+            }
+
+            _entries[updated.Id] = merged;
+            _revision++;
         }
     }
 

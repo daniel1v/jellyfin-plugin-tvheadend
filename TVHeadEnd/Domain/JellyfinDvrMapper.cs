@@ -132,7 +132,7 @@ namespace TVHeadEnd.Domain
                 //
                 // Taken from what has actually happened rather than from the scheduled stop,
                 // which for a recording cut short is a future that never arrived.
-                DateLastUpdated = entry.LastActivityUtc,
+                DateLastUpdated = entry.RecordedActivityUtc,
 
                 // Left empty on purpose: a path here makes Jellyfin bypass this plugin and try to
                 // open a file that lives on the TVHeadend server, not on its own.

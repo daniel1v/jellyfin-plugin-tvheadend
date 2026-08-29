@@ -2,8 +2,11 @@ using System;
 using System.Linq;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Model.MediaInfo;
+using TVHeadEnd.Domain;
 using Xunit;
+using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
 
 namespace TVHeadEnd.Tests.Recordings;
 
@@ -215,20 +218,20 @@ public class RecordingDeliveryTests
         Assert.DoesNotContain("EnableLegacyH264Fallback", settings);
     }
 
+
     [Fact]
     public void AStoredRecordingIsRewrittenExactlyOncePerRevision()
     {
         // ChannelManager rewrites a stored item only when DateModified is strictly later than the
         // date it stored, and it compares no part of MediaSources. So an upgrade that changes how
         // a recording is described reaches existing recordings only through this date.
-        var recordingChanged = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
+        var recording = Finished(RealStop);
 
         // What the version before this one stored for it, and what this one publishes. Derived
         // rather than written out, so raising the revision does not need this test edited -- the
         // property under test is the step, not the number.
-        var stored = PublishedBy(recordingChanged, SchemaRevision() - 1);
-        var now = PublishedBy(recordingChanged, SchemaRevision());
-
+        var stored = PublishedAtRevision(recording, SchemaRevision() - 1);
+        var now = RecordingsChannel.PublishedDateFor(recording);
 
         // Once...
         Assert.True(now > stored);
@@ -236,10 +239,7 @@ public class RecordingDeliveryTests
         // ...and then never again, because the recording has not changed and neither has the
         // revision. The rewrite stores what the channel published, and the next listing publishes
         // the same value again -- not later than the stored one, so the item is left alone.
-        var nowStored = RecordingsChannel.PublishedDateFor(recordingChanged);
-        Assert.Equal(now, nowStored);
-        Assert.False(RecordingsChannel.PublishedDateFor(recordingChanged) > nowStored);
-
+        Assert.False(RecordingsChannel.PublishedDateFor(recording) > now);
     }
 
     [Fact]
@@ -247,17 +247,16 @@ public class RecordingDeliveryTests
     {
         // The failure a fixed future date has: it sits above every real date until it is reached,
         // so a genuine update to a recording is masked and never reaches the library. Here the
-        // published date rises with TVHeadend's own, so it cannot be masked.
-        var before = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+        // published date rises with what the recording did, so it cannot be masked.
+        var before = Finished(RealStop);
+        var after = Finished(RealStop.AddSeconds(1));
 
-        Assert.True(
-            RecordingsChannel.PublishedDateFor(before.AddSeconds(1))
-            > RecordingsChannel.PublishedDateFor(before));
+        Assert.True(RecordingsChannel.PublishedDateFor(after) > RecordingsChannel.PublishedDateFor(before));
 
         // Including a change smaller than the revision step, which is the case a coarser scheme
         // would swallow.
         Assert.True(
-            RecordingsChannel.PublishedDateFor(before.AddMilliseconds(1))
+            RecordingsChannel.PublishedDateFor(Finished(RealStop.AddMilliseconds(1)))
             > RecordingsChannel.PublishedDateFor(before));
     }
 
@@ -267,11 +266,12 @@ public class RecordingDeliveryTests
         // The fixed future date only worked for somebody who upgraded before it arrived. Measured
         // from the recording rather than the calendar, the migration holds whenever it is run --
         // here for a recording TVHeadend wrote long after the release that introduced it.
-        var wroteMuchLater = new DateTime(2028, 5, 4, 9, 30, 0, DateTimeKind.Utc);
+        var muchLater = new DateTime(2028, 5, 4, 9, 30, 0, DateTimeKind.Utc);
+        var recording = Recording(muchLater, muchLater.AddHours(1), muchLater.AddHours(1), RecordingStatus.Completed);
 
         Assert.True(
-            PublishedBy(wroteMuchLater, SchemaRevision())
-            > PublishedBy(wroteMuchLater, SchemaRevision() - 1));
+            RecordingsChannel.PublishedDateFor(recording)
+            > PublishedAtRevision(recording, SchemaRevision() - 1));
     }
 
     [Fact]
@@ -280,8 +280,11 @@ public class RecordingDeliveryTests
         // A recording TVHeadend has not touched in years still needs a date the revision can be
         // counted from, and the floor is what gives it one.
         var ancient = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var recording = Recording(ancient, ancient.AddHours(1), ancient.AddHours(1), RecordingStatus.Completed);
 
-        Assert.Equal(PublishedBy(DateFloor(), SchemaRevision()), RecordingsChannel.PublishedDateFor(ancient));
+        Assert.Equal(
+            DateFloor().AddDays(SchemaRevision()).AddSeconds(2),
+            RecordingsChannel.PublishedDateFor(recording));
     }
 
     [Fact]
@@ -289,31 +292,54 @@ public class RecordingDeliveryTests
     {
         // A value derived from the current time would be later than the stored date on every
         // listing, so every recording would be rewritten for ever.
-        var recordingChanged = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
-
-        var first = RecordingsChannel.PublishedDateFor(recordingChanged);
+        var first = RecordingsChannel.PublishedDateFor(Finished(RealStop));
         System.Threading.Thread.Sleep(20);
-        var second = RecordingsChannel.PublishedDateFor(recordingChanged);
+        var second = RecordingsChannel.PublishedDateFor(Finished(RealStop));
 
         Assert.Equal(first, second);
         Assert.Equal(DateTimeKind.Utc, first.Kind);
-
-        // And it is not a date sitting in the future waiting to be reached.
-        Assert.True(first < DateTime.UtcNow);
     }
 
     [Fact]
-    public void TheRevisionIsCountedInWholeSecondsSoRoundingCannotSwallowIt()
+    public void TheOffsetAheadOfTheRecordingMasksNothing()
     {
-        // Between here and the database the value is serialised and read back. A revision step
-        // smaller than the coarsest plausible rounding would be lost, and a lost step means the
-        // migration silently does not happen.
+        // The marker does sit ahead of the recording it describes -- a whole revision step, which
+        // is what lets it clear what earlier versions published from the scheduled stop. That is
+        // safe only because it is a constant added to a rising anchor rather than a fixed date
+        // everything is pinned to: a fixed future date sits above every real change until it is
+        // reached, and swallows all of them.
+        var published = RecordingsChannel.PublishedDateFor(Finished(RealStop));
+
+        Assert.True(published > RealStop);
+
+        // And the very next thing the recording does still rises above it.
+        Assert.True(RecordingsChannel.PublishedDateFor(Finished(RealStop.AddSeconds(1))) > published);
+    }
+
+    [Fact]
+    public void TheSameRecordingPublishesTheSameDateAfterARestart()
+    {
+        // Every input comes from TVHeadend. Nothing per-process goes in -- that belongs to the
+        // cache key, which must change across restarts, and would rewrite every stored item on
+        // every start if it leaked in here.
+        var beforeRestart = RecordingsChannel.PublishedDateFor(Finished(RealStop));
+        var afterRestart = RecordingsChannel.PublishedDateFor(Finished(RealStop));
+
+        Assert.Equal(beforeRestart, afterRestart);
+    }
+
+    [Fact]
+    public void TheRevisionIsCountedInWholeDaysSoItClearsWhatOlderSchemesPublished()
+    {
+        // Earlier versions published from the scheduled stop and stepped in seconds. One
+        // increment has to clear both that step and however far short of its booking a recording
+        // fell, which is bounded by the booking and unbounded by anything smaller than a day.
         var revision = SchemaRevision();
 
         Assert.True(revision >= 1);
         Assert.Equal(
-            TimeSpan.FromSeconds(revision),
-            RecordingsChannel.PublishedDateFor(DateFloor()) - DateFloor());
+            TimeSpan.FromDays(revision),
+            RecordingsChannel.PublishedDateFor(Scheduled(DateFloor())) - DateFloor());
     }
 
     [Fact]
@@ -335,32 +361,117 @@ public class RecordingDeliveryTests
     }
 
     [Fact]
-    public void ARecordingCutShortStillReceivesTheCorrectionMadeForIt()
+    public void ARecordingCutShortAfterTheFloorStillReceivesTheCorrectionMadeForIt()
     {
-        // The awkward half of moving the modification date off the scheduled stop. Jellyfin
-        // rewrites a stored item only when the published date is later than the one it holds, and
-        // for a recording stopped an hour early the new date is an hour *earlier* than what the
-        // previous version published. The revision adds a second, which does not cover an hour --
-        // so without lifting the floor past those recordings, the ones the correction exists for
-        // would be exactly the ones that never got it.
-        var plannedStop = new DateTime(2026, 8, 25, 21, 45, 0, DateTimeKind.Utc);
-        var reallyStoppedAt = plannedStop.AddHours(-1);
+        // The hard case, and the one a floor cannot solve. This recording was made on the day the
+        // floor was set, so the floor does not lift it at all; and it was stopped an hour early,
+        // so its real times are an hour below the scheduled stop the previous versions published
+        // from. The shortfall is however long the recording had left to run, which no fixed date
+        // knows in advance -- so the anchor keeps the scheduled stop in view and the revision step
+        // clears the seconds the old schemes added.
+        var recording = Finished(RealStop);
 
-        // What the version before this one wrote into the database: the scheduled stop.
-        var stored = plannedStop.AddSeconds(SchemaRevision() - 1);
+        // Schema 5 published from the scheduled stop.
+        var storedByScheduledStop = PlannedStop.AddSeconds(5);
 
-        Assert.True(
-            RecordingsChannel.PublishedDateFor(reallyStoppedAt) > stored,
-            "A recording stopped early would keep its old, scheduled-length description.");
+        // Schema 6 published from the real activity, floored, which is the same day here.
+        var storedByRealActivity = Max(RealStop, DateFloor()).AddSeconds(6);
+
+        var published = RecordingsChannel.PublishedDateFor(recording);
+
+        Assert.True(published > storedByScheduledStop, "Schema 5's value would not be superseded.");
+        Assert.True(published > storedByRealActivity, "Schema 6's value would not be superseded.");
     }
 
     [Fact]
-    public void TheFloorOnlyEverMovesForward()
+    public void FinishingAnEarlyStoppedRecordingStillMovesTheDateOn()
     {
-        // Raising it raises every recording below it, which keeps those dates monotone. Lowering
-        // it would drop them all at once and freeze every stored item at whatever it says now.
-        Assert.True(DateFloor() >= new DateTime(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc));
+        // Within one schema version, and with an anchor that does not move: a recording stopped
+        // early ends below its scheduled stop, so nothing about its times changes when it
+        // finishes. That transition is exactly when the real runtime becomes known and has to be
+        // stored, so the state itself has to carry the date forward.
+        var running = Recording(PlannedStart, PlannedStop, RealStart, RecordingStatus.InProgress);
+        var finished = Recording(PlannedStart, PlannedStop, RealStop, RecordingStatus.Completed);
+
+        Assert.True(
+            RecordingsChannel.PublishedDateFor(finished) > RecordingsChannel.PublishedDateFor(running),
+            "The final runtime would never be stored.");
     }
+
+    [Fact]
+    public void APrePaddedRecordingNeverClaimsItsScheduledStartHasHappened()
+    {
+        // Pre-padding starts the file before the booking. While that is running the scheduled
+        // start is still in the future, so a real-activity time taken from it would state a moment
+        // that has not come -- which is what the one combined value used to do.
+        var entry = DvrEntry.FromMessage(PrePaddedRunningEntry())!;
+
+        Assert.Equal(RealStart.AddMinutes(-5), entry.RecordedActivityUtc);
+        Assert.True(entry.RecordedActivityUtc < entry.StartUtc);
+
+        var recording = JellyfinDvrMapper.ToRecording(entry);
+
+        Assert.Equal(entry.RecordedActivityUtc, recording.DateLastUpdated);
+
+        // The version marker may still sit above it: it is not a claim about the recording, and
+        // Jellyfin only ever compares it with itself.
+        Assert.True(RecordingsChannel.PublishedDateFor(recording) > DateFloor());
+    }
+
+    [Fact]
+    public void ARecordingWithNoFileHasNoActivityTimeAtAll()
+    {
+        // Nothing has happened, so there is nothing truthful to report. The marker still works,
+        // because it has the scheduled times and the floor to anchor on.
+        var recording = Recording(PlannedStart, PlannedStop, activity: null, RecordingStatus.Completed);
+
+        Assert.Null(recording.DateLastUpdated);
+        Assert.Equal(PlannedStart.AddDays(SchemaRevision()).AddSeconds(2), RecordingsChannel.PublishedDateFor(recording));
+    }
+
+    private static readonly DateTime PlannedStart = new(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime PlannedStop = new(2026, 8, 29, 14, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime RealStart = new(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime RealStop = new(2026, 8, 29, 13, 0, 0, DateTimeKind.Utc);
+
+    private static DateTime Max(DateTime left, DateTime right) => left > right ? left : right;
+
+    private static MyRecordingInfo Finished(DateTime realStop)
+        => Recording(PlannedStart, PlannedStop, realStop, RecordingStatus.Completed);
+
+    private static MyRecordingInfo Scheduled(DateTime at)
+        => Recording(at, at, activity: null, RecordingStatus.New);
+
+    private static MyRecordingInfo Recording(
+        DateTime plannedStart,
+        DateTime plannedStop,
+        DateTime? activity,
+        RecordingStatus status)
+        => new()
+        {
+            Id = "1",
+            StartDate = plannedStart,
+            EndDate = plannedStop,
+            DateLastUpdated = activity,
+            Status = status,
+        };
+
+    private static HtspMessage PrePaddedRunningEntry()
+    {
+        var file = new HtspMessage();
+        file.Set("start", ToUnixTime(RealStart.AddMinutes(-5)));
+
+        var message = new HtspMessage();
+        message.Set("id", 1L);
+        message.Set("state", "recording");
+        message.Set("start", ToUnixTime(PlannedStart));
+        message.Set("stop", ToUnixTime(PlannedStop));
+        message.Set("files", (System.Collections.Generic.IEnumerable<HtspMessage>)new[] { file });
+        return message;
+    }
+
+    private static long ToUnixTime(DateTime value)
+        => ((DateTimeOffset)DateTime.SpecifyKind(value, DateTimeKind.Utc)).ToUnixTimeSeconds();
 
     private static int SchemaRevision()
     {
@@ -382,17 +493,33 @@ public class RecordingDeliveryTests
         return (DateTime)field!.GetValue(null)!;
     }
 
-    /// <summary>
-    /// What the channel publishes for a recording at a given revision number, worked out here so
-    /// that a past revision -- which the code no longer contains -- can still be compared against.
-    /// </summary>
-    private static DateTime PublishedBy(DateTime recordingChanged, int revision)
+    [Fact]
+    public void TheFloorOnlyEverMovesForward()
     {
-        var floor = DateFloor();
-        var floored = recordingChanged > floor ? recordingChanged : floor;
-
-        return floored.AddSeconds(revision);
+        // Raising it raises every recording below it, which keeps those dates monotone. Lowering
+        // it would drop them all at once and freeze every stored item at whatever it says now.
+        Assert.True(DateFloor() >= new DateTime(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc));
     }
+
+    /// <summary>
+    /// What the channel would publish for a recording at a given revision number, worked out here
+    /// so that a past revision -- which the code no longer contains -- can still be compared
+    /// against.
+    /// </summary>
+    private static DateTime PublishedAtRevision(MyRecordingInfo recording, int revision)
+    {
+        var anchor = Max(DateFloor(), recording.DateLastUpdated ?? recording.StartDate);
+
+        var progress = recording.Status switch
+        {
+            RecordingStatus.InProgress => 1,
+            RecordingStatus.Completed => 2,
+            _ => 0,
+        };
+
+        return anchor.AddDays(revision).AddSeconds(progress);
+    }
+
 
 
     private static MediaSourceInfo DescribedRecording()

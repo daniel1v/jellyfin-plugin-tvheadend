@@ -169,13 +169,28 @@ public class DvrEntryTests
 
         var recording = JellyfinDvrMapper.ToRecording(entry);
 
-        Assert.NotEqual(default, recording.DateLastUpdated);
-
-        // From what actually happened. This used to be the scheduled stop, which for a recording
-        // cut short is a future that never arrived -- see RecordingRuntimeTests. With no files
-        // announced, the entry's own start is the only real time there is.
-        Assert.Equal(entry.LastActivityUtc, recording.DateLastUpdated);
+        // From what actually happened, and from nothing else. This used to be the scheduled stop,
+        // which for a recording cut short is a future that never arrived -- see
+        // RecordingRuntimeTests. The entry here announced no file, so nothing has happened yet and
+        // the truthful answer is none; the date Jellyfin compares is built separately, in
+        // RecordingsChannel.PublishedDateFor.
+        Assert.Equal(entry.RecordedActivityUtc, recording.DateLastUpdated);
         Assert.NotEqual(entry.StopUtc, recording.DateLastUpdated);
+
+        var withAFile = DvrEntry.FromMessage(WithFile(Message(id: 3, state: "completed"), entry.StartUtc.AddMinutes(20)))!;
+
+        Assert.Equal(
+            withAFile.StartUtc.AddMinutes(20),
+            JellyfinDvrMapper.ToRecording(withAFile).DateLastUpdated);
+    }
+
+    private static HtspMessage WithFile(HtspMessage message, DateTime closedAt)
+    {
+        var file = new HtspMessage();
+        file.Set("stop", ((DateTimeOffset)DateTime.SpecifyKind(closedAt, DateTimeKind.Utc)).ToUnixTimeSeconds());
+
+        message.Set("files", (System.Collections.Generic.IEnumerable<HtspMessage>)new[] { file });
+        return message;
     }
     [Fact]
     public void ArtworkTheServerSentIsKept()

@@ -22,9 +22,22 @@
     <!--
       With its runtime assets, unlike the plugin. The plugin borrows the SkiaSharp that the server
       already loads, but a test process has no server, so it needs the native library itself.
+
+      One native package per platform the tests run on, and both are needed: the assets are chosen
+      by runtime identifier, so a Windows-only reference leaves nothing to load on Linux. That is
+      what CI hit, with six SquareCanvasTests failing on ubuntu-latest for "Unable to load shared
+      library 'libSkiaSharp'" on a build that had otherwise passed.
+
+      NoDependencies is the Linux build that carries no fontconfig requirement. Nothing here draws
+      text, and a native library that needs nothing installed on the runner is one fewer thing for
+      a CI image to stop providing.
+
+      These belong to this project alone. The plugin package carries only the two assemblies named
+      in build.yaml, so none of this can reach it.
     -->
     <PackageReference Include="SkiaSharp" Version="3.119.4" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.4" />
   </ItemGroup>
 
 </Project>

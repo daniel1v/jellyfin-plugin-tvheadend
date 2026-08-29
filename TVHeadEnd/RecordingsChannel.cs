@@ -50,22 +50,20 @@ namespace TVHeadEnd
         /// already has, and they keep whatever description the previous version gave them.
         /// </para>
         /// <para>
-        /// What reaches them is an offset added to the date, not a date of its own. The published
-        /// date is <c>max(DateLastUpdated, floor) + revision</c>, which has the two properties the
-        /// job needs and a fixed date has neither of. For an unchanged recording it is greater
-        /// than the stored value exactly once per increment, so each upgrade rewrites every item
-        /// once and then leaves it alone -- and it stays true however long after the release the
-        /// plugin is installed, because it is measured from the recording rather than the calendar.
-        /// For a recording TVHeadend really did change it rises with the change, so a later
-        /// update still comes through instead of being masked by a fixed future date sitting above
-        /// it.
+        /// What reaches them is an offset added to the recording's own anchor, not a date of its
+        /// own -- see <see cref="PublishedDateFor"/> for how the two combine. For an unchanged
+        /// recording the published date is greater than the stored value exactly once per
+        /// increment, so each upgrade rewrites every item once and then leaves it alone; and it
+        /// stays true however long after the release the plugin is installed, because it is
+        /// measured from the recording rather than the calendar.
         /// </para>
         /// <para>
-        /// Counted in seconds rather than ticks so that the increment survives any rounding
-        /// between here and the database. Raise it by one per change to the published shape.
+        /// Counted in whole days, because one increment has to clear how far short of its booking
+        /// a recording fell as well as the seconds earlier versions stepped in. Raise it by one per
+        /// change to the published shape.
         /// </para>
         /// </remarks>
-        private const int MediaSourceSchemaRevision = 6;
+        private const int MediaSourceSchemaRevision = 7;
 
         /// <summary>
         /// The floor every recording's modification date is lifted to.
@@ -79,13 +77,11 @@ namespace TVHeadEnd
         /// once and freeze every stored item.
         /// </para>
         /// <para>
-        /// Moved from 2026-08-19 when the runtime and modification date stopped coming from the
-        /// scheduled times. The revision alone could not carry that change: it adds one second,
-        /// while a recording stopped an hour early now publishes a date an hour <em>earlier</em>
-        /// than the version before it published -- below what Jellyfin stored, so the item would
-        /// never be rewritten, and the recordings the correction exists for would be exactly the
-        /// ones that never received it. Lifting the floor past them puts every existing recording
-        /// above its stored date again.
+        /// Moved once, from 2026-08-19, so that it sits above every date the schema-6 build
+        /// published while it was briefly deployed. It carries nothing else: making a recording
+        /// stopped early clear its own earlier publication is the anchor's job, not the floor's,
+        /// and a floor could never have done it -- the shortfall is however long the recording had
+        /// left to run, which no fixed date knows.
         /// </para>
         /// </remarks>
         private static readonly DateTime MediaSourceDateFloorUtc = new(2026, 8, 29, 0, 0, 0, DateTimeKind.Utc);
@@ -422,7 +418,7 @@ namespace TVHeadEnd
                 // stored copy. The date carries both -- TVHeadend's own, floored, plus one step
                 // per description change since. Without the second an upgrade never reaches
                 // recordings somebody already has.
-                DateModified = PublishedDateFor(item.DateLastUpdated),
+                DateModified = PublishedDateFor(item),
 
                 Overview = item.Overview,
                 // People = item.People
@@ -664,27 +660,81 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// The modification date a recording is published with.
+        /// The modification date a recording is published with: a version marker, not a fact about
+        /// the recording.
         /// </summary>
         /// <remarks>
         /// <para>
-        /// <c>max(DateLastUpdated, floor) + revision seconds</c>. Monotone in TVHeadend's own date,
-        /// so a recording that really changed still comes through, and greater than the previously
-        /// published value exactly once per revision, so an upgrade rewrites each stored item once.
+        /// Jellyfin rewrites a stored channel item only when this is strictly greater than the
+        /// value it holds, so it is the plugin's only way of reaching recordings somebody already
+        /// has. That makes it a persistence version, and the two jobs cannot be done by one value:
+        /// the recording's real activity time must be truthful -- see
+        /// <see cref="MyRecordingInfo.DateLastUpdated"/> -- while this must only ever rise, even
+        /// when the truth about a recording turns out to be earlier than what was published for it
+        /// before.
         /// </para>
         /// <para>
-        /// Nothing here reads the clock. A value derived from the current time would be later than
-        /// the stored date on every listing and rewrite every recording for ever.
+        /// <c>max(real activity, floor) + revision days + state seconds</c>. The anchor follows
+        /// what the recording actually did, so a real change always raises it and can never be
+        /// masked. The scheduled stop is deliberately not in it: putting it there would make the
+        /// anchor stop moving for every recording that ends below its booking, which is the whole
+        /// population this correction is about.
+        /// </para>
+        /// <para>
+        /// The revision step is a day, and that size is the point. Every earlier version published
+        /// from the scheduled stop and stepped in seconds, so this has to clear however far short
+        /// of its booking a recording fell -- an amount no fixed date can know in advance, but
+        /// which is bounded by the length of the booking. A day covers any recording anybody
+        /// makes. It is a constant offset rather than a fixed future date, so it lifts every
+        /// recording equally and blocks nothing: a later real change still rises above it.
+        /// </para>
+        /// <para>
+        /// The state step carries the one transition the anchor cannot. A server too old to send
+        /// the file list gives the same anchor while recording and once completed, and that
+        /// transition is exactly when the final runtime becomes known and has to be stored.
+        /// </para>
+        /// <para>
+        /// Nothing here reads the clock or anything else that differs between runs: the same
+        /// recording in the same state publishes the same value after a restart, on any machine.
+        /// A value derived from the current time would be later than the stored date on every
+        /// listing and rewrite every recording for ever.
         /// </para>
         /// </remarks>
-        /// <param name="recordingChanged">When TVHeadend last touched the recording.</param>
+        /// <param name="recording">The recording being published.</param>
         /// <returns>The date to publish.</returns>
-        internal static DateTime PublishedDateFor(DateTime recordingChanged)
+        internal static DateTime PublishedDateFor(MyRecordingInfo recording)
         {
-            var floored = recordingChanged > MediaSourceDateFloorUtc ? recordingChanged : MediaSourceDateFloorUtc;
+            ArgumentNullException.ThrowIfNull(recording);
 
-            return floored.AddSeconds(MediaSourceSchemaRevision);
+            // What the recording did, or failing that when it was due to begin -- an entry with no
+            // file has done nothing, and its scheduled start is the only thing left to hang on.
+            var anchor = recording.DateLastUpdated ?? recording.StartDate;
+
+            if (anchor < MediaSourceDateFloorUtc)
+            {
+                anchor = MediaSourceDateFloorUtc;
+            }
+
+            return anchor
+                .AddDays(MediaSourceSchemaRevision)
+                .AddSeconds(ProgressOrdinal(recording.Status));
         }
+
+        /// <summary>
+        /// How far through its life the recording is, as a step the published date can carry.
+        /// </summary>
+        /// <remarks>
+        /// One second apiece, well inside the minute the schema revision moves in, so the two
+        /// cannot run into one another.
+        /// </remarks>
+        /// <param name="status">The recording's status.</param>
+        /// <returns>The step.</returns>
+        private static int ProgressOrdinal(MediaBrowser.Model.LiveTv.RecordingStatus status) => status switch
+        {
+            MediaBrowser.Model.LiveTv.RecordingStatus.InProgress => 1,
+            MediaBrowser.Model.LiveTv.RecordingStatus.Completed => 2,
+            _ => 0,
+        };
 
         /// <summary>
         /// The source a listing reports: a placeholder, standing for a recording nobody has asked

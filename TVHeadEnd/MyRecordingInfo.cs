@@ -214,9 +214,19 @@ namespace TVHeadEnd
         public long? RunTimeTicks { get; set; }
 
         /// <summary>
-        /// Gets or sets the date last updated.
+        /// Gets or sets the last moment the recording itself did something.
         /// </summary>
-        /// <value>The date last updated.</value>
-        public DateTime DateLastUpdated { get; set; }
+        /// <remarks>
+        /// Read from the file TVHeadend wrote: when it was closed, or failing that when it was
+        /// opened. <see langword="null"/> for a recording with no file, because then nothing has
+        /// happened yet. Nothing scheduled goes into it, so it never states a time that has not
+        /// come -- which the scheduled stop, and with pre-padding even the scheduled start, can be.
+        /// <para>
+        /// This is not the value published as <c>ChannelItemInfo.DateModified</c>; that is a
+        /// version marker with a different job, built in
+        /// <see cref="RecordingsChannel.PublishedDateFor"/>.
+        /// </para>
+        /// </remarks>
+        public DateTime? DateLastUpdated { get; set; }
     }
 }

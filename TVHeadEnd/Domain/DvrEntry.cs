@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Tvheadend.Htsp.Protocol;
 
 namespace TVHeadEnd.Domain;
@@ -24,6 +25,15 @@ namespace TVHeadEnd.Domain;
 public sealed record DvrEntry
 {
     private static readonly DateTime UnixEpochUtc = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// One shared empty list, so that two entries without files compare as equal.
+    /// </summary>
+    /// <remarks>
+    /// Record equality compares an <see cref="IReadOnlyList{T}"/> by reference, and two separately
+    /// created empty lists are not the same reference. See <see cref="HasSameContentAs"/>.
+    /// </remarks>
+    private static readonly IReadOnlyList<DvrRecordingFile> NoFiles = [];
 
     /// <summary>
     /// Gets the TVHeadend identifier of the entry.
@@ -185,43 +195,52 @@ public sealed record DvrEntry
     public TimeSpan? ScheduledDuration => StopUtc > StartUtc ? StopUtc - StartUtc : null;
 
     /// <summary>
-    /// Gets the latest moment this entry is known to have really reached.
+    /// Gets the last moment the recording itself is known to have done something.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Used as the recording's modification date, which Jellyfin compares against what it stored
-    /// to decide whether to rewrite the item. It has to be real and it has to only ever rise.
+    /// Read from the file only: when it was closed, or failing that when it was opened. Nothing
+    /// scheduled is consulted, so this never claims a time that has not happened. It is
+    /// <see langword="null"/> for an entry with no file, because then nothing has.
     /// </para>
     /// <para>
-    /// The scheduled stop is neither. For a recording still running it is in the future, and for
-    /// one stopped early it is a future that never happened -- so an item was dated by something
-    /// that had not occurred, and a recording cut short claimed to have been modified after the
-    /// last time anything touched it. Only times that have actually passed are considered here:
-    /// the file's close, its start, and failing both the entry's own start, which for anything
-    /// with a file has been and gone.
+    /// This deliberately does not double as the version marker Jellyfin compares to decide whether
+    /// to rewrite a stored item. The two pull in opposite directions -- one must be truthful, the
+    /// other must only ever rise -- and one value could not be both: an entry whose scheduled start
+    /// had not arrived yet, which pre-padding makes an ordinary case, reported a future as though
+    /// it had passed. The marker is built separately, in RecordingsChannel.PublishedDateFor.
     /// </para>
     /// </remarks>
-    public DateTime LastActivityUtc
+    public DateTime? RecordedActivityUtc => PlayableFile is { } file ? file.StopUtc ?? file.StartUtc : null;
+
+    /// <summary>
+    /// Reports whether another entry says exactly the same thing as this one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// TVHeadend sends a <c>dvrEntryUpdate</c> for a running recording every few seconds carrying
+    /// nothing but its statistics -- bytes written, disk space, errors counted. None of that is
+    /// read into a <see cref="DvrEntry"/>, so those updates produce an entry identical to the one
+    /// already held, and counting them as changes rotated the recordings cache continuously for
+    /// as long as anything was recording.
+    /// </para>
+    /// <para>
+    /// The record's own equality does everything except the file list: for an
+    /// <see cref="IReadOnlyList{T}"/> it falls back to reference equality, so a <c>files</c> block
+    /// re-sent unchanged would compare as different every time. Both sides are therefore compared
+    /// against one shared empty list first, and the files element by element after it.
+    /// </para>
+    /// </remarks>
+    /// <param name="other">The entry to compare against.</param>
+    /// <returns>Whether the two carry the same information.</returns>
+    public bool HasSameContentAs(DvrEntry other)
     {
-        get
-        {
-            var latest = StartUtc;
+        ArgumentNullException.ThrowIfNull(other);
 
-            if (PlayableFile is { } file)
-            {
-                if (file.StartUtc is { } fileStart && fileStart > latest)
-                {
-                    latest = fileStart;
-                }
+        var thisWithoutFiles = this with { Files = NoFiles };
+        var otherWithoutFiles = other with { Files = NoFiles };
 
-                if (file.StopUtc is { } fileStop && fileStop > latest)
-                {
-                    latest = fileStop;
-                }
-            }
-
-            return latest;
-        }
+        return thisWithoutFiles == otherWithoutFiles && Files.SequenceEqual(other.Files);
     }
 
     /// <summary>
