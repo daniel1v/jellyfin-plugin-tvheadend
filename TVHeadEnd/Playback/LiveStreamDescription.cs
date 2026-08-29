@@ -103,18 +103,10 @@ public sealed record LiveStreamDescription
             Language = entry.Language,
             IsHearingImpaired = entry.IsHearingImpaired,
 
-            // Broadcast metadata, not a preference: the tables are being asked what a track is
-            // for, and only a track they call an addition to the programme is withheld from the
-            // default set. Main and unclassified both stay in it.
-            //
-            // The asymmetry is deliberate and was measured. Jellyfin narrows its audio candidates
-            // to the tracks marked default whenever the viewer prefers default tracks, which is
-            // how a new account is created. If that narrowing yields nothing, the compatibility
-            // check is skipped rather than failed -- direct play is granted and labelled with the
-            // first track of the map, the client pins it, and the second answer refuses what the
-            // first one named. Reading an unclassified track as an addition would put every
-            // channel with no audio descriptors into exactly that state.
-            IsDefault = entry.AudioPurpose != AudioPurpose.Supplementary,
+            // Broadcast metadata, not a preference -- see AudioPurposeExtensions, which the
+            // recordings path reads too. The same broadcast reaches Jellyfin by two routes and
+            // must be described the same way by both.
+            IsDefault = entry.AudioPurpose.BelongsInTheDefaultSet(),
         },
 
         ElementaryStreamKind.Subtitle => new MediaStream
