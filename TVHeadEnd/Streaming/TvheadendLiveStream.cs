@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Playback;
 
 namespace TVHeadEnd.Streaming;
 
@@ -536,9 +537,12 @@ public sealed class TvheadendLiveStream : ILiveStream, IDirectStreamProvider, IA
                     // a fraction of a television channel's, for no gain.
                     if (!_ready.Task.IsCompleted && Buffer.WritePosition > 0 && IsPlaybackSettled(conditioner))
                     {
-                        RequiresVideoReencode = _clientNeedsIdr
-                            && conditioner.VideoStreamType == H264StreamType
-                            && conditioner.HasIdrEntryPoint == false;
+                        // The same rule the recordings path applies, from the same place. A
+                        // stream that is not H.264 never reaches the classifier at all, so it
+                        // carries no evidence and needs no separate exemption here.
+                        RequiresVideoReencode = PlaybackCompatibilityPolicy.RequiresVideoReencode(
+                            _clientNeedsIdr,
+                            conditioner.EntryPointEvidence);
 
                         LogPlayback(conditioner);
                         _ready.TrySetResult();

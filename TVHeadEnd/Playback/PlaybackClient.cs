@@ -1,4 +1,5 @@
 using System;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 
 namespace TVHeadEnd.Playback;
@@ -53,8 +54,29 @@ public sealed class PlaybackClient
     public string? Name => _httpContextAccessor?.HttpContext?.User?.FindFirst(ClientClaim)?.Value;
 
     /// <summary>
-    /// Gets a value indicating whether the request is being served for one of Jellyfin's Android
-    /// clients.
+    /// Gets a value indicating whether this client's decoder will only start on an IDR picture.
+    /// </summary>
+    /// <remarks>
+    /// The one client quirk this plugin knows, stated once. See
+    /// <see cref="NeedsIdrEntryPointFor(ClaimsPrincipal?)"/> for what it means and why it is asked
+    /// of the session rather than of the request.
+    /// </remarks>
+    public bool NeedsIdrEntryPoint => NeedsIdrEntryPointFor(_httpContextAccessor?.HttpContext?.User);
+
+    /// <summary>
+    /// Gets the device identifier of the request being served, or <see langword="null"/> when
+    /// there is no request -- a scheduled task, a channel refresh, or an internal call.
+    /// </summary>
+    /// <remarks>
+    /// The same value a client sends back as <c>deviceId</c> on the streaming endpoints, which is
+    /// what lets a stream opened here be found again by the request that plays it. Jellyfin put it
+    /// in the session's claims; it is not read from a header the client could spell differently.
+    /// </remarks>
+    public string? DeviceId => _httpContextAccessor?.HttpContext?.User?.FindFirst(DeviceIdClaim)?.Value;
+
+    /// <summary>
+    /// Whether the client an already authenticated session belongs to will only start on an IDR
+    /// picture.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -72,23 +94,16 @@ public sealed class PlaybackClient
     /// not a user agent: the client chose it and Jellyfin recorded it.
     /// </para>
     /// <para>
-    /// When the claim is absent or names something else the answer is no, and the caller takes
-    /// the ordinary path.
+    /// Static and pure so that a request filter, which is handed the principal and nothing else,
+    /// asks exactly the same question the streaming path asks. When the claim is absent or names
+    /// something else the answer is no and the caller takes the ordinary path, which is the safe
+    /// direction: the ordinary path is the one that delivers the broadcast untouched.
     /// </para>
     /// </remarks>
-    public bool IsAndroid
-        => Name?.Contains("android", StringComparison.OrdinalIgnoreCase) == true;
-
-    /// <summary>
-    /// Gets the device identifier of the request being served, or <see langword="null"/> when
-    /// there is no request -- a scheduled task, a channel refresh, or an internal call.
-    /// </summary>
-    /// <remarks>
-    /// The same value a client sends back as <c>deviceId</c> on the streaming endpoints, which is
-    /// what lets a stream opened here be found again by the request that plays it. Jellyfin put it
-    /// in the session's claims; it is not read from a header the client could spell differently.
-    /// </remarks>
-    public string? DeviceId => _httpContextAccessor?.HttpContext?.User?.FindFirst(DeviceIdClaim)?.Value;
+    /// <param name="user">The claims of the session Jellyfin authenticated, if there is one.</param>
+    /// <returns>Whether this client needs an IDR picture to start.</returns>
+    public static bool NeedsIdrEntryPointFor(ClaimsPrincipal? user)
+        => user?.FindFirst(ClientClaim)?.Value?.Contains("android", StringComparison.OrdinalIgnoreCase) == true;
 
     /// <summary>
     /// Identifies the viewer the request is being served for, for as long as a live stream needs

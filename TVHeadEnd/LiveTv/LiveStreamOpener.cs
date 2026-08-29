@@ -94,7 +94,7 @@ public sealed class LiveStreamOpener
 
         // Asked once, here, while the request that carries the answer is still in flight. The
         // stream is opened on this thread but read on another, by which time there is no request.
-        var needsIdrToStart = _client.IsAndroid;
+        var needsIdrToStart = _client.NeedsIdrEntryPoint;
         var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
         var name = channel?.Name ?? "Live TV";
 

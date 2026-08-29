@@ -76,10 +76,29 @@ public static class TvheadendItems
             return string.Equals(channel.ServiceName, ServiceName, StringComparison.Ordinal);
         }
 
-        // Everything else is a recording only if Jellyfin's own channel manager says it belongs
-        // to this plugin's channel. A film, an episode or another plugin's channel item carries a
-        // different identifier here, and an ordinary library item carries none at all.
-        return item.ChannelId.Equals(RecordingsChannelId(libraryManager));
+        return IsRecording(libraryManager, item);
+    }
+
+    /// <summary>
+    /// Whether one item Jellyfin holds is a recording this plugin produced.
+    /// </summary>
+    /// <remarks>
+    /// Asked of Jellyfin's own channel manager, which wrote the owning channel onto every item it
+    /// stored. A film, an episode or another plugin's channel item carries a different identifier
+    /// here, and an ordinary library item carries none at all -- so no display name, path fragment
+    /// or media source identifier has to be guessed at.
+    /// </remarks>
+    /// <param name="libraryManager">Jellyfin's library, which owns the derivation.</param>
+    /// <param name="item">The item in question.</param>
+    /// <returns><see langword="true"/> when the item is one of this plugin's recordings.</returns>
+    public static bool IsRecording(ILibraryManager libraryManager, BaseItem item)
+    {
+        ArgumentNullException.ThrowIfNull(libraryManager);
+        ArgumentNullException.ThrowIfNull(item);
+
+        // A live channel is this plugin's too, and is emphatically not a recording.
+        return item is not LiveTvChannel
+            && item.ChannelId.Equals(RecordingsChannelId(libraryManager));
     }
 
     /// <summary>

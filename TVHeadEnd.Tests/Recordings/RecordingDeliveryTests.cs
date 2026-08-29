@@ -5,6 +5,8 @@ using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Model.MediaInfo;
 using TVHeadEnd.Domain;
+using TVHeadEnd.Recordings;
+using TVHeadEnd.Streaming;
 using Xunit;
 using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
 
@@ -18,9 +20,15 @@ namespace TVHeadEnd.Tests.Recordings;
 /// <para>
 /// Both of these were the same mistake in different places. The plugin read the first few
 /// megabytes of a recording, found no H.264 IDR frame, and treated that as proof the recording
-/// had none -- then withheld direct play for the whole file and served a re-encode. A finite
-/// probe cannot establish an absence: a broadcast that opens on a recovery point and carries an
-/// IDR a minute later looks exactly the same from the front.
+/// had none -- then withheld direct play for the whole file, for every viewer, and served a
+/// re-encode of its own. A finite probe cannot establish an absence: a broadcast that opens on a
+/// recovery point and carries an IDR a minute later looks exactly the same from the front.
+/// </para>
+/// <para>
+/// What replaced it keeps the reading and throws away the conclusions. The published source is
+/// the same for everyone and offers every route; a single request, from a client whose decoder is
+/// known not to start on what was actually found, has three of Jellyfin's own parameters
+/// withdrawn and nothing else. These tests are the fence around that line.
 /// </para>
 /// <para>
 /// The re-encode is what made HEAD and GET disagree. HEAD proxied TVHeadend, which advertises a
@@ -48,13 +56,58 @@ public class RecordingDeliveryTests
     {
         // The mechanism is gone rather than merely unused: there is no longer a member that maps
         // a recording identifier to "must be re-encoded", so nothing can reach that state by
-        // accident again.
+        // accident again. Whether one particular request has to be re-encoded is decided in that
+        // request and left there -- see RecordingPlaybackCompatibilityFilter.
         var members = typeof(RecordingsChannel)
             .GetMembers()
             .Select(member => member.Name)
             .ToList();
 
         Assert.DoesNotContain("RequiresReencode", members);
+    }
+
+    [Fact]
+    public void WhatIsLearnedAboutARecordingCarriesNoDecisionAboutIt()
+    {
+        // The analysis is shared between viewers and remembered for as long as the server runs.
+        // A verdict stored in it would be one client's answer handed to the next, which is the
+        // precise shape of the bug this architecture exists to make impossible.
+        var members = typeof(RecordingAnalysis)
+            .GetMembers()
+            .Select(member => member.Name)
+            .ToList();
+
+        Assert.DoesNotContain("RequiresReencode", members);
+        Assert.DoesNotContain("SupportsDirectPlay", members);
+        Assert.DoesNotContain("SupportsDirectStream", members);
+        Assert.DoesNotContain("AndroidCompatible", members);
+        Assert.DoesNotContain("IsAndroid", members);
+        Assert.DoesNotContain("Client", members);
+    }
+
+    [Fact]
+    public void EvidenceOfNoIdrChangesNothingAboutThePublishedSource()
+    {
+        // The strongest form of the same rule. Even handed the evidence that does trigger the
+        // workaround, describing a recording only describes it: the routes on offer are the same
+        // ones, and the request filter is the only thing that ever withdraws any of them.
+        var source = DescribedRecording();
+        var analysis = new RecordingAnalysis(
+            new InspectedMedia(
+                "ts",
+                [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" }],
+                null,
+                null,
+                null,
+                null),
+            null,
+            H264EntryPointEvidence.RecoveryOnlyObserved);
+
+        Assert.True(RecordingDescriber.Describe(source, analysis));
+
+        Assert.True(source.SupportsDirectPlay);
+        Assert.True(source.SupportsDirectStream);
+        Assert.True(source.SupportsTranscoding);
     }
 
     [Fact]
@@ -122,7 +175,7 @@ public class RecordingDeliveryTests
     [Fact]
     public void ARecordingStartsOutNamedTheWayALiveChannelIs()
     {
-        // The starting assumption only; DescribeFromSample replaces it with whatever the sample
+        // The starting assumption only; RecordingDescriber.Describe replaces it with whatever the sample
         // turned out to be. What matters is that the two paths spell the one container alike.
         var source = RecordingsChannel.BuildRecordingSource("867835561", "1f6cf027e0f2168c8ffaab722d151bb1", "http://host:8096/x");
 
@@ -195,16 +248,17 @@ public class RecordingDeliveryTests
 
 
     [Fact]
-    public void NothingReEncodesARecordingOnTheWayToTheClient()
+    public void NothingInThisPluginEncodesARecording()
     {
-        // The encoder that served the re-encode, and the scanner that decided when to, are both
-        // gone. A recording is proxied as TVHeadend stored it.
+        // The contract rather than a list of names once used. Reading a recording to find out
+        // what it contains is fine and is done in several places; what this plugin must never own
+        // is an encoder. When a recording has to be re-encoded it is Jellyfin that does it, with
+        // Jellyfin's arguments, and the plugin's own endpoint still serves TVHeadend's file.
         var assembly = typeof(RecordingsChannel).Assembly;
         var names = assembly.GetTypes().Select(type => type.FullName ?? type.Name).ToList();
 
-        Assert.DoesNotContain(names, name => name.Contains("LegacyH264Encoder", StringComparison.Ordinal));
-        Assert.DoesNotContain(names, name => name.Contains("H264RandomAccess", StringComparison.Ordinal));
-        Assert.DoesNotContain(names, name => name.Contains("VideoRandomAccessProbe", StringComparison.Ordinal));
+        Assert.DoesNotContain(names, name => name.Contains("Encoder", StringComparison.Ordinal));
+        Assert.DoesNotContain(names, name => name.Contains("Transcod", StringComparison.Ordinal));
     }
 
     [Fact]

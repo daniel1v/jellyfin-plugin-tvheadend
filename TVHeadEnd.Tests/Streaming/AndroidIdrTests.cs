@@ -50,7 +50,7 @@ public class AndroidIdrTests
 
         var client = new PlaybackClient(new HttpContextAccessor { HttpContext = context });
 
-        Assert.Equal(expected, client.IsAndroid);
+        Assert.Equal(expected, client.NeedsIdrEntryPoint);
     }
 
     [Fact]
@@ -58,8 +58,8 @@ public class AndroidIdrTests
     {
         // A scheduled task or an internal call. Assuming a defect on no evidence would re-encode
         // every channel; assuming none delivers the broadcast, which is what it is for.
-        Assert.False(new PlaybackClient(null).IsAndroid);
-        Assert.False(new PlaybackClient(new HttpContextAccessor()).IsAndroid);
+        Assert.False(new PlaybackClient(null).NeedsIdrEntryPoint);
+        Assert.False(new PlaybackClient(new HttpContextAccessor()).NeedsIdrEntryPoint);
     }
 
     [Fact]

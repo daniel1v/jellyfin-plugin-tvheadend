@@ -32,7 +32,7 @@ namespace TVHeadEnd.Recordings
     /// playback to share one reading of it.
     /// </para>
     /// </remarks>
-    public sealed class RecordingAnalysisService
+    public sealed class RecordingAnalysisService : IRecordingAnalyser
     {
         /// <summary>
         /// How much of a recording is fetched to analyse it. The program tables and a sample of

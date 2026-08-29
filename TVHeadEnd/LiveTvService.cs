@@ -167,7 +167,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         // across the whole call, so two viewers starting the same channel arrive here one after
         // the other and the second finds the first stream to reuse. A lock of our own would only
         // duplicate that.
-        var needsIdrToStart = _client.IsAndroid;
+        var needsIdrToStart = _client.NeedsIdrEntryPoint;
         var reusable = currentLiveStreams
             .OfType<TvheadendLiveStream>()
             .FirstOrDefault(stream => CanBeReusedFor(stream, channelId, needsIdrToStart));

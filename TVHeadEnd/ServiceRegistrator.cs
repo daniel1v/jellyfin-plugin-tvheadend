@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Recordings;
@@ -29,6 +30,8 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // deciding whether this client can play it directly both ask it, within milliseconds of
         // each other, and neither should cause a second eight megabyte fetch.
         serviceCollection.AddSingleton<RecordingAnalysisService>();
+        serviceCollection.AddSingleton<IRecordingAnalyser>(
+            provider => provider.GetRequiredService<RecordingAnalysisService>());
 
         // Registered under its own type as well, so the endpoint serving recordings can ask it
         // what its analysis found instead of establishing the same thing a second time. Both
@@ -46,5 +49,13 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<OpenLiveStreams>();
 
         serviceCollection.AddSingleton<IStartupFilter, LivePlaybackStartupFilter>();
+
+        // The recordings half of the same decision, and it has to be an MVC filter rather than a
+        // middleware step: the parameters it sets are action arguments, which exist only after
+        // model binding has run. Options are built on first use, so a plugin registering this
+        // reaches the same MvcOptions the server configured, whatever order the two ran in.
+        serviceCollection.AddSingleton<RecordingPlaybackCompatibilityFilter>();
+        serviceCollection.Configure<MvcOptions>(
+            options => options.Filters.AddService<RecordingPlaybackCompatibilityFilter>());
     }
 }
