@@ -51,25 +51,13 @@ public sealed class TransportStreamConditioner
     /// </summary>
     private const byte H264StreamType = 0x1B;
 
-    /// <summary>
-    /// How many signalled access points are examined before this open concludes that it found no
-    /// IDR-safe entry. A statement about the search, not about the broadcaster.
-    /// </summary>
-    private const int MaximumExaminedAccessPoints = 3;
-
-    /// <summary>
-    /// How many payload unit starts a picture may span before it is taken as read. Only a bound:
-    /// the syntax normally ends the access unit first.
-    /// </summary>
-    private const int MaximumPayloadUnitsPerPicture = 1;
-
     private static readonly TimeSpan RandomAccessSearchTimeLimit = TimeSpan.FromSeconds(2);
 
     private readonly int _droppedPid;
     private readonly byte[] _partialPacket = new byte[TransportStreamPacket.Length];
     private readonly List<StreamAccessPoint> _accessPoints = [];
 
-    private readonly H264AccessUnitScanner _accessUnitScanner = new();
+    private readonly H264AccessPointClassifier _accessPointClassifier = new();
     private readonly PsiSectionAssembler _programAssociationSection = new();
     private readonly PsiSectionAssembler _programMapSection = new();
 
@@ -81,9 +69,6 @@ public sealed class TransportStreamConditioner
     private bool _started;
     private long _outputPosition;
     private long _chunkStart;
-    private long _pendingPointPosition = -1;
-    private int _pendingPointUnits;
-    private int _classifiedAccessPoints;
     private int _generationStartOffset = -1;
     private int _bytesInspected;
     private long _firstInspectedTimestamp;
@@ -161,7 +146,17 @@ public sealed class TransportStreamConditioner
     /// somewhere other than a signalled access point.
     /// </para>
     /// </remarks>
-    public bool? HasIdrEntryPoint { get; private set; }
+    public bool? HasIdrEntryPoint => _accessPointClassifier.HasIdrEntryPoint;
+
+    /// <summary>
+    /// Gets what every access point read so far, not merely the opening ones, says about where
+    /// this stream can be entered.
+    /// </summary>
+    /// <remarks>
+    /// The form the shared playback policy reads. Unbounded where <see cref="HasIdrEntryPoint"/>
+    /// is bounded: it keeps improving for as long as the stream runs.
+    /// </remarks>
+    public H264EntryPointEvidence EntryPointEvidence => _accessPointClassifier.Evidence;
 
     /// <summary>
     /// Gets a value indicating whether the broadcaster has changed the program layout since the
@@ -434,62 +429,31 @@ public sealed class TransportStreamConditioner
 
         if (isRandomAccessPoint)
         {
-            FinishPendingPoint();
-            _pendingPointPosition = position;
-            _pendingPointUnits = 0;
-            _accessUnitScanner.Reset();
+            Publish(_accessPointClassifier.EndPicture());
+            _accessPointClassifier.BeginPicture(position);
         }
-        else if (_pendingPointPosition < 0)
+        else if (!_accessPointClassifier.IsReadingPicture)
         {
             return;
         }
         else if (TransportStreamPacket.StartsPayloadUnit(packet))
         {
-            _pendingPointUnits++;
+            _accessPointClassifier.NotePayloadUnitStart();
         }
 
-        _accessUnitScanner.Scan(TransportStreamPacket.ReadPayload(packet));
-
-        // An IDR settles it at once. Its absence has to be read to the end of the picture, and the
-        // payload unit count bounds that for a stream whose syntax cannot be followed.
-        if (_accessUnitScanner.Completed || _accessUnitScanner.CarriesIdr || _pendingPointUnits >= MaximumPayloadUnitsPerPicture)
-        {
-            FinishPendingPoint();
-        }
+        Publish(_accessPointClassifier.Read(TransportStreamPacket.ReadPayload(packet)));
     }
 
     /// <summary>
-    /// Concludes the picture being read, publishing its access point again if it opened on an IDR.
+    /// Publishes an access point that has been read a second time, at the stronger guarantee,
+    /// when the picture there turned out to open on an IDR.
     /// </summary>
-    private void FinishPendingPoint()
+    private void Publish(ExaminedAccessPoint? point)
     {
-        if (_pendingPointPosition < 0)
+        if (point is { CarriesIdr: true } idr)
         {
-            return;
+            _accessPoints.Add(new StreamAccessPoint(idr.Position, RandomAccessGuarantee.Idr));
         }
-
-        if (_accessUnitScanner.CarriesIdr)
-        {
-            _accessPoints.Add(new StreamAccessPoint(_pendingPointPosition, RandomAccessGuarantee.Idr));
-        }
-
-        // Only the first few decide how this stream opens. Everything after them is still read and
-        // still published, for the readers that join later.
-        if (_classifiedAccessPoints < MaximumExaminedAccessPoints)
-        {
-            _classifiedAccessPoints++;
-
-            if (_accessUnitScanner.CarriesIdr)
-            {
-                HasIdrEntryPoint = true;
-            }
-            else if (_classifiedAccessPoints >= MaximumExaminedAccessPoints)
-            {
-                HasIdrEntryPoint = false;
-            }
-        }
-
-        _pendingPointPosition = -1;
     }
 
     private bool ShouldStartAt(ReadOnlySpan<byte> packet, int pid)
@@ -623,7 +587,7 @@ public sealed class TransportStreamConditioner
     private void BeginNewProgramLayout()
     {
         _accessPoints.Clear();
-        _pendingPointPosition = -1;
+        _accessPointClassifier.AbandonPicture();
         ProgramLayoutGeneration++;
         ProgramLayoutChanged = true;
     }
