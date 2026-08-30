@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Model.Plugins;
 using Microsoft.Extensions.Logging;
 using Tvheadend.Htsp;
 using Tvheadend.Htsp.Protocol;
@@ -33,13 +32,13 @@ public sealed class TvheadendConnection : IAsyncDisposable
     private const int MaximumConnectAttempts = 3;
 
     private readonly ILoggerFactory _loggerFactory;
+    private readonly ITvheadendSettingsSource _settingsSource;
     private readonly ILogger<TvheadendConnection> _logger;
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     private HtspSession? _session;
     private HtspSession? _owner;
     private TvheadendSettings? _settings;
-    private int _subscribed;
     private int _configurationGeneration;
     private bool _disposed;
 
@@ -47,12 +46,16 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// Initializes a new instance of the <see cref="TvheadendConnection"/> class.
     /// </summary>
     /// <param name="loggerFactory">The logger factory.</param>
-    public TvheadendConnection(ILoggerFactory loggerFactory)
+    /// <param name="settings">Which server to talk to, and word when that changes.</param>
+    public TvheadendConnection(ILoggerFactory loggerFactory, ITvheadendSettingsSource settings)
     {
         ArgumentNullException.ThrowIfNull(loggerFactory);
+        ArgumentNullException.ThrowIfNull(settings);
 
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<TvheadendConnection>();
+        _settingsSource = settings;
+        _settingsSource.Changed += OnSettingsChanged;
 
         Channels = new ChannelCatalog(loggerFactory.CreateLogger<ChannelCatalog>());
         Dvr = new DvrCatalog(loggerFactory.CreateLogger<DvrCatalog>());
@@ -83,27 +86,12 @@ public sealed class TvheadendConnection : IAsyncDisposable
     /// <summary>
     /// Gets the validated settings, reading them if this is the first ask.
     /// </summary>
-    public TvheadendSettings Settings
-    {
-        get
-        {
-            if (_settings is { } cached)
-            {
-                return cached;
-            }
-
-            // Subscribed on the first read rather than in the constructor. This object is built by
-            // Jellyfins container while the plugin instance is still being created, so there is
-            // nothing to subscribe to then -- and the first read of the configuration is by
-            // definition a moment when there is.
-            if (Interlocked.Exchange(ref _subscribed, 1) == 0)
-            {
-                Plugin.Instance.ConfigurationChanged += OnConfigurationChanged;
-            }
-
-            return _settings = TvheadendSettings.From(Plugin.Instance.Configuration);
-        }
-    }
+    /// <remarks>
+    /// Held once read, because the comparison that decides whether a settings change is worth
+    /// reconnecting for needs both the old answer and the new one -- see
+    /// <see cref="ApplyConfiguration"/>.
+    /// </remarks>
+    public TvheadendSettings Settings => _settings ??= _settingsSource.Current;
 
     /// <summary>
     /// Gets where TVHeadend's HTTP interface is and how to authenticate to it.
@@ -273,8 +261,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
             current.Host);
     }
 
-    private void OnConfigurationChanged(object? sender, BasePluginConfiguration configuration)
-        => ApplyConfiguration();
+    private void OnSettingsChanged(object? sender, EventArgs arguments) => ApplyConfiguration();
 
     private static bool DescribesSameServer(TvheadendSettings first, TvheadendSettings second)
         => string.Equals(first.Host, second.Host, StringComparison.Ordinal)
@@ -292,11 +279,7 @@ public sealed class TvheadendConnection : IAsyncDisposable
         }
 
         _disposed = true;
-
-        if (Interlocked.Exchange(ref _subscribed, 2) == 1)
-        {
-            Plugin.Instance.ConfigurationChanged -= OnConfigurationChanged;
-        }
+        _settingsSource.Changed -= OnSettingsChanged;
 
         if (_session is { } session)
         {

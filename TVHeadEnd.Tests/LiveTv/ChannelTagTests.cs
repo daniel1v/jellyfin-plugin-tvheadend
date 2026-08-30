@@ -1,6 +1,7 @@
 using System.Linq;
 using Microsoft.Extensions.Logging.Abstractions;
 using Tvheadend.Htsp.Protocol;
+using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend.Catalogs;
 using Xunit;
 
@@ -128,7 +129,7 @@ public class ChannelTagTests
         tags.AddOrUpdate(Tag(1, "TV channels"));
         tags.AddOrUpdate(Tag(2, "HD"));
 
-        var offered = channels.ToChannelInfos(tags).Single();
+        var offered = JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), tags, null).Single();
 
         Assert.Equal(["TV channels", "HD"], offered.Tags);
     }
@@ -147,7 +148,7 @@ public class ChannelTagTests
 
         tags.AddOrUpdate(Tag(1, "Fernsehen"));
 
-        Assert.Equal(["Fernsehen"], channels.ToChannelInfos(tags).Single().Tags);
+        Assert.Equal(["Fernsehen"], JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), tags, null).Single().Tags);
         Assert.Same(before, channels.Get("5089966"));
     }
 
@@ -161,7 +162,7 @@ public class ChannelTagTests
         var tags = new ChannelTagCatalog();
         tags.AddOrUpdate(Tag(1, "TV channels"));
 
-        Assert.All(channels.ToChannelInfos(tags), channel => Assert.Equal(["TV channels"], channel.Tags));
+        Assert.All(JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), tags, null), channel => Assert.Equal(["TV channels"], channel.Tags));
     }
 
     [Fact]
@@ -174,7 +175,7 @@ public class ChannelTagTests
         var tags = new ChannelTagCatalog();
         tags.AddOrUpdate(Tag(1, "TV channels"));
 
-        Assert.Equal(["TV channels"], channels.ToChannelInfos(tags).Single().Tags);
+        Assert.Equal(["TV channels"], JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), tags, null).Single().Tags);
     }
 
     [Fact]
@@ -187,7 +188,7 @@ public class ChannelTagTests
         tags.AddOrUpdate(Tag(1, "TV channels"));
         tags.AddOrUpdate(Tag(2, "   "));
 
-        Assert.Equal(["TV channels"], channels.ToChannelInfos(tags).Single().Tags);
+        Assert.Equal(["TV channels"], JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), tags, null).Single().Tags);
     }
 
     [Fact]
@@ -200,7 +201,7 @@ public class ChannelTagTests
         tags.AddOrUpdate(Tag(1, "TV channels"));
         tags.AddOrUpdate(Tag(2, "tv channels"));
 
-        Assert.Equal(["TV channels"], channels.ToChannelInfos(tags).Single().Tags);
+        Assert.Equal(["TV channels"], JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), tags, null).Single().Tags);
     }
 
     [Fact]
@@ -211,7 +212,7 @@ public class ChannelTagTests
         var channels = Catalog();
         channels.AddOrUpdate(Channel(5089966, "Das Erste", tags: []));
 
-        var offered = channels.ToChannelInfos(new ChannelTagCatalog()).Single();
+        var offered = JellyfinChannelMapper.ToChannelInfos(channels.GetChannels(), new ChannelTagCatalog(), null).Single();
 
         Assert.Empty(offered.Tags);
         Assert.Equal("Das Erste", offered.Name);

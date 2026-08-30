@@ -1,5 +1,4 @@
 using System;
-using TVHeadEnd.Configuration;
 
 namespace TVHeadEnd.Tvheadend;
 
@@ -7,27 +6,12 @@ namespace TVHeadEnd.Tvheadend;
 /// The plugin configuration, validated once and in the form the rest of the plugin uses it.
 /// </summary>
 /// <remarks>
-/// Read from <see cref="PluginConfiguration"/> rather than passed around as it: a setting is a
+/// Validated once at the edge of the plugin rather than passed around as stored text: a setting is a
 /// string somebody typed, and everything below this line should be dealing with a host name that
 /// is known not to be empty and a priority that is known to be in range.
 /// </remarks>
 public sealed record TvheadendSettings
 {
-    /// <summary>
-    /// DVR_PRIO_IMPORTANT, the lowest value TVHeadend accepts for a recording priority.
-    /// </summary>
-    private const int PriorityImportant = 0;
-
-    /// <summary>
-    /// DVR_PRIO_NORMAL, the fallback for a priority outside the range.
-    /// </summary>
-    private const int PriorityNormal = 2;
-
-    /// <summary>
-    /// DVR_PRIO_NOTSET, which leaves the priority to the DVR configuration.
-    /// </summary>
-    private const int PriorityNotSet = 5;
-
     /// <summary>
     /// Gets the TVHeadend host.
     /// </summary>
@@ -72,43 +56,4 @@ public sealed record TvheadendSettings
     /// Gets the size of each running channel's ring buffer, in megabytes.
     /// </summary>
     public required int LiveBufferSizeMegabytes { get; init; }
-
-    /// <summary>
-    /// Reads and validates the stored configuration.
-    /// </summary>
-    /// <param name="configuration">The stored configuration.</param>
-    /// <returns>The validated settings.</returns>
-    /// <exception cref="InvalidOperationException">A required setting is missing.</exception>
-    public static TvheadendSettings From(PluginConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        if (string.IsNullOrWhiteSpace(configuration.TVH_ServerName))
-        {
-            throw new InvalidOperationException("The TVHeadend server name has to be configured before the plugin can be used.");
-        }
-
-        var priority = configuration.Priority;
-        if (priority is < PriorityImportant or > PriorityNotSet)
-        {
-            priority = PriorityNormal;
-        }
-
-        return new TvheadendSettings
-        {
-            Host = configuration.TVH_ServerName.Trim(),
-            HttpPort = configuration.HTTP_Port,
-            HtspPort = configuration.HTSP_Port,
-            UserName = configuration.Username.Trim(),
-            // Not trimmed. A host name with a stray space is a typo; a password with one is a
-            // password, and silently changing it turns a working credential into a failing login
-            // nobody can explain.
-            Password = configuration.Password,
-
-            Priority = priority,
-            DvrProfile = configuration.DvrProfile.Trim(),
-            ChannelTypeForOther = configuration.ChannelType.Trim(),
-            LiveBufferSizeMegabytes = configuration.LiveBufferSizeMegabytes,
-        };
-    }
 }

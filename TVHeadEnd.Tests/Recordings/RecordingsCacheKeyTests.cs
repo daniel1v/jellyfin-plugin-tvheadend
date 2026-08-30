@@ -3,6 +3,7 @@ using MediaBrowser.Model.Channels;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging.Abstractions;
 using Tvheadend.Htsp.Protocol;
+using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend.Catalogs;
 using Xunit;
 
@@ -99,8 +100,8 @@ public class RecordingsCacheKeyTests
         catalog.AddOrUpdate(Channel(1, "Radio Eins", "Radio"));
         catalog.AddOrUpdate(Channel(2, "Das Erste HD", "HDTV"));
 
-        Assert.Equal(ChannelType.Radio, catalog.GetChannelType("1"));
-        Assert.Equal(ChannelType.TV, catalog.GetChannelType("2"));
+        Assert.Equal(ChannelType.Radio, JellyfinChannelMapper.ChannelTypeFor(catalog.Get("1"), null));
+        Assert.Equal(ChannelType.TV, JellyfinChannelMapper.ChannelTypeFor(catalog.Get("2"), null));
     }
 
     private static HtspMessage Channel(int id, string name, string serviceType)

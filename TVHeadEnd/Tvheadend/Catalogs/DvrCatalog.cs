@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.Core.Dvr;
-using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend.Mapping;
 using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
 
@@ -202,18 +200,4 @@ public sealed class DvrCatalog
             return _entries.TryGetValue(id, out var entry) ? entry : null;
         }
     }
-
-    /// <summary>
-    /// Gets the entries Jellyfin should show as timers.
-    /// </summary>
-    /// <returns>The timers.</returns>
-    public IReadOnlyList<MediaBrowser.Controller.LiveTv.TimerInfo> GetTimers()
-        => [.. GetEntries().Where(JellyfinDvrMapper.IsTimer).Select(JellyfinDvrMapper.ToTimer)];
-
-    /// <summary>
-    /// Gets the entries Jellyfin should show as recordings.
-    /// </summary>
-    /// <returns>The recordings.</returns>
-    public IReadOnlyList<MyRecordingInfo> GetRecordings()
-        => [.. GetEntries().Where(JellyfinDvrMapper.IsRecording).Select(JellyfinDvrMapper.ToRecording)];
 }

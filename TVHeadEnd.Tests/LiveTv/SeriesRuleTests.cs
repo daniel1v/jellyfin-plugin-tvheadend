@@ -4,6 +4,7 @@ using System.Linq;
 using MediaBrowser.Controller.LiveTv;
 using Microsoft.Extensions.Logging.Abstractions;
 using TVHeadEnd.LiveTv;
+using TVHeadEnd.Tvheadend;
 using TVHeadEnd.Tvheadend.Catalogs;
 using Xunit;
 using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
@@ -247,10 +248,10 @@ public class SeriesRuleTests
         Assert.Equal(new TimeSpan(18, 15, 0), timer.StartDate.TimeOfDay);
 
         // Converted back with the server's offset, it is 20:15 again.
-        Assert.Equal(1215, SeriesRuleCatalog.ToMinutesFromMidnight(timer.StartDate, ServerOffset));
+        Assert.Equal(1215, SeriesRuleFields.ToMinutesFromMidnight(timer.StartDate, ServerOffset));
 
         // And read with this process's idea of time it would not be.
-        Assert.NotEqual(1215, SeriesRuleCatalog.ToMinutesFromMidnight(timer.StartDate, TimeSpan.Zero));
+        Assert.NotEqual(1215, SeriesRuleFields.ToMinutesFromMidnight(timer.StartDate, TimeSpan.Zero));
     }
 
     [Fact]
@@ -576,7 +577,7 @@ public class SeriesRuleTests
         // The rule still wants a window and Jellyfin cannot say anything else about it, so the
         // server's own numbers go back untouched.
         var rule = Rule(start: 1215, startWindow: 1245);
-        var timer = SeriesRuleCatalog.ToSeriesTimer(rule, TimeSpan.FromHours(2), Today);
+        var timer = JellyfinSeriesRuleMapper.ToSeriesTimer(rule, TimeSpan.FromHours(2), Today);
 
         timer.PrePaddingSeconds = 300;
 
@@ -625,8 +626,8 @@ public class SeriesRuleTests
         // server's wall clock into an instant, and the server's wall clock is what moved.
         var rule = Rule(start: 1215, startWindow: 1245);
 
-        var inWinter = SeriesRuleCatalog.ToSeriesTimer(rule, TimeSpan.FromHours(1), Today);
-        var inSummer = SeriesRuleCatalog.ToSeriesTimer(rule, TimeSpan.FromHours(2), Today);
+        var inWinter = JellyfinSeriesRuleMapper.ToSeriesTimer(rule, TimeSpan.FromHours(1), Today);
+        var inSummer = JellyfinSeriesRuleMapper.ToSeriesTimer(rule, TimeSpan.FromHours(2), Today);
 
         Assert.Equal(new TimeSpan(19, 15, 0), inWinter.StartDate.TimeOfDay);
         Assert.Equal(new TimeSpan(18, 15, 0), inSummer.StartDate.TimeOfDay);
@@ -651,7 +652,7 @@ public class SeriesRuleTests
     }
 
     private static SeriesTimerInfo Read(SeriesRule rule)
-        => SeriesRuleCatalog.ToSeriesTimer(rule, ServerOffset, Today);
+        => JellyfinSeriesRuleMapper.ToSeriesTimer(rule, ServerOffset, Today);
 
     private static HtspMessage Create(SeriesTimerInfo info)
     {

@@ -391,15 +391,15 @@ public sealed class TvheadendDvr
         // and writing 0x7F for it would silently switch it on.
         request.Set(
             "daysOfWeek",
-            SeriesRuleCatalog.ToDaysOfWeek(
+            SeriesRuleFields.ToDaysOfWeek(
                 info.Days ?? [],
-                existing is null ? SeriesRuleCatalog.AllDaysOfWeek : SeriesRuleCatalog.NoDaysOfWeek));
+                existing is null ? SeriesRuleFields.AllDaysOfWeek : SeriesRuleFields.NoDaysOfWeek));
 
         // Minutes from midnight on the server's clock, with -1 meaning any time.
         if (info.RecordAnyTime)
         {
-            request.Set("start", SeriesRuleCatalog.AnyTime);
-            request.Set("startWindow", SeriesRuleCatalog.AnyTime);
+            request.Set("start", SeriesRuleFields.AnyTime);
+            request.Set("startWindow", SeriesRuleFields.AnyTime);
         }
         else if (KeepsItsExistingWindow(info, existing))
         {
@@ -415,7 +415,7 @@ public sealed class TvheadendDvr
             // A window being set for the first time, or a rule leaving "any time" for one. This
             // is the moment Jellyfin's times mean something, and they are read with the offset the
             // server reports now.
-            var start = SeriesRuleCatalog.ToMinutesFromMidnight(info.StartDate, serverOffset);
+            var start = SeriesRuleFields.ToMinutesFromMidnight(info.StartDate, serverOffset);
             request.Set("start", start);
             request.Set("startWindow", WindowEndFor(info, existing, serverOffset, start));
         }
@@ -440,8 +440,8 @@ public sealed class TvheadendDvr
             request.Set(
                 "broadcastType",
                 info.RecordNewOnly
-                    ? SeriesRuleCatalog.BroadcastTypeNewOrUnknown
-                    : SeriesRuleCatalog.BroadcastTypeAll);
+                    ? SeriesRuleFields.BroadcastTypeNewOrUnknown
+                    : SeriesRuleFields.BroadcastTypeAll);
         }
     }
 
@@ -514,8 +514,8 @@ public sealed class TvheadendDvr
     /// <returns>Whether to send the server's own numbers back unchanged.</returns>
     private static bool KeepsItsExistingWindow(SeriesTimerInfo info, SeriesRule? existing)
         => !info.RecordAnyTime
-            && SeriesRuleCatalog.IsTimeOfDay(existing?.Start)
-            && SeriesRuleCatalog.IsTimeOfDay(existing?.StartWindow);
+            && SeriesRuleFields.IsTimeOfDay(existing?.Start)
+            && SeriesRuleFields.IsTimeOfDay(existing?.StartWindow);
 
     /// <summary>
     /// Reports whether the broadcast type is one this plugin may write.
@@ -524,8 +524,8 @@ public sealed class TvheadendDvr
     /// <returns>Whether to send it.</returns>
     private static bool CanWriteBroadcastType(SeriesRule? existing)
         => existing?.BroadcastType is null
-            or SeriesRuleCatalog.BroadcastTypeAll
-            or SeriesRuleCatalog.BroadcastTypeNewOrUnknown;
+            or SeriesRuleFields.BroadcastTypeAll
+            or SeriesRuleFields.BroadcastTypeNewOrUnknown;
 
     /// <summary>
     /// Gets the last minute of the start window to send.
@@ -549,12 +549,12 @@ public sealed class TvheadendDvr
     {
         if (info.EndDate >= info.StartDate && info.EndDate != default)
         {
-            return SeriesRuleCatalog.ToMinutesFromMidnight(info.EndDate, serverOffset);
+            return SeriesRuleFields.ToMinutesFromMidnight(info.EndDate, serverOffset);
         }
 
-        if (SeriesRuleCatalog.IsTimeOfDay(existing?.Start) && SeriesRuleCatalog.IsTimeOfDay(existing?.StartWindow))
+        if (SeriesRuleFields.IsTimeOfDay(existing?.Start) && SeriesRuleFields.IsTimeOfDay(existing?.StartWindow))
         {
-            return (start + SeriesRuleCatalog.WindowLength(existing!.Start!.Value, existing.StartWindow!.Value))
+            return (start + SeriesRuleFields.WindowLength(existing!.Start!.Value, existing.StartWindow!.Value))
                 % (24 * 60);
         }
 

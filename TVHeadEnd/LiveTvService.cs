@@ -115,8 +115,10 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     {
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
 
-        _connection.Channels.SetTypeForOther(_connection.Settings.ChannelTypeForOther);
-        var channels = _connection.Channels.ToChannelInfos(_connection.ChannelTags);
+        var channels = JellyfinChannelMapper.ToChannelInfos(
+            _connection.Channels.GetChannels(),
+            _connection.ChannelTags,
+            _connection.Settings.ChannelTypeForOther);
         var endpoint = _connection.HttpEndpoint;
 
         foreach (var channel in channels)
@@ -208,7 +210,9 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
         var opened = await _opener.OpenAsync(
                 channelId,
                 GetMediaSourceId(channelId),
-                _connection.Channels.GetChannelType(channelId),
+                JellyfinChannelMapper.ChannelTypeFor(
+                    _connection.Channels.Get(channelId),
+                    _connection.Settings.ChannelTypeForOther),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -263,14 +267,15 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     public async Task<IEnumerable<TimerInfo>> GetTimersAsync(CancellationToken cancellationToken)
     {
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
-        return _connection.Dvr.GetTimers();
+        return [.. _connection.Dvr.GetEntries().Where(JellyfinDvrMapper.IsTimer).Select(JellyfinDvrMapper.ToTimer)];
     }
 
     /// <inheritdoc />
     public async Task<IEnumerable<SeriesTimerInfo>> GetSeriesTimersAsync(CancellationToken cancellationToken)
     {
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
-        return _connection.SeriesRules.ToSeriesTimers(
+        return JellyfinSeriesRuleMapper.ToSeriesTimers(
+            _connection.SeriesRules.GetRules(),
             await _connection.GetServerOffsetAsync(cancellationToken).ConfigureAwait(false));
     }
 
@@ -363,7 +368,10 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     {
         await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
 
-        var recordings = _connection.Dvr.GetRecordings();
+        var recordings = _connection.Dvr.GetEntries()
+            .Where(JellyfinDvrMapper.IsRecording)
+            .Select(JellyfinDvrMapper.ToRecording)
+            .ToList();
         var endpoint = _connection.HttpEndpoint;
         var borrowLogos = Plugin.Instance.Configuration.UseChannelLogoWhereArtworkIsMissing;
 
@@ -377,7 +385,9 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
             // entry does not say whether its channel carries pictures -- so left unset it took the
             // enum's default, and every radio recording was published as video. The recordings
             // channel reads this to decide between an audio and a video item.
-            recording.ChannelType = _connection.Channels.GetChannelType(recording.ChannelId);
+            recording.ChannelType = JellyfinChannelMapper.ChannelTypeFor(
+                _connection.Channels.Get(recording.ChannelId),
+                _connection.Settings.ChannelTypeForOther);
 
             // The channel's logo where the recording has no picture of its own, which with a
             // broadcast EPG is every recording: DVB EIT has no field for one. Published as a

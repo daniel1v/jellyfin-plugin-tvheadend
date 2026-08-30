@@ -5,6 +5,7 @@ using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using TVHeadEnd.Configuration;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Recordings;
 using TVHeadEnd.Tvheadend;
@@ -19,6 +20,10 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
+        // Where the TVHeadend side gets its settings from, and the only place that knows those
+        // settings live in a Jellyfin plugin configuration at all.
+        serviceCollection.AddSingleton<ITvheadendSettingsSource, PluginTvheadendSettingsSource>();
+
         // One connection, shared. Everything the plugin knows about the server arrives over it,
         // and every live subscription is multiplexed onto it.
         serviceCollection.AddSingleton<TvheadendConnection>();

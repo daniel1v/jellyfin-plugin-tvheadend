@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using MediaBrowser.Controller.LiveTv;
-using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
 using Tvheadend.Htsp.Protocol;
 
@@ -17,8 +15,6 @@ public sealed class ChannelCatalog
     private readonly ILogger<ChannelCatalog> _logger;
     private readonly Dictionary<int, TvheadendChannel> _channels = [];
     private readonly object _gate = new();
-
-    private string _typeForOther = "Ignore";
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ChannelCatalog"/> class.
@@ -42,12 +38,6 @@ public sealed class ChannelCatalog
             }
         }
     }
-
-    /// <summary>
-    /// Sets how a channel whose service is tagged "other" is treated.
-    /// </summary>
-    /// <param name="channelType">The configured treatment.</param>
-    public void SetTypeForOther(string? channelType) => _typeForOther = channelType ?? "Ignore";
 
     /// <summary>
     /// Records a channel the server added or changed.
@@ -138,90 +128,16 @@ public sealed class ChannelCatalog
     }
 
     /// <summary>
-    /// Gets what kind of channel this is.
+    /// Gets every channel the server has announced.
     /// </summary>
-    /// <remarks>
-    /// The one thing the transport stream cannot state. A program map with no video describes a
-    /// radio service completely and a television channel not at all, and only the channel list
-    /// knows which of the two arrived. A channel that is not in the list, or whose service type
-    /// TVHeadend never announced, is treated as television: that is what all but a handful of
-    /// channels are, and it is the reading under which a missing video stream is reported rather
-    /// than quietly accepted.
-    /// </remarks>
-    /// <param name="channelId">The HTSP channel identifier, as Jellyfin passes it back.</param>
-    /// <returns>The channel kind.</returns>
-    public ChannelType GetChannelType(string? channelId)
-        => ResolveChannelType(Get(channelId)?.ServiceType) ?? ChannelType.TV;
-
-    /// <summary>
-    /// Describes the channels for Jellyfin.
-    /// </summary>
-    /// <remarks>
-    /// The tag catalogue is passed in rather than held, so that neither catalogue has to know the
-    /// other exists. Names are looked up here, at the moment the description is built, which is
-    /// what makes a tag renamed on the server show its new name without any channel being touched.
-    /// </remarks>
-    /// <param name="tags">The channel tags, for naming the ones each channel references.</param>
-    /// <returns>The channels Jellyfin should offer.</returns>
-    public IReadOnlyList<ChannelInfo> ToChannelInfos(ChannelTagCatalog tags)
+    /// <returns>A snapshot, which the caller may hold and read at leisure.</returns>
+    public IReadOnlyList<TvheadendChannel> GetChannels()
     {
-        ArgumentNullException.ThrowIfNull(tags);
-
-        List<TvheadendChannel> snapshot;
         lock (_gate)
         {
-            snapshot = [.. _channels.Values];
+            return [.. _channels.Values];
         }
-
-        var result = new List<ChannelInfo>(snapshot.Count);
-        foreach (var channel in snapshot)
-        {
-            if (string.IsNullOrEmpty(channel.Name))
-            {
-                continue;
-            }
-
-            var type = ResolveChannelType(channel.ServiceType);
-            if (type is null)
-            {
-                continue;
-            }
-
-            result.Add(new ChannelInfo
-            {
-                Id = channel.Id.ToString(CultureInfo.InvariantCulture),
-                Name = channel.Name,
-                Number = channel.Number,
-                ChannelType = type.Value,
-                IsHD = channel.ServiceType is not null
-                    && !string.Equals(channel.ServiceType, "sdtv", StringComparison.OrdinalIgnoreCase)
-                    && type == ChannelType.TV,
-
-                // The server's own grouping of its channels, passed on as the server states it.
-                // Nothing is added here from the service type, the channel kind or the name --
-                // those are already published as what they are, and a tag invented from one would
-                // be this plugin putting words in the server's mouth.
-                Tags = [.. tags.Resolve(channel.TagIds)],
-
-                ImagePath = string.Empty,
-            });
-        }
-
-        return result;
     }
-
-    private ChannelType? ResolveChannelType(string? serviceType) => serviceType?.ToLowerInvariant() switch
-    {
-        "radio" => ChannelType.Radio,
-        "sdtv" or "hdtv" or "fhdtv" or "uhdtv" => ChannelType.TV,
-        "other" => _typeForOther.ToLowerInvariant() switch
-        {
-            "tv" => ChannelType.TV,
-            "radio" => ChannelType.Radio,
-            _ => null,
-        },
-        _ => null,
-    };
 
     private static string? ReadNumber(HtspMessage message)
     {
