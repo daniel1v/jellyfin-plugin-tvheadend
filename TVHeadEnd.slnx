@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Tvheadend.Htsp/Tvheadend.Htsp.csproj" />
+  <Project Path="TVHeadEnd.Core/TVHeadEnd.Core.csproj" />
   <Project Path="TVHeadEnd/TVHeadEnd.csproj" />
   <Project Path="TVHeadEnd.Tests/TVHeadEnd.Tests.csproj" />
 </Solution>

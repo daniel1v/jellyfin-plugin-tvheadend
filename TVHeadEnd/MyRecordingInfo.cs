@@ -227,7 +227,7 @@ namespace TVHeadEnd
         /// </summary>
         /// <remarks>
         /// Measured from the file TVHeadend serves, not from the times the recording was scheduled
-        /// for -- see <see cref="Domain.DvrEntry.PlayableFile"/>. <see langword="null"/> means the
+        /// for -- see <see cref="Core.Dvr.DvrEntry.PlayableFile"/>. <see langword="null"/> means the
         /// length is not knowable yet, which is what a recording still being written is, and is
         /// deliberately not the same as zero.
         /// <para>

@@ -10,6 +10,7 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;

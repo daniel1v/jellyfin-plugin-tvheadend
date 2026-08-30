@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Streaming;
 using Xunit;
 

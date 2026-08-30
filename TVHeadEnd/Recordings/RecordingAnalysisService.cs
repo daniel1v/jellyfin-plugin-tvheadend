@@ -10,8 +10,9 @@ using MediaBrowser.Common;
 using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Tvheadend.Htsp;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Streaming;
+using HtspException = Tvheadend.Htsp.HtspException;
 
 namespace TVHeadEnd.Recordings
 {

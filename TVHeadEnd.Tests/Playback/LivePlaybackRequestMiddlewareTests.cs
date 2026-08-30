@@ -14,6 +14,7 @@ using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;

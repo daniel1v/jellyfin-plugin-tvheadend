@@ -43,6 +43,9 @@ $assemblies = @(
     'TVHeadEnd.deps.json',
     'TVHeadEnd.pdb',
     'TVHeadEnd.xml',
+    'TVHeadEnd.Core.dll',
+    'TVHeadEnd.Core.pdb',
+    'TVHeadEnd.Core.xml',
     'Tvheadend.Htsp.dll',
     'Tvheadend.Htsp.pdb',
     'Tvheadend.Htsp.xml'

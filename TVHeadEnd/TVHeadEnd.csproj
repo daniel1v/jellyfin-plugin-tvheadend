@@ -43,7 +43,13 @@
 
   </ItemGroup>
 
+  <!--
+    Both references point inwards and neither points back. The core knows what a broadcast, a
+    recording and a transport stream are; the protocol client knows how to talk to TVHeadend;
+    this project is the only one that knows Jellyfin exists, and it is where the two are joined.
+  -->
   <ItemGroup>
+    <ProjectReference Include="..\TVHeadEnd.Core\TVHeadEnd.Core.csproj" />
     <ProjectReference Include="..\Tvheadend.Htsp\Tvheadend.Htsp.csproj" />
   </ItemGroup>
 

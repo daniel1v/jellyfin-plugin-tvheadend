@@ -9,6 +9,7 @@ description: "TVHeadend EX is an independent, unofficial TVHeadend integration f
 category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
+  - "TVHeadEnd.Core.dll"
   - "Tvheadend.Htsp.dll"
 changelog: |-
   A new plugin, and a tidier shelf of recordings.

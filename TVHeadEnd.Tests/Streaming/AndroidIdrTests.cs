@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Claims;
 using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Http;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;

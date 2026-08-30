@@ -4,10 +4,13 @@ using MediaBrowser.Controller.LiveTv;
 using Microsoft.Extensions.Logging.Abstractions;
 using Tvheadend.Htsp;
 using Tvheadend.Htsp.Protocol;
-using TVHeadEnd.Domain;
+using TVHeadEnd.Core.Broadcast;
+using TVHeadEnd.Core.Dvr;
+using TVHeadEnd.LiveTv;
 using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend;
 using TVHeadEnd.Tvheadend.Catalogs;
+using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
 namespace TVHeadEnd.Tests.LiveTv;

@@ -1,6 +1,9 @@
 using System.Linq;
 using Tvheadend.Htsp.Protocol;
-using TVHeadEnd.Domain;
+using TVHeadEnd.Core.Broadcast;
+using TVHeadEnd.Core.Dvr;
+using TVHeadEnd.LiveTv;
+using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Recordings;
@@ -82,7 +85,7 @@ public class RecordingMetadataCompletionTests
             .Set("dataSize", 101027252)
             .Set("dataErrors", 0);
 
-        var merged = DvrEntry.Merge(stored, Read(statistics), statistics);
+        var merged = DvrEntryMapper.Merge(stored, Read(statistics), statistics);
 
         Assert.Equal(2026, merged.SeasonNumber);
         Assert.Equal(14, merged.EpisodeNumber);
@@ -106,7 +109,7 @@ public class RecordingMetadataCompletionTests
             .Set("ratingLabel", "FSK 16")
             .Set("copyrightYear", 1999);
 
-        var merged = DvrEntry.Merge(stored, Read(correction), correction);
+        var merged = DvrEntryMapper.Merge(stored, Read(correction), correction);
 
         Assert.Equal(2, merged.SeasonNumber);
         Assert.Equal(4, merged.EpisodeNumber);
@@ -227,7 +230,7 @@ public class RecordingMetadataCompletionTests
 
     private static DvrEntry Read(HtspMessage message)
     {
-        var entry = DvrEntry.FromMessage(message);
+        var entry = DvrEntryMapper.FromMessage(message);
         Assert.NotNull(entry);
         return entry;
     }

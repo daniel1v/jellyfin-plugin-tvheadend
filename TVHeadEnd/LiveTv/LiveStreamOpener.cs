@@ -10,6 +10,7 @@ using MediaBrowser.Controller;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend;

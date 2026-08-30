@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using MediaBrowser.Model.Entities;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Recordings;
 using TVHeadEnd.Streaming;
 using Xunit;

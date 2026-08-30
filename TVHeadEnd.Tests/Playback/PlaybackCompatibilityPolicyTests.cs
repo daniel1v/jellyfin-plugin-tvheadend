@@ -1,3 +1,4 @@
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;

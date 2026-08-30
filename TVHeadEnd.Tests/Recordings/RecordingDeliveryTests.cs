@@ -4,9 +4,13 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Model.MediaInfo;
-using TVHeadEnd.Domain;
+using TVHeadEnd.Core.Broadcast;
+using TVHeadEnd.Core.Dvr;
+using TVHeadEnd.Core.Media;
+using TVHeadEnd.LiveTv;
 using TVHeadEnd.Recordings;
 using TVHeadEnd.Streaming;
+using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
 
@@ -458,7 +462,7 @@ public class RecordingDeliveryTests
         // Pre-padding starts the file before the booking. While that is running the scheduled
         // start is still in the future, so a real-activity time taken from it would state a moment
         // that has not come -- which is what the one combined value used to do.
-        var entry = DvrEntry.FromMessage(PrePaddedRunningEntry())!;
+        var entry = DvrEntryMapper.FromMessage(PrePaddedRunningEntry())!;
 
         Assert.Equal(RealStart.AddMinutes(-5), entry.RecordedActivityUtc);
         Assert.True(entry.RecordedActivityUtc < entry.StartUtc);

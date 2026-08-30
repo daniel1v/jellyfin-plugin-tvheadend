@@ -8,10 +8,10 @@ using MediaBrowser.Controller.LiveTv;
 using Microsoft.Extensions.Logging;
 using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Tvheadend;
-using BroadcastGenres = TVHeadEnd.Domain.BroadcastGenres;
-using BroadcastProductionYear = TVHeadEnd.Domain.BroadcastProductionYear;
-using BroadcastStarRating = TVHeadEnd.Domain.BroadcastStarRating;
-using DvbContentType = TVHeadEnd.Domain.DvbContentType;
+using BroadcastGenres = TVHeadEnd.Core.Broadcast.BroadcastGenres;
+using BroadcastProductionYear = TVHeadEnd.Core.Broadcast.BroadcastProductionYear;
+using BroadcastStarRating = TVHeadEnd.Core.Broadcast.BroadcastStarRating;
+using DvbContentType = TVHeadEnd.Core.Broadcast.DvbContentType;
 
 namespace TVHeadEnd.LiveTv;
 

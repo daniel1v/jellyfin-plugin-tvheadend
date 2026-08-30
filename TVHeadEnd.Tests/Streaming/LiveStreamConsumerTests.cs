@@ -4,6 +4,7 @@ using System.IO;
 using System.Net.Http;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Streaming;
 using Xunit;
 

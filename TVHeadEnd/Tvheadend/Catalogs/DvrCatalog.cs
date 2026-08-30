@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Logging;
-using TVHeadEnd.Domain;
+using TVHeadEnd.Core.Dvr;
+using TVHeadEnd.LiveTv;
+using TVHeadEnd.Tvheadend.Mapping;
 using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
 
 namespace TVHeadEnd.Tvheadend.Catalogs;
@@ -76,7 +78,7 @@ public sealed class DvrCatalog
     /// <param name="message">The <c>dvrEntryAdd</c> message.</param>
     public void Add(HtspMessage message)
     {
-        var entry = DvrEntry.FromMessage(message);
+        var entry = DvrEntryMapper.FromMessage(message);
         if (entry is null)
         {
             _logger.LogDebug("A TVHeadend DVR entry arrived without an identifier and was skipped");
@@ -96,7 +98,7 @@ public sealed class DvrCatalog
     /// <param name="message">The <c>dvrEntryUpdate</c> message.</param>
     public void Update(HtspMessage message)
     {
-        var updated = DvrEntry.FromMessage(message);
+        var updated = DvrEntryMapper.FromMessage(message);
         if (updated is null)
         {
             return;
@@ -113,7 +115,7 @@ public sealed class DvrCatalog
                 return;
             }
 
-            var merged = DvrEntry.Merge(existing, updated, message);
+            var merged = DvrEntryMapper.Merge(existing, updated, message);
 
             // Only when the entry actually says something different. TVHeadend sends an update
             // for a running recording every few seconds carrying only its statistics -- bytes
@@ -137,7 +139,7 @@ public sealed class DvrCatalog
     /// <param name="message">The <c>dvrEntryDelete</c> message.</param>
     public void Remove(HtspMessage message)
     {
-        var entry = DvrEntry.FromMessage(message);
+        var entry = DvrEntryMapper.FromMessage(message);
         if (entry is null)
         {
             return;

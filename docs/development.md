@@ -11,9 +11,24 @@ You need the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 dotnet publish TVHeadEnd/TVHeadEnd.csproj --configuration Release --output bin
 ```
 
-Copy `bin/TVHeadEnd.dll` and `bin/Tvheadend.Htsp.dll` into a folder under `plugins/` in your
-Jellyfin install (creating it if it is not there). Only those two assemblies: a publish also emits
-the Jellyfin framework assemblies the plugin compiled against, and those belong to the server.
+Copy `bin/TVHeadEnd.dll`, `bin/TVHeadEnd.Core.dll` and `bin/Tvheadend.Htsp.dll` into a folder under
+`plugins/` in your Jellyfin install (creating it if it is not there). Only those three assemblies:
+a publish also emits the Jellyfin framework assemblies the plugin compiled against, and those
+belong to the server.
+
+## Three projects, and the direction between them
+
+```
+TVHeadEnd  ──>  TVHeadEnd.Core      what a broadcast, a recording and a transport stream are
+     └────────>  Tvheadend.Htsp     how to talk to a TVHeadend server
+```
+
+`TVHeadEnd.Core` has no project reference and no runtime package: there is nothing in it to reach
+a Jellyfin type, an HTSP message or an ASP.NET request with, which is what makes "the core does not
+know about the host" a fact rather than an intention. `Tvheadend.Htsp` does not reference the core
+either, so it stays extractable on its own. `TVHeadEnd` is the only project that knows Jellyfin
+exists, and it is where the two halves are joined — the HTSP wire format becomes a core `DvrEntry`
+in `Tvheadend/Mapping`, and a core `DvrEntry` becomes a Jellyfin timer or recording in `LiveTv`.
 
 Internal namespaces, classes and project directories are still spelled `TVHeadEnd`. That is
 deliberate — the plugin's public identity changed, its source layout did not, and renaming it

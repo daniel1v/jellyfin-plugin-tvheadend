@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 
 namespace TVHeadEnd.Streaming;

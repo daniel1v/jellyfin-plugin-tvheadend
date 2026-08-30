@@ -1,3 +1,5 @@
+using TVHeadEnd.Core.Media;
+
 namespace TVHeadEnd.Streaming;
 
 /// <summary>

@@ -10,8 +10,8 @@ using Tvheadend.Htsp;
 using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Tvheadend;
 using TVHeadEnd.Tvheadend.Catalogs;
-using DvrEntry = TVHeadEnd.Domain.DvrEntry;
-using DvrState = TVHeadEnd.Domain.DvrState;
+using DvrEntry = TVHeadEnd.Core.Dvr.DvrEntry;
+using DvrState = TVHeadEnd.Core.Dvr.DvrState;
 
 namespace TVHeadEnd.LiveTv;
 

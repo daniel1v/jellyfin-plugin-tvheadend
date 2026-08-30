@@ -17,6 +17,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Named as well as reached through the plugin, because the core's own reasoning is tested
+         directly rather than only through whatever happens to call it. -->
+    <ProjectReference Include="..\TVHeadEnd.Core\TVHeadEnd.Core.csproj" />
     <ProjectReference Include="..\TVHeadEnd\TVHeadEnd.csproj" />
 
     <!--

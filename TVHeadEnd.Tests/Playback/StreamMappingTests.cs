@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
 using Xunit;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using MediaBrowser.Model.Entities;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Streaming;
 
 namespace TVHeadEnd.Recordings;

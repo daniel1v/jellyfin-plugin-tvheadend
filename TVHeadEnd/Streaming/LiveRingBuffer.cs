@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Model.IO;
+using TVHeadEnd.Core.Media;
 
 namespace TVHeadEnd.Streaming
 {

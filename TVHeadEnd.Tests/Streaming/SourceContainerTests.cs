@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text;
 using MediaBrowser.Controller.MediaEncoding;
+using TVHeadEnd.Core.Media;
 using TVHeadEnd.Streaming;
 using Xunit;
 
