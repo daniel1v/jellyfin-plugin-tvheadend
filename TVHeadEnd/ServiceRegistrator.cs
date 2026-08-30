@@ -29,6 +29,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // One reading of a recording, shared. The channel describing a recording and the filter
         // deciding whether this client can play it directly both ask it, within milliseconds of
         // each other, and neither should cause a second eight megabyte fetch.
+        serviceCollection.AddSingleton<IRecordingSampleSource, TvheadendRecordingSampleSource>();
         serviceCollection.AddSingleton<RecordingAnalysisService>();
         serviceCollection.AddSingleton<IRecordingAnalyser>(
             provider => provider.GetRequiredService<RecordingAnalysisService>());

@@ -105,7 +105,7 @@ namespace TVHeadEnd
         /// </remarks>
         private static readonly string ProcessEpoch = Guid.NewGuid().ToString("N");
 
-        private readonly ILogger<LiveTvService> _logger;
+        private readonly ILogger<RecordingsChannel> _logger;
         private readonly TvheadendConnection _connection;
         private readonly LiveTvService _liveTvService;
         private readonly IServerApplicationHost _applicationHost;
@@ -125,7 +125,7 @@ namespace TVHeadEnd
             _liveTvService = liveTvService;
             _analysisService = analysisService;
             _applicationHost = applicationHost;
-            _logger = loggerFactory.CreateLogger<LiveTvService>();
+            _logger = loggerFactory.CreateLogger<RecordingsChannel>();
             _logger.LogDebug("[TVHclient] RecordingsChannel()");
         }
 
@@ -206,7 +206,7 @@ namespace TVHeadEnd
         /// <param name="userId">The user the listing is for. Every user sees the same recordings.</param>
         /// <returns>The cache key.</returns>
         public string? GetCacheKey(string? userId)
-            => ComposeCacheKey(ProcessEpoch, GetService().RecordingRevision);
+            => ComposeCacheKey(ProcessEpoch, _liveTvService.RecordingRevision);
 
         /// <summary>
         /// Builds the cache key from the two things that make a listing different.
@@ -282,8 +282,6 @@ namespace TVHeadEnd
             return !Plugin.Instance.Configuration.HideRecordingsChannel;
         }
 
-        private LiveTvService GetService() => _liveTvService;
-
         public async Task<IEnumerable<MyRecordingInfo>> GetAllRecordingsAsync(CancellationToken cancellationToken)
         {
             // Everything that has at least started. A scheduled entry has nothing to play yet,
@@ -298,7 +296,7 @@ namespace TVHeadEnd
 
         public Task DeleteItem(string id, CancellationToken cancellationToken)
         {
-            return GetService().DeleteRecordingAsync(id, cancellationToken);
+            return _liveTvService.DeleteRecordingAsync(id, cancellationToken);
         }
 
         public async Task<IEnumerable<ChannelItemInfo>> GetLatestMedia(ChannelLatestMediaSearch request, CancellationToken cancellationToken)
