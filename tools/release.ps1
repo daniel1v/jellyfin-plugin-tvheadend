@@ -137,8 +137,16 @@ if ($Publish) {
     }
 
     # 8. Not already released. gh would refuse anyway, but it would refuse after uploading.
-    & gh release view "v$version" --repo $repoSlug 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { throw "A release v$version already exists." }
+    #
+    # Asked with the preference relaxed. Windows PowerShell 5.1 wraps whatever a native program
+    # writes to stderr in an error record, so under ErrorActionPreference = Stop the "release not
+    # found" that means "go ahead" aborted the publish instead.
+    $strictness = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & gh release view "v$version" --repo $repoSlug | Out-Null
+    $alreadyReleased = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = $strictness
+    if ($alreadyReleased) { throw "A release v$version already exists." }
 
     # Through a file, not an argument. Windows PowerShell re-splits the arguments it hands a
     # native program, so the quotation marks inside a changelog arrive as argument boundaries and
