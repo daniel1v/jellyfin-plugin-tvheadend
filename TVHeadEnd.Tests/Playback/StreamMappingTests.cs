@@ -4,7 +4,7 @@ using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
-using TVHeadEnd.Streaming;
+using TVHeadEnd.Tests.Core;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Playback;
@@ -320,7 +320,7 @@ public class StreamMappingTests
         Assert.Equal(ElementaryStreamKind.Audio, map.Entries[1].Kind);
         Assert.Equal("deu", map.Entries[1].Language);
         Assert.Equal(ElementaryStreamKind.Subtitle, map.Entries[2].Kind);
-        Assert.Equal("dvb_subtitle", map.Entries[2].Codec);
+        Assert.Equal(ElementaryStreamCodec.DvbSubtitle, map.Entries[2].Codec);
     }
 
     private static ProgramMapTable Pmt(params ProgramMapEntry[] entries)
@@ -398,6 +398,6 @@ public class StreamMappingTests
         section[1] = (byte)(0xB0 | ((sectionLength >> 8) & 0x0F));
         section[2] = (byte)(sectionLength & 0xFF);
 
-        return TVHeadEnd.Tests.Streaming.PsiSection.WithCrc(section);
+        return TVHeadEnd.Tests.Core.PsiSectionBytes.WithCrc(section);
     }
 }

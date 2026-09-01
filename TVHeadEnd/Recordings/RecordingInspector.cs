@@ -10,7 +10,7 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
-using TVHeadEnd.Streaming;
+using TVHeadEnd.Compatibility.Jellyfin12;
 
 namespace TVHeadEnd.Recordings
 {
@@ -89,7 +89,7 @@ namespace TVHeadEnd.Recordings
             }
 
             var inspected = new InspectedMedia(
-                SourceContainer.Describe(info.Container, fallbackContainer),
+                JellyfinContainerNames.Describe(info.Container, fallbackContainer),
                 streams,
                 info.Bitrate,
                 info.Timestamp,

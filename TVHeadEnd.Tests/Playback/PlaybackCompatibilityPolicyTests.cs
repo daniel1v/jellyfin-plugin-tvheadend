@@ -1,6 +1,6 @@
+using TVHeadEnd.Compatibility;
 using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
-using TVHeadEnd.Streaming;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Playback;

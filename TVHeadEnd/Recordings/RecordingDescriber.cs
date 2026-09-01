@@ -1,6 +1,6 @@
 using System;
 using MediaBrowser.Model.Dto;
-using TVHeadEnd.Streaming;
+using TVHeadEnd.Compatibility.Jellyfin12;
 
 namespace TVHeadEnd.Recordings
 {
@@ -55,7 +55,7 @@ namespace TVHeadEnd.Recordings
             // recording made with the pass profile carries the same program map a live channel
             // does, so the two paths describe the same tracks the same way. After the container
             // is settled, because whether a program map applies at all depends on it.
-            if (string.Equals(target.Container, SourceContainer.TransportStream, StringComparison.Ordinal))
+            if (string.Equals(target.Container, JellyfinContainerNames.TransportStream, StringComparison.Ordinal))
             {
                 BroadcastAudioFacts.Apply(target.MediaStreams, analysis.ProgramMap);
             }

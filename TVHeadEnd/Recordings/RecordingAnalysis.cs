@@ -1,5 +1,4 @@
 using TVHeadEnd.Core.Media;
-using TVHeadEnd.Streaming;
 
 namespace TVHeadEnd.Recordings
 {

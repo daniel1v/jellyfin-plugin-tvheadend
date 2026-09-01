@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
-using TVHeadEnd.Streaming;
 
 namespace TVHeadEnd.Playback;
 
@@ -89,7 +89,7 @@ public sealed record LiveStreamDescription
         {
             Type = MediaStreamType.Video,
             Index = index,
-            Codec = entry.Codec,
+            Codec = JellyfinCodecNames.For(entry.Codec),
 
             // Left alone. Jellyfin overwrites it for every external live TV service anyway, and
             // the transport stream does not state it.
@@ -100,7 +100,7 @@ public sealed record LiveStreamDescription
         {
             Type = MediaStreamType.Audio,
             Index = index,
-            Codec = entry.Codec,
+            Codec = JellyfinCodecNames.For(entry.Codec),
             Language = entry.Language,
             IsHearingImpaired = entry.IsHearingImpaired,
 
@@ -114,7 +114,7 @@ public sealed record LiveStreamDescription
         {
             Type = MediaStreamType.Subtitle,
             Index = index,
-            Codec = entry.Codec,
+            Codec = JellyfinCodecNames.For(entry.Codec),
             Language = entry.Language,
             IsHearingImpaired = entry.IsHearingImpaired,
             SupportsExternalStream = false,

@@ -16,10 +16,10 @@ using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Recordings;
-using TVHeadEnd.Streaming;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Playback;

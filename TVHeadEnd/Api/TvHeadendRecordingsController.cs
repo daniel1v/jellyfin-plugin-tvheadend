@@ -10,7 +10,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Api

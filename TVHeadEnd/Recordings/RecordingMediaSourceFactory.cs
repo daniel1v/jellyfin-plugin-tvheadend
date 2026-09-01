@@ -6,8 +6,8 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.Api;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
-using TVHeadEnd.Streaming;
 
 namespace TVHeadEnd.Recordings
 {
@@ -166,7 +166,7 @@ namespace TVHeadEnd.Recordings
                 // The starting assumption, which the analysis replaces with whatever the
                 // recording turns out to be. Written under the one name this plugin gives
                 // MPEG-TS rather than spelled out, so it cannot drift from the live path.
-                Container = SourceContainer.TransportStream,
+                Container = JellyfinContainerNames.TransportStream,
                 MediaStreams = [],
             };
         }
@@ -194,7 +194,7 @@ namespace TVHeadEnd.Recordings
                 // Replaced by whatever the sample turns out to be. TVHeadend's DVR profile
                 // decides the container, and a server on one of the WebTV profiles writes
                 // Matroska, so this is a starting point rather than a claim.
-                Container = SourceContainer.TransportStream,
+                Container = JellyfinContainerNames.TransportStream,
                 AnalyzeDurationMs = 2000,
                 MediaStreams = [],
             };

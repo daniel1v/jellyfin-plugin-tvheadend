@@ -4,6 +4,7 @@ using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging.Abstractions;
 using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.LiveTv;
+using TVHeadEnd.Recordings;
 using TVHeadEnd.Tvheadend.Catalogs;
 using Xunit;
 
@@ -84,11 +85,11 @@ public class RecordingsCacheKeyTests
         // video is a concert behind a black screen.
         Assert.Equal(
             ChannelMediaType.Audio,
-            RecordingsChannel.MediaTypeFor(ChannelType.Radio));
+            RecordingItemMapper.MediaTypeFor(ChannelType.Radio));
 
         Assert.Equal(
             ChannelMediaType.Video,
-            RecordingsChannel.MediaTypeFor(ChannelType.TV));
+            RecordingItemMapper.MediaTypeFor(ChannelType.TV));
     }
 
     [Fact]

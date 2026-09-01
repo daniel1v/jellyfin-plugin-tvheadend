@@ -13,10 +13,10 @@ using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Configuration;
 using TVHeadEnd.LiveTv;
 using TVHeadEnd.Playback;
-using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd;

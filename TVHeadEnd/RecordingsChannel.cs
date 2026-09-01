@@ -23,10 +23,10 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Configuration;
 using TVHeadEnd.LiveTv;
 using TVHeadEnd.Recordings;
-using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd
@@ -107,7 +107,7 @@ namespace TVHeadEnd
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Derived from <see cref="RecordingItemMapper.SchemaRevision"/> rather than typed separately,
+        /// Derived from <see cref="RecordingPublicationVersion.SchemaRevision"/> rather than typed separately,
         /// because the two answer the same question and were getting different answers. A listing
         /// is cached for three hours under a path built from this string, and the cache key the
         /// channel supplies follows TVHeadend's recordings rather than the plugin -- so an upgrade
@@ -120,7 +120,7 @@ namespace TVHeadEnd
         /// discards the cached listing, and the published date rewrites the items already stored.
         /// </para>
         /// </remarks>
-        public string DataVersion => "9." + RecordingItemMapper.SchemaRevision.ToString(CultureInfo.InvariantCulture);
+        public string DataVersion => "9." + RecordingPublicationVersion.SchemaRevision.ToString(CultureInfo.InvariantCulture);
 
         public string HomePageUrl
         {
@@ -164,21 +164,6 @@ namespace TVHeadEnd
         internal static string ComposeCacheKey(string processEpoch, long recordingRevision)
             => processEpoch + "-" + recordingRevision.ToString(CultureInfo.InvariantCulture);
 
-        /// <summary>
-        /// Gets what kind of item a recording from this sort of channel is published as.
-        /// </summary>
-        /// <remarks>
-        /// A radio recording published as video is a concert behind a black screen. It happened
-        /// because the recording was never told what its channel carried and took the enum's
-        /// default, which is TV -- see TvheadendRecordings for where it is told.
-        /// </remarks>
-        /// <param name="channelType">What the channel it was recorded from carries.</param>
-        /// <returns>The media type to publish.</returns>
-        internal static ChannelMediaType MediaTypeFor(MediaBrowser.Model.LiveTv.ChannelType channelType)
-            => channelType == MediaBrowser.Model.LiveTv.ChannelType.Radio
-                ? ChannelMediaType.Audio
-                : ChannelMediaType.Video;
-
         public InternalChannelFeatures GetChannelFeatures()
         {
             return new InternalChannelFeatures
@@ -210,13 +195,12 @@ namespace TVHeadEnd
             });
         }
 
-        public IEnumerable<ImageType> GetSupportedChannelImages()
-        {
-            return new List<ImageType>
-            {
-                 ImageType.Primary
-            };
-        }
+        /// <inheritdoc />
+        /// <remarks>
+        /// None. The channel has no artwork of its own, and offering a slot it never fills makes
+        /// Jellyfin ask for a picture that is not coming.
+        /// </remarks>
+        public IEnumerable<ImageType> GetSupportedChannelImages() => [];
 
         public bool IsEnabledFor(string userId)
         {

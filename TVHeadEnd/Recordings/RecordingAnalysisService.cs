@@ -10,8 +10,8 @@ using MediaBrowser.Common;
 using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
-using TVHeadEnd.Streaming;
 using HtspException = Tvheadend.Htsp.HtspException;
 
 namespace TVHeadEnd.Recordings
@@ -282,7 +282,7 @@ namespace TVHeadEnd.Recordings
                 using var sample = await _samples.FetchAsync(recordingId, lifetime.Token).ConfigureAwait(false);
 
                 var media = await _inspector
-                    .Inspect(sample.Path, $"recording {recordingId}", SourceContainer.TransportStream, lifetime.Token)
+                    .Inspect(sample.Path, $"recording {recordingId}", JellyfinContainerNames.TransportStream, lifetime.Token)
                     .ConfigureAwait(false);
 
                 var broadcast = ReadBroadcastFacts(sample.Path);

@@ -7,7 +7,6 @@ using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Core.Broadcast;
 using TVHeadEnd.Core.Dvr;
 using TVHeadEnd.LiveTv;
-using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend;
 using TVHeadEnd.Tvheadend.Catalogs;
 using TVHeadEnd.Tvheadend.Mapping;

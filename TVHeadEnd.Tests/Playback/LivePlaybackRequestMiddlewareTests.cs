@@ -14,9 +14,10 @@ using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
+using TVHeadEnd.Infrastructure.LiveBuffer;
 using TVHeadEnd.Playback;
-using TVHeadEnd.Streaming;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Playback;

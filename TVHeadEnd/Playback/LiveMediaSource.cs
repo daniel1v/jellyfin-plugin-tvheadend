@@ -4,6 +4,7 @@ using System.Linq;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using TVHeadEnd.Compatibility.Jellyfin12;
 
 namespace TVHeadEnd.Playback;
 
@@ -49,7 +50,7 @@ public static class LiveMediaSource
     /// at all on a hardware-accelerated server.
     /// </para>
     /// </remarks>
-    public const string Container = "ts";
+    public const string Container = JellyfinContainerNames.TransportStream;
 
     /// <summary>
     /// How long FFmpeg may analyse the stream before it has to start producing output.

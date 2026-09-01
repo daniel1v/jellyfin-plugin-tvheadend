@@ -4,12 +4,13 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.LiveTv;
 using MediaBrowser.Model.MediaInfo;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Broadcast;
 using TVHeadEnd.Core.Dvr;
 using TVHeadEnd.Core.Media;
 using TVHeadEnd.LiveTv;
+using TVHeadEnd.Playback;
 using TVHeadEnd.Recordings;
-using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
@@ -289,7 +290,7 @@ public class RecordingDeliveryTests
         // rather than written out, so raising the revision does not need this test edited -- the
         // property under test is the step, not the number.
         var stored = PublishedAtRevision(recording, SchemaRevision() - 1);
-        var now = RecordingItemMapper.PublishedDateFor(recording);
+        var now = RecordingPublicationVersion.PublishedDateFor(recording);
 
         // Once...
         Assert.True(now > stored);
@@ -297,7 +298,7 @@ public class RecordingDeliveryTests
         // ...and then never again, because the recording has not changed and neither has the
         // revision. The rewrite stores what the channel published, and the next listing publishes
         // the same value again -- not later than the stored one, so the item is left alone.
-        Assert.False(RecordingItemMapper.PublishedDateFor(recording) > now);
+        Assert.False(RecordingPublicationVersion.PublishedDateFor(recording) > now);
     }
 
     [Fact]
@@ -309,13 +310,13 @@ public class RecordingDeliveryTests
         var before = Finished(RealStop);
         var after = Finished(RealStop.AddSeconds(1));
 
-        Assert.True(RecordingItemMapper.PublishedDateFor(after) > RecordingItemMapper.PublishedDateFor(before));
+        Assert.True(RecordingPublicationVersion.PublishedDateFor(after) > RecordingPublicationVersion.PublishedDateFor(before));
 
         // Including a change smaller than the revision step, which is the case a coarser scheme
         // would swallow.
         Assert.True(
-            RecordingItemMapper.PublishedDateFor(Finished(RealStop.AddMilliseconds(1)))
-            > RecordingItemMapper.PublishedDateFor(before));
+            RecordingPublicationVersion.PublishedDateFor(Finished(RealStop.AddMilliseconds(1)))
+            > RecordingPublicationVersion.PublishedDateFor(before));
     }
 
     [Fact]
@@ -328,7 +329,7 @@ public class RecordingDeliveryTests
         var recording = Recording(muchLater, muchLater.AddHours(1), muchLater.AddHours(1), RecordingStatus.Completed);
 
         Assert.True(
-            RecordingItemMapper.PublishedDateFor(recording)
+            RecordingPublicationVersion.PublishedDateFor(recording)
             > PublishedAtRevision(recording, SchemaRevision() - 1));
     }
 
@@ -342,7 +343,7 @@ public class RecordingDeliveryTests
 
         Assert.Equal(
             DateFloor().AddDays(SchemaRevision()).AddSeconds(2),
-            RecordingItemMapper.PublishedDateFor(recording));
+            RecordingPublicationVersion.PublishedDateFor(recording));
     }
 
     [Fact]
@@ -350,9 +351,9 @@ public class RecordingDeliveryTests
     {
         // A value derived from the current time would be later than the stored date on every
         // listing, so every recording would be rewritten for ever.
-        var first = RecordingItemMapper.PublishedDateFor(Finished(RealStop));
+        var first = RecordingPublicationVersion.PublishedDateFor(Finished(RealStop));
         System.Threading.Thread.Sleep(20);
-        var second = RecordingItemMapper.PublishedDateFor(Finished(RealStop));
+        var second = RecordingPublicationVersion.PublishedDateFor(Finished(RealStop));
 
         Assert.Equal(first, second);
         Assert.Equal(DateTimeKind.Utc, first.Kind);
@@ -366,12 +367,12 @@ public class RecordingDeliveryTests
         // safe only because it is a constant added to a rising anchor rather than a fixed date
         // everything is pinned to: a fixed future date sits above every real change until it is
         // reached, and swallows all of them.
-        var published = RecordingItemMapper.PublishedDateFor(Finished(RealStop));
+        var published = RecordingPublicationVersion.PublishedDateFor(Finished(RealStop));
 
         Assert.True(published > RealStop);
 
         // And the very next thing the recording does still rises above it.
-        Assert.True(RecordingItemMapper.PublishedDateFor(Finished(RealStop.AddSeconds(1))) > published);
+        Assert.True(RecordingPublicationVersion.PublishedDateFor(Finished(RealStop.AddSeconds(1))) > published);
     }
 
     [Fact]
@@ -380,8 +381,8 @@ public class RecordingDeliveryTests
         // Every input comes from TVHeadend. Nothing per-process goes in -- that belongs to the
         // cache key, which must change across restarts, and would rewrite every stored item on
         // every start if it leaked in here.
-        var beforeRestart = RecordingItemMapper.PublishedDateFor(Finished(RealStop));
-        var afterRestart = RecordingItemMapper.PublishedDateFor(Finished(RealStop));
+        var beforeRestart = RecordingPublicationVersion.PublishedDateFor(Finished(RealStop));
+        var afterRestart = RecordingPublicationVersion.PublishedDateFor(Finished(RealStop));
 
         Assert.Equal(beforeRestart, afterRestart);
     }
@@ -397,7 +398,7 @@ public class RecordingDeliveryTests
         Assert.True(revision >= 1);
         Assert.Equal(
             TimeSpan.FromDays(revision),
-            RecordingItemMapper.PublishedDateFor(Scheduled(DateFloor())) - DateFloor());
+            RecordingPublicationVersion.PublishedDateFor(Scheduled(DateFloor())) - DateFloor());
     }
 
     [Fact]
@@ -435,7 +436,7 @@ public class RecordingDeliveryTests
         // Schema 6 published from the real activity, floored, which is the same day here.
         var storedByRealActivity = Max(RealStop, DateFloor()).AddSeconds(6);
 
-        var published = RecordingItemMapper.PublishedDateFor(recording);
+        var published = RecordingPublicationVersion.PublishedDateFor(recording);
 
         Assert.True(published > storedByScheduledStop, "Schema 5's value would not be superseded.");
         Assert.True(published > storedByRealActivity, "Schema 6's value would not be superseded.");
@@ -452,7 +453,7 @@ public class RecordingDeliveryTests
         var finished = Recording(PlannedStart, PlannedStop, RealStop, RecordingStatus.Completed);
 
         Assert.True(
-            RecordingItemMapper.PublishedDateFor(finished) > RecordingItemMapper.PublishedDateFor(running),
+            RecordingPublicationVersion.PublishedDateFor(finished) > RecordingPublicationVersion.PublishedDateFor(running),
             "The final runtime would never be stored.");
     }
 
@@ -473,7 +474,7 @@ public class RecordingDeliveryTests
 
         // The version marker may still sit above it: it is not a claim about the recording, and
         // Jellyfin only ever compares it with itself.
-        Assert.True(RecordingItemMapper.PublishedDateFor(recording) > DateFloor());
+        Assert.True(RecordingPublicationVersion.PublishedDateFor(recording) > DateFloor());
     }
 
     [Fact]
@@ -484,7 +485,7 @@ public class RecordingDeliveryTests
         var recording = Recording(PlannedStart, PlannedStop, activity: null, RecordingStatus.Completed);
 
         Assert.Null(recording.DateLastUpdated);
-        Assert.Equal(PlannedStart.AddDays(SchemaRevision()).AddSeconds(2), RecordingItemMapper.PublishedDateFor(recording));
+        Assert.Equal(PlannedStart.AddDays(SchemaRevision()).AddSeconds(2), RecordingPublicationVersion.PublishedDateFor(recording));
     }
 
     private static readonly DateTime PlannedStart = new(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
@@ -530,11 +531,11 @@ public class RecordingDeliveryTests
 
     private static long ToUnixTime(DateTime value)
         => ((DateTimeOffset)DateTime.SpecifyKind(value, DateTimeKind.Utc)).ToUnixTimeSeconds();
-    private static int SchemaRevision() => RecordingItemMapper.SchemaRevision;
+    private static int SchemaRevision() => RecordingPublicationVersion.SchemaRevision;
 
     private static DateTime DateFloor()
     {
-        var field = typeof(RecordingItemMapper).GetField(
+        var field = typeof(RecordingPublicationVersion).GetField(
             "DateFloorUtc",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
 

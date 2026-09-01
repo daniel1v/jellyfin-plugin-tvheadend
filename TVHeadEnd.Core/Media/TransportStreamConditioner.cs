@@ -621,11 +621,10 @@ public sealed class TransportStreamConditioner
         {
             var before = first.Entries[index];
             var after = second.Entries[index];
-
             if (before.Pid != after.Pid
                 || before.StreamType != after.StreamType
                 || before.Kind != after.Kind
-                || !string.Equals(before.Codec, after.Codec, StringComparison.Ordinal)
+                || before.Codec != after.Codec
                 || !string.Equals(before.Language, after.Language, StringComparison.Ordinal)
                 || before.IsHearingImpaired != after.IsHearingImpaired
                 || before.AudioPurpose != after.AudioPurpose)

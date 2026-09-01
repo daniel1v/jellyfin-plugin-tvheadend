@@ -1,9 +1,10 @@
 using System.Collections.Generic;
 using System.Linq;
 using MediaBrowser.Model.Entities;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
 using TVHeadEnd.Recordings;
-using TVHeadEnd.Streaming;
+using TVHeadEnd.Tests.Core;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Recordings;
@@ -247,7 +248,7 @@ public class RecordedAudioDefaultTests
         section[1] = (byte)(0xB0 | ((sectionLength >> 8) & 0x0F));
         section[2] = (byte)(sectionLength & 0xFF);
 
-        return Tests.Streaming.PsiSection.WithCrc(section);
+        return Tests.Core.PsiSectionBytes.WithCrc(section);
     }
 
     private static byte[] BuildPmtSection(params (byte StreamType, int Pid, byte[] Descriptors)[] entries)
@@ -282,7 +283,7 @@ public class RecordedAudioDefaultTests
         section[1] = (byte)(0xB0 | ((sectionLength >> 8) & 0x0F));
         section[2] = (byte)(sectionLength & 0xFF);
 
-        return Tests.Streaming.PsiSection.WithCrc(section);
+        return Tests.Core.PsiSectionBytes.WithCrc(section);
     }
 
     /// <summary>

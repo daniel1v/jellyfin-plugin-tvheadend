@@ -64,10 +64,10 @@ public sealed record ProgramMapEntry
     public required ElementaryStreamKind Kind { get; init; }
 
     /// <summary>
-    /// Gets the codec name FFmpeg and Jellyfin device profiles use, or <see langword="null"/>
-    /// when the table does not identify one.
+    /// Gets what the stream is encoded with, or <see cref="ElementaryStreamCodec.Unknown"/> when
+    /// the table does not identify it.
     /// </summary>
-    public string? Codec { get; init; }
+    public ElementaryStreamCodec Codec { get; init; }
 
     /// <summary>
     /// Gets the ISO 639 language, or <see langword="null"/> when the table declares none.

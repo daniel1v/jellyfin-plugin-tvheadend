@@ -5,11 +5,12 @@ using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Configuration;
+using TVHeadEnd.Infrastructure.LiveBuffer;
 using TVHeadEnd.LiveTv;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Recordings;
-using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd;

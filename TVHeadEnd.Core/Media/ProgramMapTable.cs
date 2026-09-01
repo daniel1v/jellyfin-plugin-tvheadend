@@ -134,7 +134,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             ", ",
             Entries.Select((entry, index) => string.Create(
                 CultureInfo.InvariantCulture,
-                $"{index}:{entry.Kind.ToString().ToLowerInvariant()}/{entry.Codec ?? "?"}/pid={entry.Pid}")));
+                $"{index}:{entry.Kind.ToString().ToLowerInvariant()}/{entry.Codec}/pid={entry.Pid}")));
 
     private static bool Describe(byte streamType, int pid, ReadOnlySpan<byte> descriptors, out ProgramMapEntry entry)
     {
@@ -153,7 +153,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         string? languageFromSupplementary = null;
 
         // Set only by a descriptor, and only for stream types that need one to be identified.
-        string? descriptorCodec = null;
+        var descriptorCodec = ElementaryStreamCodec.Unknown;
         ElementaryStreamKind? descriptorKind = null;
 
         var offset = 0;
@@ -201,7 +201,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                     // subtitling_type 0x20..0x25 are the "for the hard of hearing" variants.
                     hearingImpaired |= body[3] is >= 0x20 and <= 0x25;
                     descriptorKind = ElementaryStreamKind.Subtitle;
-                    descriptorCodec = "dvb_subtitle";
+                    descriptorCodec = ElementaryStreamCodec.DvbSubtitle;
                     break;
 
                 case DescriptorTeletext:
@@ -211,27 +211,27 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                     }
 
                     descriptorKind = ElementaryStreamKind.Subtitle;
-                    descriptorCodec = "dvb_teletext";
+                    descriptorCodec = ElementaryStreamCodec.DvbTeletext;
                     break;
 
                 case DescriptorAc3:
                     descriptorKind = ElementaryStreamKind.Audio;
-                    descriptorCodec = "ac3";
+                    descriptorCodec = ElementaryStreamCodec.Ac3;
                     break;
 
                 case DescriptorEnhancedAc3:
                     descriptorKind = ElementaryStreamKind.Audio;
-                    descriptorCodec = "eac3";
+                    descriptorCodec = ElementaryStreamCodec.Eac3;
                     break;
 
                 case DescriptorDts:
                     descriptorKind = ElementaryStreamKind.Audio;
-                    descriptorCodec = "dts";
+                    descriptorCodec = ElementaryStreamCodec.Dts;
                     break;
 
                 case DescriptorAac:
                     descriptorKind = ElementaryStreamKind.Audio;
-                    descriptorCodec = "aac";
+                    descriptorCodec = ElementaryStreamCodec.Aac;
                     break;
 
                 case DescriptorExtension
@@ -266,10 +266,10 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
                 case DescriptorRegistration when body.Length >= 4:
                     (descriptorKind, descriptorCodec) = ReadRegistration(body[..4]) switch
                     {
-                        "AC-3" => (ElementaryStreamKind.Audio, "ac3"),
-                        "EAC3" => (ElementaryStreamKind.Audio, "eac3"),
-                        "DTS1" or "DTS2" or "DTS3" => (ElementaryStreamKind.Audio, "dts"),
-                        "HEVC" => (ElementaryStreamKind.Video, "hevc"),
+                        "AC-3" => (ElementaryStreamKind.Audio, ElementaryStreamCodec.Ac3),
+                        "EAC3" => (ElementaryStreamKind.Audio, ElementaryStreamCodec.Eac3),
+                        "DTS1" or "DTS2" or "DTS3" => (ElementaryStreamKind.Audio, ElementaryStreamCodec.Dts),
+                        "HEVC" => (ElementaryStreamKind.Video, ElementaryStreamCodec.Hevc),
                         _ => (descriptorKind, descriptorCodec),
                     };
                     break;
@@ -289,7 +289,7 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
             kind = resolvedKind;
             codec = descriptorCodec;
         }
-        else if (codec is null && descriptorCodec is not null)
+        else if (codec == ElementaryStreamCodec.Unknown && descriptorCodec != ElementaryStreamCodec.Unknown)
         {
             codec = descriptorCodec;
         }
@@ -322,12 +322,12 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
     private static AudioPurpose FirstConclusive(AudioPurpose current, AudioPurpose candidate)
         => current == AudioPurpose.Unknown ? candidate : current;
 
-    private static (ElementaryStreamKind Kind, string? Codec) FromStreamType(byte streamType) => streamType switch
+    private static (ElementaryStreamKind Kind, ElementaryStreamCodec Codec) FromStreamType(byte streamType) => streamType switch
     {
-        0x01 or 0x02 => (ElementaryStreamKind.Video, "mpeg2video"),
-        0x10 => (ElementaryStreamKind.Video, "mpeg4"),
-        0x1B => (ElementaryStreamKind.Video, "h264"),
-        0x24 => (ElementaryStreamKind.Video, "hevc"),
+        0x01 or 0x02 => (ElementaryStreamKind.Video, ElementaryStreamCodec.Mpeg2Video),
+        0x10 => (ElementaryStreamKind.Video, ElementaryStreamCodec.Mpeg4Video),
+        0x1B => (ElementaryStreamKind.Video, ElementaryStreamCodec.H264),
+        0x24 => (ElementaryStreamKind.Video, ElementaryStreamCodec.Hevc),
 
         // MPEG audio. The table does not say which layer, and this used to be left unnamed for
         // that reason -- on the principle that an absent value is safer than a guessed one. It is
@@ -341,23 +341,23 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
         // ZDF, whose three 0x03 tracks it reads as mp2. With the name present Jellyfin compares
         // like with like: it prefers a track the client supports, such as the AC-3 one beside
         // these, and only transcodes when there is genuinely nothing it can play.
-        0x03 or 0x04 => (ElementaryStreamKind.Audio, "mp2"),
+        0x03 or 0x04 => (ElementaryStreamKind.Audio, ElementaryStreamCodec.MpegAudioLayer2),
 
-        0x0F => (ElementaryStreamKind.Audio, "aac"),
-        0x11 => (ElementaryStreamKind.Audio, "aac_latm"),
+        0x0F => (ElementaryStreamKind.Audio, ElementaryStreamCodec.Aac),
+        0x11 => (ElementaryStreamKind.Audio, ElementaryStreamCodec.AacLatm),
 
         // The ATSC assignments for AC-3 and E-AC-3. DVB carries both under 0x06 with a
         // descriptor instead, which is handled there.
-        0x81 => (ElementaryStreamKind.Audio, "ac3"),
-        0x87 => (ElementaryStreamKind.Audio, "eac3"),
+        0x81 => (ElementaryStreamKind.Audio, ElementaryStreamCodec.Ac3),
+        0x87 => (ElementaryStreamKind.Audio, ElementaryStreamCodec.Eac3),
 
         // Types that are data, and say so.
-        0x05 or 0x0B or 0x0C or 0x0D or 0x86 => (ElementaryStreamKind.Data, null),
+        0x05 or 0x0B or 0x0C or 0x0D or 0x86 => (ElementaryStreamKind.Data, ElementaryStreamCodec.Unknown),
 
         // 0x06 is private data in PES packets, which is where DVB puts AC-3, E-AC-3, subtitles
         // and teletext. It says nothing by itself; if no descriptor named it, nothing here knows
         // what it is.
-        _ => (ElementaryStreamKind.Unknown, null),
+        _ => (ElementaryStreamKind.Unknown, ElementaryStreamCodec.Unknown),
     };
 
     private static string? ReadLanguage(ReadOnlySpan<byte> code)

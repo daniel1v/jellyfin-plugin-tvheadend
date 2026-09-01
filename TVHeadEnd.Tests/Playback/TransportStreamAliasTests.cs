@@ -1,3 +1,4 @@
+using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Playback;
 using Xunit;
 
