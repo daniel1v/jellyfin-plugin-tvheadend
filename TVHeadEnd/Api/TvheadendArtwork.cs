@@ -27,19 +27,23 @@ namespace TVHeadEnd.Api
     public sealed class TvheadendArtwork
     {
         private readonly IServerApplicationHost _applicationHost;
+        private readonly TvheadendAccessSecret _secret;
         private readonly ILogger _logger;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TvheadendArtwork"/> class.
         /// </summary>
         /// <param name="applicationHost">The Jellyfin application host, for this server's address.</param>
+        /// <param name="secret">The secret every published address is signed with.</param>
         /// <param name="logger">The logger.</param>
-        public TvheadendArtwork(IServerApplicationHost applicationHost, ILogger logger)
+        public TvheadendArtwork(IServerApplicationHost applicationHost, TvheadendAccessSecret secret, ILogger<TvheadendArtwork> logger)
         {
             ArgumentNullException.ThrowIfNull(applicationHost);
+            ArgumentNullException.ThrowIfNull(secret);
             ArgumentNullException.ThrowIfNull(logger);
 
             _applicationHost = applicationHost;
+            _secret = secret;
             _logger = logger;
         }
 
@@ -95,7 +99,7 @@ namespace TVHeadEnd.Api
 
             try
             {
-                var secret = TvheadendAccessSecret.Ensure(_logger);
+                var secret = _secret.Ensure();
                 var token = TvheadendAccessToken.Create(Encode(path), secret);
 
                 return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')

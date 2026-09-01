@@ -24,7 +24,7 @@ namespace TVHeadEnd.Tvheadend;
 /// connection once it has started.
 /// </para>
 /// </remarks>
-public sealed class TvheadendConnection : IAsyncDisposable
+public sealed class TvheadendConnection : ITvheadendHttpEndpointSource, IAsyncDisposable
 {
     /// <summary>
     /// How many times a connect is retried when the configuration changes underneath it.

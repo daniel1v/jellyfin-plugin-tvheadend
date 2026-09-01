@@ -6,8 +6,10 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using TVHeadEnd.Configuration;
+using TVHeadEnd.LiveTv;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Recordings;
+using TVHeadEnd.Streaming;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd;
@@ -20,13 +22,35 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
-        // Where the TVHeadend side gets its settings from, and the only place that knows those
-        // settings live in a Jellyfin plugin configuration at all.
+        // The one door onto Jellyfin's plugin configuration. Everything that needs a setting is
+        // handed it from here; nothing else reaches for the plugin singleton.
+        serviceCollection.AddSingleton<IPluginConfigurationSource, PluginConfigurationSource>();
+        serviceCollection.AddSingleton<IPluginPreferencesSource, PluginPreferencesSource>();
         serviceCollection.AddSingleton<ITvheadendSettingsSource, PluginTvheadendSettingsSource>();
+
+        // One secret, created once and never rotated: Jellyfin stores the addresses derived from
+        // it, and an address that stopped verifying is an item linking to nothing.
+        serviceCollection.AddSingleton<Api.TvheadendAccessSecret>();
+        serviceCollection.AddSingleton<Api.TvheadendArtwork>();
 
         // One connection, shared. Everything the plugin knows about the server arrives over it,
         // and every live subscription is multiplexed onto it.
         serviceCollection.AddSingleton<TvheadendConnection>();
+        serviceCollection.AddSingleton<ITvheadendHttpEndpointSource>(
+            provider => provider.GetRequiredService<TvheadendConnection>());
+
+        // Resolved once and swept once, at startup, because both are facts about this host rather
+        // than about any one stream.
+        serviceCollection.AddSingleton<LiveBufferLocation>();
+
+        // The live TV service's collaborators, each built by the container rather than by the
+        // service itself. It is an adapter between two vocabularies; opening a stream, writing a
+        // timer and reading the guide are three other jobs.
+        serviceCollection.AddSingleton<ChannelItemIds>();
+        serviceCollection.AddSingleton<PlaybackClient>();
+        serviceCollection.AddSingleton<LiveStreamOpener>();
+        serviceCollection.AddSingleton<TvheadendDvr>();
+        serviceCollection.AddSingleton<TvheadendGuide>();
 
         serviceCollection.AddSingleton<LiveTvService>();
         serviceCollection.AddSingleton<ILiveTvService>(provider => provider.GetRequiredService<LiveTvService>());
@@ -34,6 +58,8 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // One reading of a recording, shared. The channel describing a recording and the filter
         // deciding whether this client can play it directly both ask it, within milliseconds of
         // each other, and neither should cause a second eight megabyte fetch.
+        serviceCollection.AddSingleton<TvheadendRecordings>();
+        serviceCollection.AddSingleton<RecordingMediaSourceFactory>();
         serviceCollection.AddSingleton<IRecordingSampleSource, TvheadendRecordingSampleSource>();
         serviceCollection.AddSingleton<RecordingAnalysisService>();
         serviceCollection.AddSingleton<IRecordingAnalyser>(

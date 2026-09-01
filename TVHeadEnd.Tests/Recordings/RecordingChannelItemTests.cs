@@ -1,5 +1,6 @@
 using MediaBrowser.Model.LiveTv;
 using TVHeadEnd;
+using TVHeadEnd.Recordings;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Recordings;
@@ -28,9 +29,9 @@ public class RecordingChannelItemTests
         // The case that used to fall through. A German broadcast numbers its episodes far more
         // often than it names them, and tying the series name to the episode title left a numbered
         // episode standing alone in a library that had every other episode of the same programme.
-        var item = RecordingsChannel.BuildChannelItem(
+        var item = RecordingItemMapper.BuildChannelItem(
             Recording("Tatort", season: 2026, episode: 14, episodeTitle: null, isSeries: true),
-            "1f6cf027e0f2168c8ffaab722d151bb1");
+            RecordingMediaSourceFactory.BuildPlaceholderSource("1f6cf027e0f2168c8ffaab722d151bb1"));
 
         Assert.Equal("Tatort", item.SeriesName);
         Assert.Equal("Tatort", item.Name);
@@ -41,9 +42,9 @@ public class RecordingChannelItemTests
     [Fact]
     public void AnEpisodeWithATitleIsCalledByIt()
     {
-        var item = RecordingsChannel.BuildChannelItem(
+        var item = RecordingItemMapper.BuildChannelItem(
             Recording("Wolfsland", season: null, episode: null, episodeTitle: "Das schwarze Herz", isSeries: true),
-            "id");
+            RecordingMediaSourceFactory.BuildPlaceholderSource("id"));
 
         Assert.Equal("Das schwarze Herz", item.Name);
         Assert.Equal("Wolfsland", item.SeriesName);
@@ -52,9 +53,9 @@ public class RecordingChannelItemTests
     [Fact]
     public void SomethingThatIsNotASeriesBelongsToNoSeries()
     {
-        var item = RecordingsChannel.BuildChannelItem(
+        var item = RecordingItemMapper.BuildChannelItem(
             Recording("Der Untergang", season: null, episode: null, episodeTitle: null, isSeries: false),
-            "id");
+            RecordingMediaSourceFactory.BuildPlaceholderSource("id"));
 
         Assert.Null(item.SeriesName);
         Assert.Equal("Der Untergang", item.Name);
@@ -68,7 +69,7 @@ public class RecordingChannelItemTests
         recording.OfficialRating = "FSK 12";
         recording.CommunityRating = 6.6f;
 
-        var item = RecordingsChannel.BuildChannelItem(recording, "id");
+        var item = RecordingItemMapper.BuildChannelItem(recording, RecordingMediaSourceFactory.BuildPlaceholderSource("id"));
 
         Assert.Equal(2023, item.ProductionYear);
         Assert.Equal("FSK 12", item.OfficialRating);
@@ -80,9 +81,9 @@ public class RecordingChannelItemTests
     {
         // A missing season is a missing season, not season one, and a missing year is not the year
         // the recording was made in.
-        var item = RecordingsChannel.BuildChannelItem(
+        var item = RecordingItemMapper.BuildChannelItem(
             Recording("Der Untergang", season: null, episode: null, episodeTitle: null, isSeries: false),
-            "id");
+            RecordingMediaSourceFactory.BuildPlaceholderSource("id"));
 
         Assert.Null(item.IndexNumber);
         Assert.Null(item.ParentIndexNumber);
@@ -95,9 +96,9 @@ public class RecordingChannelItemTests
     {
         // The listing must not analyse the recordings it lists, and the metadata added here does
         // not change that: what a recording contains is still answered when playback is negotiated.
-        var item = RecordingsChannel.BuildChannelItem(
+        var item = RecordingItemMapper.BuildChannelItem(
             Recording("Tatort", 2026, 14, null, isSeries: true),
-            "1f6cf027e0f2168c8ffaab722d151bb1");
+            RecordingMediaSourceFactory.BuildPlaceholderSource("1f6cf027e0f2168c8ffaab722d151bb1"));
 
         var source = Assert.Single(item.MediaSources);
         Assert.Equal(MediaBrowser.Model.Dto.MediaSourceType.Placeholder, source.Type);

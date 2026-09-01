@@ -26,20 +26,20 @@ namespace TVHeadEnd.Recordings
         /// </summary>
         public const int SampleLength = 8 * 1024 * 1024;
 
-        private readonly TvheadendConnection _connection;
+        private readonly ITvheadendHttpEndpointSource _endpoints;
         private readonly IHttpClientFactory _httpClientFactory;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TvheadendRecordingSampleSource"/> class.
         /// </summary>
-        /// <param name="connection">The TVHeadend connection.</param>
+        /// <param name="endpoints">Where TVHeadend's HTTP interface is.</param>
         /// <param name="httpClientFactory">The HTTP client factory.</param>
-        public TvheadendRecordingSampleSource(TvheadendConnection connection, IHttpClientFactory httpClientFactory)
+        public TvheadendRecordingSampleSource(ITvheadendHttpEndpointSource endpoints, IHttpClientFactory httpClientFactory)
         {
-            ArgumentNullException.ThrowIfNull(connection);
+            ArgumentNullException.ThrowIfNull(endpoints);
             ArgumentNullException.ThrowIfNull(httpClientFactory);
 
-            _connection = connection;
+            _endpoints = endpoints;
             _httpClientFactory = httpClientFactory;
         }
 
@@ -94,7 +94,7 @@ namespace TVHeadEnd.Recordings
         {
             ArgumentException.ThrowIfNullOrEmpty(recordingId);
 
-            var endpoint = await _connection.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
+            var endpoint = await _endpoints.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
             var url = endpoint.CreateApiUrl("dvrfile/" + recordingId);
 
             // The file is this method's until it is handed over, and the caller's from then on.
@@ -102,7 +102,7 @@ namespace TVHeadEnd.Recordings
             var path = RecordingSample.CreatePath();
             try
             {
-                return new RecordingSample(path, await Fetch(url, path, cancellationToken).ConfigureAwait(false));
+                return new RecordingSample(path, await Fetch(endpoint, url, path, cancellationToken).ConfigureAwait(false));
             }
             catch
             {
@@ -111,12 +111,12 @@ namespace TVHeadEnd.Recordings
             }
         }
 
-        private async Task<long> Fetch(string url, string destination, CancellationToken cancellationToken)
+        private async Task<long> Fetch(TvheadendHttpEndpoint endpoint, string url, string destination, CancellationToken cancellationToken)
         {
             using var client = _httpClientFactory.CreateClient();
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, SampleLength - 1);
-            foreach (var header in _connection.HttpEndpoint.CreateHeaders())
+            foreach (var header in endpoint.CreateHeaders())
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }

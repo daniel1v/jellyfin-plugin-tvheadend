@@ -49,28 +49,28 @@ public sealed class LiveStreamOpener
     /// <param name="httpClientFactory">The HTTP client factory.</param>
     /// <param name="applicationHost">The Jellyfin application host, for the local stream address.</param>
     /// <param name="client">Who is asking, for the one decision that depends on it.</param>
-    /// <param name="bufferDirectory">Where live buffers are written.</param>
+    /// <param name="buffer">Where live buffers are written.</param>
     /// <param name="logger">The logger.</param>
     public LiveStreamOpener(
         TvheadendConnection connection,
         IHttpClientFactory httpClientFactory,
         IServerApplicationHost applicationHost,
         PlaybackClient client,
-        string bufferDirectory,
-        ILogger logger)
+        LiveBufferLocation buffer,
+        ILogger<LiveStreamOpener> logger)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(httpClientFactory);
         ArgumentNullException.ThrowIfNull(applicationHost);
         ArgumentNullException.ThrowIfNull(client);
-        ArgumentException.ThrowIfNullOrEmpty(bufferDirectory);
+        ArgumentNullException.ThrowIfNull(buffer);
         ArgumentNullException.ThrowIfNull(logger);
 
         _connection = connection;
         _httpClientFactory = httpClientFactory;
         _applicationHost = applicationHost;
         _client = client;
-        _bufferDirectory = bufferDirectory;
+        _bufferDirectory = buffer.Path;
         _logger = logger;
     }
 

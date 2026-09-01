@@ -13,6 +13,7 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using TVHeadEnd;
 using TVHeadEnd.Playback;
+using TVHeadEnd.Recordings;
 using Xunit;
 
 namespace TVHeadEnd.Tests;
@@ -32,7 +33,7 @@ public class RecordingsChannelTests
     {
         // Inventing them is worse than saying nothing: Jellyfin maps streams by their position
         // in this list, so made-up entries send FFmpeg's map arguments to the wrong tracks.
-        var placeholder = RecordingsChannel.BuildPlaceholderSource(SomeItemId);
+        var placeholder = RecordingMediaSourceFactory.BuildPlaceholderSource(SomeItemId);
 
         Assert.Empty(placeholder.MediaStreams);
         Assert.Equal(MediaSourceType.Placeholder, placeholder.Type);
@@ -41,7 +42,7 @@ public class RecordingsChannelTests
     [Fact]
     public void APlaceholderStatesTheContainerButPromisesNothingElse()
     {
-        var placeholder = RecordingsChannel.BuildPlaceholderSource(SomeItemId);
+        var placeholder = RecordingMediaSourceFactory.BuildPlaceholderSource(SomeItemId);
 
         Assert.Equal("ts", placeholder.Container);
         Assert.Null(placeholder.Path);
@@ -60,7 +61,7 @@ public class RecordingsChannelTests
         var library = new RecordingLibraryManager();
         var recording = Recording("2061373994");
 
-        var mediaSourceId = RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, recording);
+        var mediaSourceId = RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, recording);
 
         Assert.Equal(library.ItemIdFor("2061373994", typeof(Video)).ToString("N", CultureInfo.InvariantCulture), mediaSourceId);
     }
@@ -102,15 +103,15 @@ public class RecordingsChannelTests
     {
         // Two spellings of this would be two different items: the channel item is published with
         // it, and the identifier is derived from it.
-        Assert.Equal(ChannelMediaContentType.Movie, RecordingsChannel.ContentTypeFor(new MyRecordingInfo { Id = "1", IsMovie = true }));
-        Assert.Equal(ChannelMediaContentType.Episode, RecordingsChannel.ContentTypeFor(new MyRecordingInfo { Id = "1", IsSeries = true }));
-        Assert.Equal(ChannelMediaContentType.Clip, RecordingsChannel.ContentTypeFor(new MyRecordingInfo { Id = "1" }));
+        Assert.Equal(ChannelMediaContentType.Movie, RecordingItemMapper.ContentTypeFor(new MyRecordingInfo { Id = "1", IsMovie = true }));
+        Assert.Equal(ChannelMediaContentType.Episode, RecordingItemMapper.ContentTypeFor(new MyRecordingInfo { Id = "1", IsSeries = true }));
+        Assert.Equal(ChannelMediaContentType.Clip, RecordingItemMapper.ContentTypeFor(new MyRecordingInfo { Id = "1" }));
 
         // A film that is also flagged as a series is a film, as the published value has always
         // read it.
         Assert.Equal(
             ChannelMediaContentType.Movie,
-            RecordingsChannel.ContentTypeFor(new MyRecordingInfo { Id = "1", IsMovie = true, IsSeries = true }));
+            RecordingItemMapper.ContentTypeFor(new MyRecordingInfo { Id = "1", IsMovie = true, IsSeries = true }));
     }
 
     [Fact]
@@ -120,10 +121,10 @@ public class RecordingsChannelTests
         // for -- Jellyfin drops every placeholder before playback is decided.
         var library = new RecordingLibraryManager();
         var recording = Recording("2061373994");
-        var id = RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, recording);
+        var id = RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, recording);
 
-        var placeholder = RecordingsChannel.BuildPlaceholderSource(id);
-        var described = RecordingsChannel.BuildRecordingSource("2061373994", id, "http://host:8096/x");
+        var placeholder = RecordingMediaSourceFactory.BuildPlaceholderSource(id);
+        var described = RecordingMediaSourceFactory.BuildRecordingSource("2061373994", id, "http://host:8096/x");
 
         Assert.Equal(placeholder.Id, described.Id);
         Assert.Equal(MediaSourceType.Placeholder, placeholder.Type);
@@ -139,7 +140,7 @@ public class RecordingsChannelTests
         // identifier to use.
         var library = new RecordingLibraryManager();
 
-        Assert.True(Guid.TryParse(RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, Recording("1312160563")), out _));
+        Assert.True(Guid.TryParse(RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, Recording("1312160563")), out _));
     }
 
     [Fact]
@@ -155,8 +156,8 @@ public class RecordingsChannelTests
         var recording = Recording("2061373994");
         var itemId = library.ItemIdFor("2061373994", typeof(Video));
 
-        var placeholder = RecordingsChannel.BuildPlaceholderSource(
-            RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, recording));
+        var placeholder = RecordingMediaSourceFactory.BuildPlaceholderSource(
+            RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, recording));
 
         Assert.True(SurvivesTheStaticSourceFilter(placeholder.Id, itemId));
 
@@ -202,12 +203,12 @@ public class RecordingsChannelTests
         var library = new RecordingLibraryManager();
 
         Assert.Equal(
-            RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, Recording("867835561")),
-            RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, Recording("867835561")));
+            RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, Recording("867835561")),
+            RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, Recording("867835561")));
 
         Assert.NotEqual(
-            RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, Recording("867835561")),
-            RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, Recording("962787396")));
+            RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, Recording("867835561")),
+            RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, Recording("962787396")));
     }
 
     [Theory]
@@ -218,8 +219,8 @@ public class RecordingsChannelTests
         var library = new RecordingLibraryManager();
 
         Assert.ThrowsAny<ArgumentException>(
-            () => RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, new MyRecordingInfo { Id = id }));
-        Assert.ThrowsAny<ArgumentException>(() => RecordingsChannel.BuildPlaceholderSource(id!));
+            () => RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, new MyRecordingInfo { Id = id }));
+        Assert.ThrowsAny<ArgumentException>(() => RecordingMediaSourceFactory.BuildPlaceholderSource(id!));
     }
 
     [Fact]
@@ -242,15 +243,15 @@ public class RecordingsChannelTests
 
     private static MediaSourceInfo[] Sources(RecordingLibraryManager library, MyRecordingInfo recording)
     {
-        var id = RecordingsChannel.RecordingMediaSourceId(library.AsLibraryManager, recording);
-        var described = RecordingsChannel.BuildRecordingSource(recording.Id!, id, "http://host:8096/x");
+        var id = RecordingMediaSourceFactory.RecordingMediaSourceId(library.AsLibraryManager, recording);
+        var described = RecordingMediaSourceFactory.BuildRecordingSource(recording.Id!, id, "http://host:8096/x");
         described.MediaStreams =
         [
             new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264" },
             new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "mp2", IsDefault = true },
         ];
 
-        return [RecordingsChannel.BuildPlaceholderSource(id), described];
+        return [RecordingMediaSourceFactory.BuildPlaceholderSource(id), described];
     }
 
     /// <summary>

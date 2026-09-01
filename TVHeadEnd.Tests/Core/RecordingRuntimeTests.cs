@@ -5,6 +5,7 @@ using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Core.Broadcast;
 using TVHeadEnd.Core.Dvr;
 using TVHeadEnd.LiveTv;
+using TVHeadEnd.Recordings;
 using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
@@ -198,13 +199,13 @@ public class RecordingRuntimeTests
     {
         // Two independent answers to how long a recording is are two answers that can disagree, and
         // the client is handed both -- one on the listed item, one on the source it plays.
-        // RecordingsChannel.Runtime is what fills in each of them, and it recomputes nothing: it
+        // RecordingItemMapper.Runtime is what fills in each of them, and it recomputes nothing: it
         // reads the value the projection worked out from the file.
         var recording = JellyfinDvrMapper.ToRecording(
             Entry("completed", File(PlannedStart, PlannedStart.AddMinutes(20))));
 
-        Assert.Equal(TimeSpan.FromMinutes(20).Ticks, RecordingsChannel.Runtime(recording));
-        Assert.Equal(recording.RunTimeTicks, RecordingsChannel.Runtime(recording));
+        Assert.Equal(TimeSpan.FromMinutes(20).Ticks, RecordingItemMapper.Runtime(recording));
+        Assert.Equal(recording.RunTimeTicks, RecordingItemMapper.Runtime(recording));
     }
 
     [Fact]
@@ -217,7 +218,7 @@ public class RecordingRuntimeTests
 
         Assert.Equal(PlannedStart, recording.StartDate);
         Assert.Equal(PlannedStop, recording.EndDate);
-        Assert.NotEqual((recording.EndDate - recording.StartDate).Ticks, RecordingsChannel.Runtime(recording));
+        Assert.NotEqual((recording.EndDate - recording.StartDate).Ticks, RecordingItemMapper.Runtime(recording));
     }
 
     [Fact]

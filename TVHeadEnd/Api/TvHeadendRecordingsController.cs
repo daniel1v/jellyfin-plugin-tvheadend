@@ -39,16 +39,26 @@ namespace TVHeadEnd.Api
     [Route("TVHeadend")]
     public class TvHeadendRecordingsController : ControllerBase
     {
-        private readonly TvheadendConnection _connectionHandler;
+        private readonly ITvheadendHttpEndpointSource _endpoints;
+        private readonly TvheadendAccessSecret _secret;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<TvHeadendRecordingsController> _logger;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="TvHeadendRecordingsController"/> class.
+        /// </summary>
+        /// <param name="endpoints">Where TVHeadend's HTTP interface is.</param>
+        /// <param name="secret">The secret a published address is signed with.</param>
+        /// <param name="httpClientFactory">The HTTP client factory.</param>
+        /// <param name="logger">The logger.</param>
         public TvHeadendRecordingsController(
-            TvheadendConnection connectionHandler,
+            ITvheadendHttpEndpointSource endpoints,
+            TvheadendAccessSecret secret,
             IHttpClientFactory httpClientFactory,
             ILogger<TvHeadendRecordingsController> logger)
         {
-            _connectionHandler = connectionHandler;
+            _endpoints = endpoints;
+            _secret = secret;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
@@ -90,7 +100,7 @@ namespace TVHeadEnd.Api
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<ActionResult> GetRecording(string token, CancellationToken cancellationToken)
         {
-            if (!TvheadendAccessToken.TryRead(token, Plugin.Instance.Configuration.RecordingAccessSecret, out var recordingId))
+            if (!TvheadendAccessToken.TryRead(token, _secret.Ensure(), out var recordingId))
             {
                 return NotFound();
             }
@@ -100,7 +110,7 @@ namespace TVHeadEnd.Api
             // can answer with a root the server never reported -- and asking twice within one
             // request could answer from two different servers if the configuration changed in
             // between.
-            var endpoint = await _connectionHandler.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
+            var endpoint = await _endpoints.GetHttpEndpointAsync(cancellationToken).ConfigureAwait(false);
 
             var upstream = endpoint.CreateApiUrl("dvrfile/" + recordingId);
             if (string.IsNullOrEmpty(upstream))

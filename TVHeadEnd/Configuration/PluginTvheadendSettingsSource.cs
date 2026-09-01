@@ -1,6 +1,4 @@
 using System;
-using System.Threading;
-using MediaBrowser.Model.Plugins;
 using TVHeadEnd.Tvheadend;
 
 namespace TVHeadEnd.Configuration;
@@ -16,13 +14,12 @@ namespace TVHeadEnd.Configuration;
 /// there is a settings page at all.
 /// </para>
 /// <para>
-/// The subscription is taken on the first read rather than in the constructor. This object is
-/// built by Jellyfin's container while the plugin instance is still being created, so there is
-/// nothing to subscribe to then -- and the first read of the configuration is by definition a
-/// moment when there is.
+/// Nothing here reaches for the plugin: it is handed the configuration through
+/// <see cref="IPluginConfigurationSource"/>, which is the one door onto it and the one place that
+/// has to know a plugin instance may not exist yet.
 /// </para>
 /// </remarks>
-public sealed class PluginTvheadendSettingsSource : ITvheadendSettingsSource, IDisposable
+public sealed class PluginTvheadendSettingsSource : ITvheadendSettingsSource
 {
     /// <summary>
     /// DVR_PRIO_IMPORTANT, the lowest value TVHeadend accepts for a recording priority.
@@ -39,24 +36,25 @@ public sealed class PluginTvheadendSettingsSource : ITvheadendSettingsSource, ID
     /// </summary>
     private const int PriorityNotSet = 5;
 
-    private int _subscribed;
+    private readonly IPluginConfigurationSource _configuration;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PluginTvheadendSettingsSource"/> class.
+    /// </summary>
+    /// <param name="configuration">The stored plugin configuration.</param>
+    public PluginTvheadendSettingsSource(IPluginConfigurationSource configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        _configuration = configuration;
+        _configuration.Changed += (sender, arguments) => Changed?.Invoke(this, EventArgs.Empty);
+    }
 
     /// <inheritdoc />
     public event EventHandler? Changed;
 
     /// <inheritdoc />
-    public TvheadendSettings Current
-    {
-        get
-        {
-            if (Interlocked.Exchange(ref _subscribed, 1) == 0)
-            {
-                Plugin.Instance.ConfigurationChanged += OnConfigurationChanged;
-            }
-
-            return Validate(Plugin.Instance.Configuration);
-        }
-    }
+    public TvheadendSettings Current => Validate(_configuration.Current);
 
     /// <summary>
     /// Reads and validates a stored configuration.
@@ -97,16 +95,4 @@ public sealed class PluginTvheadendSettingsSource : ITvheadendSettingsSource, ID
             LiveBufferSizeMegabytes = configuration.LiveBufferSizeMegabytes,
         };
     }
-
-    /// <inheritdoc />
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _subscribed, 2) == 1)
-        {
-            Plugin.Instance.ConfigurationChanged -= OnConfigurationChanged;
-        }
-    }
-
-    private void OnConfigurationChanged(object? sender, BasePluginConfiguration configuration)
-        => Changed?.Invoke(this, EventArgs.Empty);
 }

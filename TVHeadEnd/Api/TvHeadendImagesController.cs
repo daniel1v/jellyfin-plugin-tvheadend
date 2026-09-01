@@ -40,20 +40,24 @@ namespace TVHeadEnd.Api
     {
         private readonly TvheadendConnection _connection;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly TvheadendAccessSecret _secret;
         private readonly ILogger<TvHeadendImagesController> _logger;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TvHeadendImagesController"/> class.
         /// </summary>
         /// <param name="connection">The TVHeadend connection.</param>
+        /// <param name="secret">The secret a published address is signed with.</param>
         /// <param name="httpClientFactory">The HTTP client factory.</param>
         /// <param name="logger">The logger.</param>
         public TvHeadendImagesController(
             TvheadendConnection connection,
             IHttpClientFactory httpClientFactory,
+            TvheadendAccessSecret secret,
             ILogger<TvHeadendImagesController> logger)
         {
             _connection = connection;
+            _secret = secret;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
@@ -122,7 +126,7 @@ namespace TVHeadEnd.Api
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<ActionResult> GetArtwork(string token, CancellationToken cancellationToken)
         {
-            if (!TvheadendAccessToken.TryRead(token, Plugin.Instance.Configuration.RecordingAccessSecret, out var encoded)
+            if (!TvheadendAccessToken.TryRead(token, _secret.Ensure(), out var encoded)
                 || !TvheadendArtwork.TryDecode(encoded, out var path))
             {
                 return NotFound();

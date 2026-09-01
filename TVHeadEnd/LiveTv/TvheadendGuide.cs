@@ -6,12 +6,13 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.LiveTv;
 using Microsoft.Extensions.Logging;
-using Tvheadend.Htsp.Protocol;
+using TVHeadEnd.Configuration;
 using TVHeadEnd.Tvheadend;
 using BroadcastGenres = TVHeadEnd.Core.Broadcast.BroadcastGenres;
 using BroadcastProductionYear = TVHeadEnd.Core.Broadcast.BroadcastProductionYear;
 using BroadcastStarRating = TVHeadEnd.Core.Broadcast.BroadcastStarRating;
 using DvbContentType = TVHeadEnd.Core.Broadcast.DvbContentType;
+using HtspMessage = Tvheadend.Htsp.Protocol.HtspMessage;
 
 namespace TVHeadEnd.LiveTv;
 
@@ -30,6 +31,7 @@ public sealed class TvheadendGuide
     private readonly TvheadendConnection _connection;
     private readonly TVHeadEnd.Api.TvheadendArtwork _artwork;
     private readonly IServerConfigurationManager _configuration;
+    private readonly IPluginPreferencesSource _preferences;
     private readonly ILogger _logger;
 
     /// <summary>
@@ -37,6 +39,7 @@ public sealed class TvheadendGuide
     /// </summary>
     /// <param name="connection">The TVHeadend connection.</param>
     /// <param name="artwork">How an image reference becomes an address Jellyfin can fetch.</param>
+    /// <param name="preferences">Whether a programme may borrow its channel's logo.</param>
     /// <param name="configuration">
     /// Jellyfin's server configuration, read for the language the viewer wants metadata in.
     /// </param>
@@ -45,7 +48,8 @@ public sealed class TvheadendGuide
         TvheadendConnection connection,
         TVHeadEnd.Api.TvheadendArtwork artwork,
         IServerConfigurationManager configuration,
-        ILogger logger)
+        IPluginPreferencesSource preferences,
+        ILogger<TvheadendGuide> logger)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(artwork);
@@ -55,6 +59,7 @@ public sealed class TvheadendGuide
         _connection = connection;
         _artwork = artwork;
         _configuration = configuration;
+        _preferences = preferences;
         _logger = logger;
     }
 
@@ -122,7 +127,7 @@ public sealed class TvheadendGuide
 
         // Read once for the whole window rather than per entry: every programme on this channel
         // carries the same logo, and the catalog lookup is not free.
-        var icon = Plugin.Instance.Configuration.UseChannelLogoWhereArtworkIsMissing
+        var icon = _preferences.Current.UseChannelLogoWhereArtworkIsMissing
             ? _connection.Channels.Get(channelId)?.Icon
             : null;
 

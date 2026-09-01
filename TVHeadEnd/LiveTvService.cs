@@ -13,6 +13,7 @@ using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Configuration;
 using TVHeadEnd.LiveTv;
 using TVHeadEnd.Playback;
 using TVHeadEnd.Streaming;
@@ -47,6 +48,7 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     private readonly PlaybackClient _client;
     private readonly OpenLiveStreams _openStreams;
     private readonly IServerApplicationHost _applicationHost;
+    private readonly IPluginPreferencesSource _preferences;
     private readonly Api.TvheadendArtwork _artwork;
 
     private readonly ILogger<LiveTvService> _logger;
@@ -54,48 +56,45 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <summary>
     /// Initializes a new instance of the <see cref="LiveTvService"/> class.
     /// </summary>
-    /// <param name="loggerFactory">The logger factory.</param>
     /// <param name="connection">The TVHeadend connection.</param>
-    /// <param name="libraryManager">The Jellyfin library manager.</param>
-    /// <param name="httpClientFactory">The HTTP client factory.</param>
-    /// <param name="configurationManager">The Jellyfin configuration manager.</param>
+    /// <param name="opener">Opens a channel's live stream.</param>
+    /// <param name="dvr">Reads and writes TVHeadend's timers and rules.</param>
+    /// <param name="guide">Reads the programme guide.</param>
+    /// <param name="itemIds">The identifiers Jellyfin gave this plugin's items.</param>
+    /// <param name="artwork">How an image reference becomes an address Jellyfin can fetch.</param>
+    /// <param name="client">Who is asking, as far as the authenticated session says.</param>
     /// <param name="applicationHost">The Jellyfin application host.</param>
-    /// <param name="httpContextAccessor">The request in flight, for the client name.</param>
+    /// <param name="preferences">The plugin's own behaviour settings.</param>
     /// <param name="openStreams">Where an opened stream is recorded, so a request naming only
     /// its media source can be answered with the live stream it stands for.</param>
+    /// <param name="logger">The logger.</param>
     public LiveTvService(
-        ILoggerFactory loggerFactory,
         TvheadendConnection connection,
-        ILibraryManager libraryManager,
-        IHttpClientFactory httpClientFactory,
-        IServerConfigurationManager configurationManager,
+        LiveStreamOpener opener,
+        TvheadendDvr dvr,
+        TvheadendGuide guide,
+        ChannelItemIds itemIds,
+        Api.TvheadendArtwork artwork,
+        PlaybackClient client,
         IServerApplicationHost applicationHost,
-        IHttpContextAccessor httpContextAccessor,
-        OpenLiveStreams openStreams)
+        IPluginPreferencesSource preferences,
+        OpenLiveStreams openStreams,
+        ILogger<LiveTvService> logger)
     {
-        ArgumentNullException.ThrowIfNull(loggerFactory);
         ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(logger);
 
-        _logger = loggerFactory.CreateLogger<LiveTvService>();
+        _logger = logger;
         _connection = connection;
-        _itemIds = new ChannelItemIds(libraryManager);
-        _client = new PlaybackClient(httpContextAccessor);
-        _openStreams = openStreams;
+        _opener = opener;
+        _dvr = dvr;
+        _guide = guide;
+        _itemIds = itemIds;
+        _artwork = artwork;
+        _client = client;
         _applicationHost = applicationHost;
-        _artwork = new Api.TvheadendArtwork(applicationHost, _logger);
-
-        var bufferDirectory = LiveBufferDirectory.Resolve(configurationManager);
-        LiveBufferDirectory.RemoveOrphaned(bufferDirectory, _logger);
-
-        _opener = new LiveStreamOpener(
-            connection,
-            httpClientFactory,
-            applicationHost,
-            _client,
-            bufferDirectory,
-            _logger);
-        _dvr = new TvheadendDvr(connection, _logger);
-        _guide = new TvheadendGuide(connection, _artwork, configurationManager, _logger);
+        _preferences = preferences;
+        _openStreams = openStreams;
     }
 
     /// <inheritdoc />
@@ -103,12 +102,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
 
     /// <inheritdoc />
     public string HomePageUrl => "https://tvheadend.org/";
-
-    /// <summary>
-    /// Gets a number that changes whenever TVHeadend's timers and recordings do, which is what
-    /// Jellyfin caches its recording listing against.
-    /// </summary>
-    public long RecordingRevision => _dvr.RecordingRevision;
 
     /// <inheritdoc />
     public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)
@@ -283,8 +276,8 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     public Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
         => Task.FromResult(new SeriesTimerInfo
         {
-            PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
-            PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
+            PrePaddingSeconds = _preferences.Current.PrePaddingSeconds,
+            PostPaddingSeconds = _preferences.Current.PostPaddingSeconds,
 
             // The configured default, and the only place it belongs. A series rule is written
             // with the priority it carries, so that editing one does not reset it -- which means
@@ -333,16 +326,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     public Task CancelTimerAsync(string timerId, CancellationToken cancellationToken)
         => _dvr.CancelTimerAsync(timerId, cancellationToken);
 
-    /// <summary>
-    /// Deletes a recording. Not part of Jellyfin's live TV contract; the recordings channel
-    /// calls it when a viewer deletes an item.
-    /// </summary>
-    /// <param name="recordingId">The TVHeadend entry identifier.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>A task that completes once TVHeadend has accepted it.</returns>
-    public Task DeleteRecordingAsync(string recordingId, CancellationToken cancellationToken)
-        => _dvr.DeleteRecordingAsync(recordingId, cancellationToken);
-
     /// <inheritdoc />
     public Task CreateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
         => _dvr.CreateSeriesTimerAsync(info, cancellationToken);
@@ -358,50 +341,6 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     /// <inheritdoc />
     public Task ResetTuner(string id, CancellationToken cancellationToken)
         => throw new NotSupportedException("TVHeadend manages its own tuners.");
-
-    /// <summary>
-    /// Gets the recordings TVHeadend holds, for the recordings channel.
-    /// </summary>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The recordings.</returns>
-    public async Task<IReadOnlyList<MyRecordingInfo>> GetRecordingsAsync(CancellationToken cancellationToken)
-    {
-        await _connection.WaitForInitialSyncAsync(cancellationToken).ConfigureAwait(false);
-
-        var recordings = _connection.Dvr.GetEntries()
-            .Where(JellyfinDvrMapper.IsRecording)
-            .Select(JellyfinDvrMapper.ToRecording)
-            .ToList();
-        var endpoint = _connection.HttpEndpoint;
-        var borrowLogos = Plugin.Instance.Configuration.UseChannelLogoWhereArtworkIsMissing;
-
-        // Here rather than in the mapper, which is a pure projection of one HTSP message and has
-        // neither this server's address nor its secret. This is also the only place every
-        // consumer of a recording passes through, so a folder built from these gets a finished
-        // address like the recordings in it.
-        foreach (var recording in recordings)
-        {
-            // From the channel it was recorded from. The mapper reads one DVR entry, and a DVR
-            // entry does not say whether its channel carries pictures -- so left unset it took the
-            // enum's default, and every radio recording was published as video. The recordings
-            // channel reads this to decide between an audio and a video item.
-            recording.ChannelType = JellyfinChannelMapper.ChannelTypeFor(
-                _connection.Channels.Get(recording.ChannelId),
-                _connection.Settings.ChannelTypeForOther);
-
-            // The channel's logo where the recording has no picture of its own, which with a
-            // broadcast EPG is every recording: DVB EIT has no field for one. Published as a
-            // poster, because Jellyfin draws a recording's primary image as one and a 400x240
-            // logo handed over as it stands is a landscape picture blown up into a portrait frame.
-            var logo = borrowLogos ? _connection.Channels.Get(recording.ChannelId)?.Icon : null;
-
-            recording.ImageUrl = _artwork.PaddedAddressFor(recording.ImageReference, logo, endpoint);
-
-            recording.HasImage = !string.IsNullOrEmpty(recording.ImageUrl);
-        }
-
-        return recordings;
-    }
 
     /// <summary>
     /// Reports whether an open stream can serve a request for a channel.

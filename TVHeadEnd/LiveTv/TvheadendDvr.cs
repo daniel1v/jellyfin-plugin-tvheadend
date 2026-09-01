@@ -47,7 +47,7 @@ public sealed class TvheadendDvr
     /// </summary>
     /// <param name="connection">The TVHeadend connection.</param>
     /// <param name="logger">The logger.</param>
-    public TvheadendDvr(TvheadendConnection connection, ILogger logger)
+    public TvheadendDvr(TvheadendConnection connection, ILogger<TvheadendDvr> logger)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(logger);

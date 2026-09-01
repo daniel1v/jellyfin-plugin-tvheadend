@@ -248,7 +248,7 @@ namespace TVHeadEnd
         /// <para>
         /// This is not the value published as <c>ChannelItemInfo.DateModified</c>; that is a
         /// version marker with a different job, built in
-        /// <see cref="RecordingsChannel.PublishedDateFor"/>.
+        /// <see cref="Recordings.RecordingItemMapper.PublishedDateFor"/>.
         /// </para>
         /// </remarks>
         public DateTime? DateLastUpdated { get; set; }
