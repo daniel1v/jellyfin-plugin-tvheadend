@@ -158,6 +158,40 @@ public class PluginIdentityTests
         Assert.Contains("$plugin.guid -ne $guid", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TheReleaseScriptTagsTheCommitThatDescribesTheRelease()
+    {
+        // The rule that stops the mistake before that one. Publishing used to happen before the
+        // manifest commit was pushed, so GitHub tagged whatever the remote was at -- v14.0.0.4's
+        // tag points at the commit before its own manifest. Publishing now names the target.
+        var script = ReadRepositoryFile("tools/release.ps1");
+
+        Assert.Contains("--target $head", script, StringComparison.Ordinal);
+        Assert.Contains("rev-parse '@{upstream}'", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReleaseScriptPublishesOnlyWhatWasPrepared()
+    {
+        // Publishing must not be able to produce a package. A publish that can build one is a
+        // publish that can release something other than the artefact that was tested, and the
+        // difference would not be visible afterwards.
+        var script = ReadRepositoryFile("tools/release.ps1");
+        var publishing = script[script.IndexOf("if ($Publish) {", StringComparison.Ordinal)..];
+        var preparing = publishing.IndexOf("# Prepare:", StringComparison.Ordinal);
+
+        Assert.True(preparing > 0, "release.ps1 no longer has a separate prepare phase.");
+        publishing = publishing[..preparing];
+
+        Assert.DoesNotContain("Compress-Archive", publishing, StringComparison.Ordinal);
+        Assert.DoesNotContain("dotnet build", publishing, StringComparison.Ordinal);
+        Assert.DoesNotContain("Write-Json", publishing, StringComparison.Ordinal);
+
+        // And it refuses rather than proceeds when what it holds is not what the manifest says.
+        Assert.Contains("$entry.checksum -ne $checksum", publishing, StringComparison.Ordinal);
+        Assert.Contains("$entry.sourceUrl -ne $sourceUrl", publishing, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("ServiceName", "TVHclient LiveTvService")]
     [InlineData("RecordingsChannelName", "TVHeadEnd Recordings")]

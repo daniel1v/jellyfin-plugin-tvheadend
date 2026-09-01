@@ -3,11 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace TVHeadEnd.Tests.Architecture;
 
 /// <summary>
-/// The repository's own source, read as text so that rules about it can be asserted.
+/// The repository's own source, read as the compiler reads it.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -17,9 +20,16 @@ namespace TVHeadEnd.Tests.Architecture;
 /// to something indistinguishable from legitimate code. Those are the ones this exists for.
 /// </para>
 /// <para>
-/// Comments and the insides of literals are separated out before any rule looks at the code, so a
-/// remark <em>about</em> a forbidden dependency never counts as one. That distinction is the whole
-/// reason this is not a grep.
+/// Comments and the text of literals are separated from code before any rule looks at it, so a
+/// remark <em>about</em> a forbidden dependency never counts as one -- while what an interpolated
+/// string holds in its holes stays code, because it is. That distinction is the whole reason this
+/// is not a grep.
+/// </para>
+/// <para>
+/// It is Roslyn's parser and not a lexer of this repository's own. The one written by hand handled
+/// the string forms it had been shown and mis-read the rest, which turns a rule into something a
+/// violation can be written around: <c>$@"{Plugin.Instance}"</c> was not code, and a raw
+/// interpolated string was not anything. C# has eight ways to write a string and will have more.
 /// </para>
 /// </remarks>
 internal static class SourceTree
@@ -29,8 +39,11 @@ internal static class SourceTree
     /// </summary>
     /// <param name="Path">The path relative to the repository root, for the failure message.</param>
     /// <param name="Namespace">The namespace the file declares, or an empty string.</param>
-    /// <param name="Code">The file with every comment and every literal's contents removed.</param>
-    /// <param name="Literals">The contents of the file's string literals.</param>
+    /// <param name="Code">
+    /// The file as code: comments gone, the text of every literal gone, and everything an
+    /// interpolated string interpolates still present.
+    /// </param>
+    /// <param name="Literals">The text of the file's string literals, however they were written.</param>
     internal sealed record File(string Path, string Namespace, string Code, IReadOnlyList<string> Literals);
 
     /// <summary>
@@ -76,126 +89,82 @@ internal static class SourceTree
     }
 
     /// <summary>
-    /// Splits one source file into code, declared namespace and literals.
+    /// Splits one source file into code, declared namespace and literal text.
     /// </summary>
     /// <param name="path">The path to report it under.</param>
     /// <param name="source">The file's text.</param>
     /// <returns>The split file.</returns>
     internal static File Read(string path, string source)
     {
-        var code = new StringBuilder(source.Length);
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+
         var literals = new List<string>();
-        var literal = new StringBuilder();
+        var code = new StringBuilder(source.Length);
 
-        for (var i = 0; i < source.Length; i++)
+        foreach (var token in root.DescendantTokens())
         {
-            var c = source[i];
-            var next = i + 1 < source.Length ? source[i + 1] : '\0';
+            Append(code, token.LeadingTrivia);
 
-            if (c == '/' && next == '/')
+            switch (token.Kind())
             {
-                while (i < source.Length && source[i] != '\n')
-                {
-                    i++;
-                }
+                // A string, in any of the ways C# lets one be written. What it says is text; that
+                // it is there at all is code, so the quotes stay and the contents do not.
+                case SyntaxKind.StringLiteralToken:
+                case SyntaxKind.SingleLineRawStringLiteralToken:
+                case SyntaxKind.MultiLineRawStringLiteralToken:
+                case SyntaxKind.Utf8StringLiteralToken:
+                case SyntaxKind.Utf8SingleLineRawStringLiteralToken:
+                case SyntaxKind.Utf8MultiLineRawStringLiteralToken:
+                    literals.Add(token.ValueText);
+                    code.Append("\"\"");
+                    break;
 
-                code.Append('\n');
-                continue;
+                // The text between the holes of an interpolated string. The holes themselves are
+                // ordinary tokens and arrive here on their own, which is exactly right: what a
+                // string interpolates is code that happens to be written inside quotes.
+                case SyntaxKind.InterpolatedStringTextToken:
+                    literals.Add(token.ValueText);
+                    break;
+
+                case SyntaxKind.CharacterLiteralToken:
+                    code.Append("' '");
+                    break;
+
+                default:
+                    code.Append(token.Text);
+                    break;
             }
 
-            if (c == '/' && next == '*')
-            {
-                i += 2;
-                while (i + 1 < source.Length && !(source[i] == '*' && source[i + 1] == '/'))
-                {
-                    i++;
-                }
-
-                i++;
-                code.Append(' ');
-                continue;
-            }
-
-            if (c == '@' && next == '"')
-            {
-                i += 2;
-                literal.Clear();
-                while (i < source.Length)
-                {
-                    if (source[i] == '"' && i + 1 < source.Length && source[i + 1] == '"')
-                    {
-                        literal.Append('"');
-                        i += 2;
-                        continue;
-                    }
-
-                    if (source[i] == '"')
-                    {
-                        break;
-                    }
-
-                    literal.Append(source[i++]);
-                }
-
-                literals.Add(literal.ToString());
-                code.Append("\"\"");
-                continue;
-            }
-
-            if (c is '"' or '\'')
-            {
-                var quote = c;
-
-                // An interpolated string holds code as well as text, so its contents stay in both
-                // halves. Otherwise a dependency written inside a "{...}" hole would be filed as
-                // text and no rule about code would ever see it.
-                var interpolated = code.Length > 0 && code[^1] == '$';
-                i++;
-                literal.Clear();
-                while (i < source.Length && source[i] != quote)
-                {
-                    if (source[i] == '\\' && i + 1 < source.Length)
-                    {
-                        literal.Append(source[i + 1]);
-                        i += 2;
-                        continue;
-                    }
-
-                    literal.Append(source[i++]);
-                }
-
-                if (quote == '"')
-                {
-                    literals.Add(literal.ToString());
-                }
-
-                code.Append(quote);
-                if (interpolated)
-                {
-                    code.Append(literal);
-                }
-
-                code.Append(quote);
-                continue;
-            }
-
-            code.Append(c);
+            Append(code, token.TrailingTrivia);
         }
 
-        return new File(path, NamespaceOf(code.ToString()), code.ToString(), literals);
+        return new File(path, NamespaceOf(root), code.ToString(), literals);
     }
 
-    private static string NamespaceOf(string code)
+    /// <summary>
+    /// Keeps the layout and drops everything that is not code.
+    /// </summary>
+    /// <remarks>
+    /// Whitespace is kept verbatim so that neighbouring tokens stay neighbours: a rule looking for
+    /// "MediaBrowser." must not be defeated by a space this reader introduced. A comment leaves one
+    /// space behind, which is enough to keep the tokens either side of it apart.
+    /// </remarks>
+    private static void Append(StringBuilder code, SyntaxTriviaList trivia)
     {
-        foreach (var line in code.Split('\n'))
+        foreach (var piece in trivia)
         {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("namespace ", StringComparison.Ordinal))
+            if (piece.IsKind(SyntaxKind.WhitespaceTrivia) || piece.IsKind(SyntaxKind.EndOfLineTrivia))
             {
-                return trimmed["namespace ".Length..].TrimEnd(';', ' ', '{');
+                code.Append(piece.ToFullString());
+            }
+            else
+            {
+                code.Append(' ');
             }
         }
-
-        return string.Empty;
     }
+
+    private static string NamespaceOf(SyntaxNode root)
+        => root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault()?.Name.ToString()
+            ?? string.Empty;
 }

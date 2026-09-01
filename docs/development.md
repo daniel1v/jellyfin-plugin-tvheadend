@@ -107,22 +107,37 @@ to get right; both have broken an instance before.
 
 ## Releasing
 
-This repository packages and publishes itself. Bump the version in `build.yaml` and
+This repository packages and publishes itself, in two phases. Bump the version in `build.yaml` and
 `Directory.Build.props`, describe the release in the `changelog` block of `build.yaml`, then:
 
 ```powershell
-& .\tools\release.ps1 -Publish
-git commit -am "Publish 14.0.0.4" && git push
+& .\tools\release.ps1                 # prepare: build, pack, write manifest.json
+# install dist\tvheadend-ex_<version>.zip on the dev server and check it
+git commit -am "Publish 14.0.0.5" ; git push
+# wait for CI to go green on that exact commit
+& .\tools\release.ps1 -Publish        # publish what was prepared
 ```
 
-`-Publish` creates the GitHub release as well as the package. Without it the script only leaves
-the zip in `dist/` and updates `manifest.json`, which is what you want when checking what a
-release would contain.
+The order matters, and the split exists because getting it wrong is not visible afterwards.
+`-Publish` uploads the zip that is already in `dist/` and does nothing else: it does not build,
+does not repack, does not re-stamp the timestamp and does not touch `manifest.json`. Whatever was
+tested is what is released.
+
+Before it uploads anything it checks that the package exists, that `build.yaml` and
+`Directory.Build.props` say the same version, that `manifest.json` lists that version with this
+file's MD5 and the address the asset is about to have, that the working tree is clean, that `HEAD`
+is already pushed, and that the tag does not exist yet. Then it creates the release with
+`--target <HEAD>`.
+
+That last flag is the fix for a real mistake. The script used to create the release *before* the
+manifest commit was pushed, and GitHub tagged whatever the remote happened to be at — so
+`v14.0.0.4`'s tag points at the commit before the one that describes it. Naming the target
+explicitly, after checking that `HEAD` is pushed, makes the tag, the commit carrying `build.yaml`
+and `manifest.json`, and the source of the published build one and the same thing.
 
 `tools/release.ps1` takes every package detail from `build.yaml`, so the zip, the `meta.json`
 inside it and the `manifest.json` entry cannot drift apart. The checksum Jellyfin verifies is the
-MD5 of the zip, which is why the manifest is written after the zip is final — and why the script
-uploads exactly the file it produced rather than leaving that to be done by hand.
+MD5 of the zip, which is why the manifest is written after the zip is final.
 
 Both `build.yaml` and `manifest.json` are read as UTF-8 explicitly. Windows PowerShell 5.1 reads
 in the system ANSI code page by default, which turned every em dash into `â€”` on its way into the

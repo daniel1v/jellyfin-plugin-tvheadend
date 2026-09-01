@@ -279,7 +279,7 @@ namespace TVHeadEnd
 
         public async Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, Func<MyRecordingInfo, bool> filter, CancellationToken cancellationToken)
         {
-            _logger.LogDebug("[TVHclient] GetChannelItems - Updating TVHeadend Recording Items");
+            _logger.LogDebug("TVHeadend recordings: listing the recordings for a folder");
 
             var allRecordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -291,7 +291,7 @@ namespace TVHeadEnd
 
         private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item)
         {
-            _logger.LogDebug("[TVHclient] ConvertToChannelItem - Creating ChannelItemInfo");
+            _logger.LogDebug("TVHeadend recordings: describing one recording as a channel item");
 
             return RecordingItemMapper.BuildChannelItem(item, _sources.PlaceholderFor(item));
         }
@@ -347,7 +347,7 @@ namespace TVHeadEnd
 
         private async Task<ChannelItemResult> GetRecordingGroups(InternalChannelItemQuery query, CancellationToken cancellationToken)
         {
-            _logger.LogDebug("[TVHclient] GetRecordingGroups - Updateing TVHeadend Recording Items");
+            _logger.LogDebug("TVHeadend recordings: listing the folders recordings are grouped into");
 
             var allRecordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
             var result = new ChannelItemResult();

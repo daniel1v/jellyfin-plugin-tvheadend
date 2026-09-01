@@ -8,6 +8,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      The C# compiler's own parser, for the two architecture rules that have to be read from
+      source rather than from metadata. It is here and nowhere else: the plugin package carries
+      only the three assemblies named in build.yaml, so none of this reaches a server.
+
+      It replaced a hand-written lexer. That lexer read the string forms it had been shown and
+      quietly mis-read the ones it had not, raw and verbatim interpolated strings among them,
+      which is a rule that can be walked around by writing the violation an unusual way. Keeping
+      a half-grammar of C# up to date is not this repository's job.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">

@@ -1,6 +1,6 @@
 name: "TVHeadend EX"
 guid: "e55d13e1-3874-40a5-ac05-1569c06767bc"
-version: "14.0.0.4"
+version: "14.0.0.5"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 owner: "daniel1v"
@@ -12,49 +12,30 @@ artifacts:
   - "TVHeadEnd.Core.dll"
   - "Tvheadend.Htsp.dll"
 changelog: |-
-  A new plugin, and a tidier shelf of recordings.
+  The guide knows more than it was letting on.
 
-  This is the first release under the name TVHeadend EX. It is a separate plugin now rather than a
-  replacement for the official one, which means Jellyfin cannot update you into it: uninstall the
-  old TVHeadend plugin, then install this one. Your settings are waiting for you on the other side.
+  TVHeadend has been sending a production year, the broadcaster's own rating, whether a programme
+  is a premiere or a repeat, which episode of what it is, and the categories the broadcaster files
+  it under. All of that was arriving and being dropped. It now reaches Jellyfin, so the guide and
+  your recordings look like the rest of your library instead of a bare list of times and titles.
+  The rating is put on Jellyfin's scale rather than passed through as whatever number the
+  broadcaster meant. Nothing is invented: where a channel says nothing, nothing is shown.
 
-  Recordings play in the Android app again. It was asking the server for a recording under a name
-  the server had never heard of, getting an answer with nothing in it, and showing you a black
-  screen without a word of explanation. It now asks under the name Jellyfin itself gave the
-  recording.
+  The guide is also asked in your language. Jellyfin's preferred metadata language is now passed
+  on to TVHeadend, so a channel that broadcasts its listings in more than one gives you yours.
 
-  And they bring their sound with them. A recording's audio tracks now arrive labelled the way a
-  live channel's always were, so your client can tell the German soundtrack from the audio
-  description and pick one it can actually decode -- instead of starting, playing nothing, and
-  stopping a second later.
+  Playback got steadier rather than cleverer. A live channel and a recording of the same broadcast
+  are now described to your client the same way -- same codec names, same audio tracks, same
+  container -- so a client that plays one plays the other. Seeking inside a recording has its own
+  tests now, after a version in which it quietly stopped working. MPEG-2 and everything else that
+  your client can already play is still handed over untouched; the re-encode for Android's fussier
+  decoder still happens only for the channels that genuinely need it, and only for that client.
 
-  Recordings from the stubborn channels play too. A few broadcasters, Das Erste among them, never
-  send the kind of frame Android's decoder refuses to start without, so their recordings were a
-  spinner that never resolved. Those are now re-encoded on the way out -- but only those, and only
-  for the clients that need it. Everything else, on every other device, is still handed to you
-  exactly as TVHeadend stored it.
+  The recordings folder no longer borrows its picture. It was fetched at runtime from the official
+  Jellyfin TVHeadend project's repository -- another project's artwork, on another project's
+  server, for a plugin that is not theirs. It has none of its own for now, which is the honest
+  answer.
 
-  Recordings finally sort themselves out. Movies, Sports, News and Kids were empty folders in every
-  version so far, because the plugin was reading what a recording is and then throwing it away. It
-  no longer does, so a film lands with the films.
-
-  Radio recordings are radio. They were being published as video, which is a lot of black screen
-  for a concert.
-
-  Recordings are as long as they are. A recording you stopped early was still being listed at the
-  length it was booked for, so the progress bar promised minutes that were never written and
-  seeking into them found nothing. The length now comes from the file itself. One that is still
-  recording no longer claims a finished length at all, which is what it is.
-
-  Series recordings know what a series is. A new one is tied to the link TVHeadend itself uses to
-  connect the episodes, so it follows the programme rather than hunting for its title — and a
-  title with a full stop or a bracket in it no longer quietly matches half the schedule. Rules you
-  already had are read properly at last: the right days, the right time of day on the server's own
-  clock, and the settings TVHeadend has that Jellyfin cannot show are left alone instead of being
-  wiped every time you edit one.
-
-  Artwork that arrives after a recording is scheduled now actually reaches it, instead of being
-  quietly dropped every time.
-
-  And the list of recordings no longer goes stale. After a restart Jellyfin could serve you the
-  previous run's recordings for hours; it now notices the moment TVHeadend changes something.
+  Under the hood this release is mostly a rebuild of how the plugin is put together, with tests
+  that fail the build if the pieces start reaching into each other again. You should not be able
+  to see any of it. That is the intention.
