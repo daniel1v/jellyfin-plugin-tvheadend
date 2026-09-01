@@ -34,6 +34,57 @@ Internal namespaces, classes and project directories are still spelled `TVHeadEn
 deliberate — the plugin's public identity changed, its source layout did not, and renaming it
 would be diff without a reader.
 
+## Architecture boundaries
+
+Inside `TVHeadEnd` the same direction is drawn again, between areas rather than projects. Each one
+answers a different question, and the whole point is that the answers do not mix.
+
+```
+TVHeadEnd.Core                  what a broadcast, a recording and a transport stream are
+Tvheadend.Htsp                  how to talk to a TVHeadend server
+
+TVHeadEnd/Tvheadend             the TVHeadend adapter: HTSP, TVHeadend's HTTP, catalogs, mapping
+TVHeadEnd/LiveTv                Jellyfin's live TV vocabulary
+TVHeadEnd/Recordings            Jellyfin's recording vocabulary
+TVHeadEnd/Playback              opening and describing what is played
+TVHeadEnd/Compatibility         playback rules that are about clients rather than about Jellyfin
+TVHeadEnd/Compatibility/Jellyfin12   this server version's names, workarounds and hooks
+TVHeadEnd/Infrastructure        technical machinery, principally the live ring buffer
+TVHeadEnd/Configuration         the only bridge to the plugin's stored settings
+TVHeadEnd/ServiceRegistrator    the composition root
+```
+
+The TVHeadend adapter turns wire messages into core facts and never learns what a host wanted; the
+Jellyfin-facing areas turn core facts into what Jellyfin asked for and never speak HTSP. Where a
+rule exists only because of *this* server version — a codec spelling, a container name, an MVC
+filter, a date that makes the channel manager rewrite an item — it lives under `Jellyfin12`, so
+that the next version's differences have somewhere to go.
+
+### The rules that are tested
+
+These are not conventions. `TVHeadEnd.Tests/Architecture` fails the build if one is crossed:
+
+- **The core is built on the base class library and nothing else.** No project reference, no
+  runtime package, and no compiled reference to Jellyfin, ASP.NET, SkiaSharp or the HTSP client.
+- **The core does not speak the host's codec vocabulary.** `h264`, `mp2`, `mpegts` and the rest are
+  FFmpeg's names for things; the core carries an `ElementaryStreamCodec` and
+  `Compatibility/Jellyfin12/JellyfinCodecNames` is the one place that translates. The four-character
+  identifiers a registration descriptor puts *in* the stream — `HEVC`, `AC-3`, `DTS1` — are
+  broadcast facts and stay in the core.
+- **Those names have one owner.** A second copy is a second answer waiting to disagree.
+- **`TVHeadEnd/Tvheadend` does not reference Jellyfin**, the Jellyfin-facing areas, or the plugin's
+  configuration object.
+- **Only `Plugin.cs` and `Configuration/` touch `Plugin.Instance`.** Everything else is handed what
+  it needs, which is what lets any of it be stood up in a test.
+- **The two Jellyfin entry points do not hold each other.** `RecordingsChannel` once needed
+  `LiveTvService` to list a recording; they answer different interfaces and share only what is
+  behind them.
+- **Everything the composition root registers can be constructed**, and all of it is a singleton.
+  A missing registration otherwise surfaces as an empty channel list on somebody's server.
+- **`Tests/Core` tests the core** — no Jellyfin, no HTSP, no adapter.
+
+The rules forbid dependencies, not arrangements: moving a type between folders breaks none of them.
+
 ## Test and check
 
 The build enforces the shared Jellyfin analyzer set (StyleCop, .NET code analysis,

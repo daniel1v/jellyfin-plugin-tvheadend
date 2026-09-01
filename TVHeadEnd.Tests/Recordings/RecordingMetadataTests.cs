@@ -7,7 +7,7 @@ using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
-namespace TVHeadEnd.Tests.Core;
+namespace TVHeadEnd.Tests.Recordings;
 
 /// <summary>
 /// What a recording says about itself, beyond when it ran.

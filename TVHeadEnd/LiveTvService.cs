@@ -98,7 +98,12 @@ public sealed class LiveTvService : ILiveTvService, ISupportsDirectStreamProvide
     }
 
     /// <inheritdoc />
-    public string Name => "TVHclient LiveTvService";
+    /// <remarks>
+    /// Stated once, in <see cref="TvheadendItems"/>, and read from there. Jellyfin stores this
+    /// string on every live TV item it produces and hashes it into their identifiers, so a second
+    /// copy of it is a second thing to keep in step with the database.
+    /// </remarks>
+    public string Name => TvheadendItems.ServiceName;
 
     /// <inheritdoc />
     public string HomePageUrl => "https://tvheadend.org/";

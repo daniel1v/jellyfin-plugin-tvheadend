@@ -14,7 +14,7 @@ namespace TVHeadEnd.Core.Media;
 /// </remarks>
 /// <param name="TransportStreamId">The transport stream this table belongs to.</param>
 /// <param name="ProgramMapPid">The PID carrying the program map of the first real program.</param>
-public sealed record ProgramAssociationTable(int TransportStreamId, int ProgramMapPid)
+internal sealed record ProgramAssociationTable(int TransportStreamId, int ProgramMapPid)
 {
     private const byte TableIdProgramAssociation = 0x00;
 

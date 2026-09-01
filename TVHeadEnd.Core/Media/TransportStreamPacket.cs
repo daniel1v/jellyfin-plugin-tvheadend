@@ -88,39 +88,6 @@ namespace TVHeadEnd.Core.Media
         }
 
         /// <summary>
-        /// Returns the section payload of a PSI packet, or an empty span when the packet does
-        /// not begin one.
-        /// </summary>
-        /// <param name="packet">A whole transport stream packet.</param>
-        /// <returns>The section bytes.</returns>
-        public static ReadOnlySpan<byte> ReadSection(ReadOnlySpan<byte> packet)
-        {
-            if (!StartsPayloadUnit(packet))
-            {
-                return default;
-            }
-
-            var payload = ReadPayload(packet);
-
-            // A packet that starts a section begins with a pointer to it.
-            if (payload.IsEmpty)
-            {
-                return default;
-            }
-
-            var offset = 1 + payload[0];
-            return offset >= payload.Length ? default : payload[offset..];
-        }
-
-        /// <summary>
-        /// Reports whether <paramref name="streamType"/> names a video elementary stream.
-        /// </summary>
-        /// <param name="streamType">A PMT stream type.</param>
-        /// <returns>Whether it is video.</returns>
-        public static bool IsVideoStreamType(byte streamType)
-            => streamType is 0x01 or 0x02 or 0x10 or 0x1B or 0x24;
-
-        /// <summary>
         /// Fills <paramref name="packet"/> with the next whole packet from a stream.
         /// </summary>
         /// <remarks>

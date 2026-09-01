@@ -104,9 +104,10 @@ public sealed record LiveStreamDescription
             Language = entry.Language,
             IsHearingImpaired = entry.IsHearingImpaired,
 
-            // Broadcast metadata, not a preference -- see AudioPurposeExtensions, which the
-            // recordings path reads too. The same broadcast reaches Jellyfin by two routes and
-            // must be described the same way by both.
+            // The purpose is broadcast metadata; deciding that a purpose makes a track one of
+            // Jellyfin's defaults is not. That second half is a host's selection rule and lives
+            // in Compatibility/Jellyfin12, where the recordings path reads it too -- the same
+            // broadcast reaches Jellyfin by two routes and must be described the same way by both.
             IsDefault = entry.AudioPurpose.BelongsInTheDefaultSet(),
         },
 

@@ -95,8 +95,9 @@ public class RecordingsCacheKeyTests
     [Fact]
     public void TheChannelCatalogIsWhatAnswersWhichOfTheTwoARecordingCameFrom()
     {
-        // The lookup LiveTvService.GetRecordingsAsync uses. TVHeadend states the kind on the
-        // channel's service, not on the DVR entry, which is why the recording has to be told.
+        // The lookup TvheadendRecordings.GetAllAsync makes for every recording it hands over.
+        // TVHeadend states the kind on the channel's service, not on the DVR entry, which is why
+        // the recording has to be told.
         var catalog = new ChannelCatalog(NullLogger<ChannelCatalog>.Instance);
         catalog.AddOrUpdate(Channel(1, "Radio Eins", "Radio"));
         catalog.AddOrUpdate(Channel(2, "Das Erste HD", "HDTV"));

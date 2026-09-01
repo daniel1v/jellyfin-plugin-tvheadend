@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
 using Xunit;
 

@@ -120,12 +120,6 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
     }
 
     /// <summary>
-    /// Gets the PIDs the table announces.
-    /// </summary>
-    /// <returns>The PIDs.</returns>
-    public IReadOnlySet<int> GetPids() => Entries.Select(entry => entry.Pid).ToHashSet();
-
-    /// <summary>
     /// Renders the layout for a log line.
     /// </summary>
     /// <returns>A short description.</returns>
@@ -324,6 +318,13 @@ public sealed record ProgramMapTable(int ProgramNumber, int PcrPid, IReadOnlyLis
 
     private static (ElementaryStreamKind Kind, ElementaryStreamCodec Codec) FromStreamType(byte streamType) => streamType switch
     {
+        // 0x01 is MPEG-1 video and 0x02 is MPEG-2, and they are deliberately answered the same
+        // way. DVB assigns neither transmission system a use for 0x01 -- everything a tuner
+        // delivers here is 0x02 -- so telling them apart would add a value nothing produces, and
+        // the only place the distinction could show is the name a host is given. Reporting an
+        // MPEG-1 stream as "mpeg1video" would take it out of every device profile that lists
+        // "mpeg2video" and send it to a transcode instead; reporting it as "mpeg2video" from a
+        // separate value would make the translation say something untrue. Left as one answer.
         0x01 or 0x02 => (ElementaryStreamKind.Video, ElementaryStreamCodec.Mpeg2Video),
         0x10 => (ElementaryStreamKind.Video, ElementaryStreamCodec.Mpeg4Video),
         0x1B => (ElementaryStreamKind.Video, ElementaryStreamCodec.H264),

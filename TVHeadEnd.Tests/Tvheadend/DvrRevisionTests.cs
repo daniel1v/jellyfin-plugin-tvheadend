@@ -4,12 +4,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Tvheadend.Htsp.Protocol;
 using TVHeadEnd.Core.Broadcast;
 using TVHeadEnd.Core.Dvr;
-using TVHeadEnd.LiveTv;
 using TVHeadEnd.Tvheadend.Catalogs;
 using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
-namespace TVHeadEnd.Tests.Core;
+namespace TVHeadEnd.Tests.Tvheadend;
 
 /// <summary>
 /// When the DVR catalog counts a change.

@@ -24,7 +24,7 @@ namespace TVHeadEnd.Core.Media;
 /// fully seen as it is going to be.
 /// </para>
 /// </remarks>
-public sealed class H264AccessPointClassifier
+internal sealed class H264AccessPointClassifier
 {
     /// <summary>
     /// How many access points decide how a stream opens.

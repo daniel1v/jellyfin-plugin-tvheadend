@@ -1,14 +1,18 @@
 using System;
 using System.Linq;
 using System.Text;
-using MediaBrowser.Controller.MediaEncoding;
-using TVHeadEnd.Compatibility.Jellyfin12;
 using TVHeadEnd.Core.Media;
-using TVHeadEnd.Playback;
 using Xunit;
 
 namespace TVHeadEnd.Tests.Core;
 
+/// <summary>
+/// Whether a run of bytes is an MPEG transport stream, decided from the bytes alone.
+/// </summary>
+/// <remarks>
+/// What the stream is <em>called</em> once it has been recognised is a separate question with a
+/// separate answer per host, and it lives in <c>JellyfinContainerNameTests</c>.
+/// </remarks>
 public class TransportStreamDetectorTests
 {
     private const int PacketLength = 188;
@@ -67,55 +71,6 @@ public class TransportStreamDetectorTests
     {
         Assert.False(TransportStreamDetector.IsTransportStream(new byte[] { 0x47, 0x40, 0x00 }));
     }
-
-    [Theory]
-    [InlineData("mpegts")]
-    [InlineData("ts")]
-    [InlineData("TS")]
-    [InlineData("MPEGTS")]
-    public void TheTransportStreamIsReportedUnderOneName(string probed)
-    {
-        // FFprobe says one, Jellyfin's own probe normaliser says the other, and the comparison
-        // against a device profile is a plain string one. Whichever arrives, one leaves -- and it
-        // is the one Jellyfin itself produces for every other file on the server.
-        Assert.Equal("ts", JellyfinContainerNames.Describe(probed, "ts"));
-    }
-
-    [Fact]
-    public void TheNameIsOneFfmpegAcceptsAsAnInputFormat()
-    {
-        // Jellyfin passes the container of a media source to FFmpeg as "-f" whenever the server
-        // has hardware acceleration configured. It survives that because Jellyfin translates it
-        // on the way through; naming a spelling FFmpeg has no demuxer for is what broke playback
-        // outright on such a server once already.
-        Assert.Equal("mpegts", EncodingHelper.GetInputFormat(JellyfinContainerNames.TransportStream));
-        Assert.DoesNotContain(',', JellyfinContainerNames.TransportStream);
-    }
-
-    [Fact]
-    public void ARecordingAndALiveChannelNameTheSameContainerTheSameWay()
-    {
-        // Two paths described the same broadcast differently, and a client comparing strings has
-        // no way to know they meant the same thing.
-        Assert.Equal(TVHeadEnd.Playback.LiveMediaSource.Container, JellyfinContainerNames.TransportStream);
-    }
-
-    [Fact]
-    public void AnyOtherContainerIsReportedAsFound()
-    {
-        // Only MPEG-TS has two spellings worth reconciling. Everything else is reported as the
-        // analysis found it, including the Matroska a TVHeadend WebTV profile writes.
-        Assert.Equal("matroska,webm", JellyfinContainerNames.Describe("matroska,webm", "ts"));
-        Assert.Equal("mp4", JellyfinContainerNames.Describe("mp4", "ts"));
-    }
-
-    [Fact]
-    public void AnAnalysisThatFoundNothingLeavesTheAssumptionInPlace()
-    {
-        Assert.Equal("ts", JellyfinContainerNames.Describe(null, "ts"));
-        Assert.Equal("ts", JellyfinContainerNames.Describe(string.Empty, "ts"));
-    }
-
 
     private static byte[] TransportStream(int packets, int startOffset)
     {

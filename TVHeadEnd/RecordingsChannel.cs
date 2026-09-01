@@ -314,7 +314,7 @@ namespace TVHeadEnd
             // Looked up once. The identifier the source is addressed by, the runtime and whether
             // the analysis may be kept all come from the same recording, and three separate
             // lookups of it are three chances for them to disagree.
-            var recording = await FindRecordingAsync(id, cancellationToken).ConfigureAwait(false);
+            var recording = await _recordings.FindAsync(id, cancellationToken).ConfigureAwait(false);
 
             var source = _sources.SourceFor(id, recording);
 
@@ -343,18 +343,6 @@ namespace TVHeadEnd
             source.RunTimeTicks = recording is null ? null : RecordingItemMapper.Runtime(recording);
 
             return [source];
-        }
-
-        /// <summary>
-        /// Finds one recording among the ones TVHeadend holds.
-        /// </summary>
-        /// <param name="id">The TVHeadend recording identifier.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The recording, or <see langword="null"/> if the server no longer lists it.</returns>
-        private async Task<MyRecordingInfo?> FindRecordingAsync(string id, CancellationToken cancellationToken)
-        {
-            var recordings = await GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
-            return recordings.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
         }
 
         private async Task<ChannelItemResult> GetRecordingGroups(InternalChannelItemQuery query, CancellationToken cancellationToken)

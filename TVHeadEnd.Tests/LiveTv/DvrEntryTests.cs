@@ -8,7 +8,7 @@ using TVHeadEnd.Tvheadend.Catalogs;
 using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
-namespace TVHeadEnd.Tests.Core;
+namespace TVHeadEnd.Tests.LiveTv;
 
 public class DvrEntryTests
 {

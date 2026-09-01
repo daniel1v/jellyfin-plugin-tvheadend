@@ -24,8 +24,9 @@ public static class TvheadendItems
     /// The name this plugin's live TV service is registered under.
     /// </summary>
     /// <remarks>
-    /// Named rather than referenced to keep this free of the service itself. It is the value of
-    /// <c>LiveTvService.Name</c>, and the one Jellyfin stores on every channel it produced.
+    /// Stated here rather than on the service, so that reading it does not mean holding the
+    /// service. <c>LiveTvService.Name</c> returns this, and it is the value Jellyfin stores on
+    /// every channel this plugin produced.
     /// </remarks>
     public const string ServiceName = "TVHclient LiveTvService";
 

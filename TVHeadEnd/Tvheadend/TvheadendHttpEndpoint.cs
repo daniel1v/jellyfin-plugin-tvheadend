@@ -102,34 +102,6 @@ public sealed class TvheadendHttpEndpoint
     }
 
     /// <summary>
-    /// Turns an image reference from an HTSP message into an absolute URL.
-    /// </summary>
-    /// <remarks>
-    /// TVHeadend's image references are version dependent: below the per-field threshold the
-    /// server sends an absolute URL, between HTSP v8 and v14 a root-relative
-    /// <c>/imagecache/N</c> path, and from v15 on a relative <c>imagecache/N</c> path. An EPG
-    /// provider may also supply an absolute URL of its own. Anything not already absolute is
-    /// resolved against this endpoint, so every negotiated version yields a usable address.
-    /// </remarks>
-    /// <param name="image">The raw image value.</param>
-    /// <returns>An absolute URL, or <see langword="null"/> when no image was supplied.</returns>
-    public string? ResolveImageUrl(string? image)
-    {
-        if (string.IsNullOrEmpty(image))
-        {
-            return null;
-        }
-
-        if (image.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || image.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            return image;
-        }
-
-        return BaseUrl + "/" + image.TrimStart('/');
-    }
-
-    /// <summary>
     /// Builds the address of a JSON API endpoint.
     /// </summary>
     /// <param name="path">The API path, such as "dvrfile/17".</param>

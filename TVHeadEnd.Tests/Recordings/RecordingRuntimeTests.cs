@@ -9,7 +9,7 @@ using TVHeadEnd.Recordings;
 using TVHeadEnd.Tvheadend.Mapping;
 using Xunit;
 
-namespace TVHeadEnd.Tests.Core;
+namespace TVHeadEnd.Tests.Recordings;
 
 /// <summary>
 /// How long a recording is, and when it last changed.

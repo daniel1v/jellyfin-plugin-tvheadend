@@ -14,6 +14,7 @@ public class JellyfinContainerNameTests
     [InlineData("mpegts")]
     [InlineData("ts")]
     [InlineData("MPEGTS")]
+    [InlineData("TS")]
     public void EitherSpellingIsReportedAsTheOneJellyfinProduces(string probed)
     {
         Assert.Equal("ts", JellyfinContainerNames.Describe(probed, "ts"));
