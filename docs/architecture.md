@@ -334,6 +334,68 @@ Only the playlists, too. Segment requests are not adjusted: by the time one is f
 naming it has already been released. Radio takes Jellyfin's audio route and is left alone, because
 the nine seconds being cut here is the wait for video segments.
 
+### What is still slow
+
+Removing the playlist gate did not make every channel start alike, and what separates them is not
+the channel. ZDF appears in about two seconds; a channel that has to be re-encoded takes about
+eight. The line runs exactly where the playback decision runs: ZDF direct-plays, so no video is
+re-encoded, while Das Erste falls into Jellyfin's transcoding path because its H.264 offers no IDR
+entry point and VOX falls into it because MPEG-2 is not in the Android client's profile -- see
+[The one thing a client changes](#the-one-thing-a-client-changes). The numbers measured above were
+the remuxing path, where the video is copied. The eight seconds is what the same cold start costs
+once the video is actually encoded, and it is an observation rather than an instrumented
+breakdown.
+
+Where that time goes: Jellyfin starts FFmpeg, lets it analyse the input, initialises a decoder and
+an encoder, writes segments, and releases the playlist and the segments only after that. Then
+`DynamicHlsController` adds one wait per segment on top -- a segment that exists on disk is served
+only once the transcoding job has exited or the *next* segment exists as well, polled every 100 ms.
+That rule is not a query parameter, so the middleware that reaches `MinSegments` and
+`SegmentLength` cannot reach it.
+
+Worth stating plainly, because it is the obvious wrong conclusion: this is not TS against HLS. The
+HLS segments here *are* MPEG-TS. What costs the time is segmented delivery, with a playlist and a
+readiness rule in front of it, against one continuous response.
+
+### The ways out, and where each one stops
+
+Nothing below is implemented. They are recorded because the shape of the problem keeps suggesting
+the same five answers, and four of them run into something.
+
+**Trim what is left of the HLS wait.** The smallest change: shorten or remove the remaining waits,
+above all the next-segment readiness rule. It is the least disruptive option and the least
+promising one, because that rule is bounded by the segment length and the eight seconds is not.
+It also lives in Jellyfin's controller rather than in a parameter, so reaching it means more than
+rewriting a query string.
+
+**Jellyfin's progressive transcoder.** The server already has a path that streams FFmpeg's output
+continuously over a single HTTP response, with no segments and no playlist:
+`TranscodingJobType.Progressive`, which is what `VideosController` uses. Server-side this is the
+answer. The client is what stops it -- Jellyfin for Android takes `PlayMethod.TRANSCODE` only over
+HLS, and says so as an assertion rather than a preference: `require(protocol ==
+MediaStreamProtocol.HLS)` in `QueueManager.kt`. An `http` sub-protocol throws before playback
+starts.
+
+**A middleware bridge onto that progressive path.** Let Jellyfin decide as it does now, through the
+device profile and `StreamBuilder`, and then divert our live streams onto the progressive
+transcoder behind the client's back. It would work, and it is not clean: the client has been told
+one playback shape and would be served another, which is precisely the kind of bending this plugin
+has otherwise refused.
+
+**Real low-latency HLS.** Keep Jellyfin's transcoding decision completely intact and change only
+the delivery: Apple LL-HLS, with CMAF parts of roughly 200 ms and playlist updates that announce a
+part before the segment holding it is complete. Media3 on Android handles this natively. Of the
+options that leave the decision where it belongs, this is currently the most interesting one.
+
+**Transcoding in TVHeadend, or in the plugin itself.** Rejected. Neither place knows what the
+concrete client can decode; both would have to reproduce part of Jellyfin's device-profile and
+codec reasoning, and would then be wrong for every client that does not match the guess. It is the
+same rule as everywhere else here: the plugin describes the broadcast, and the server decides what
+to do with it for whom.
+
+The goal is unchanged by all of this. Jellyfin keeps deciding, alone, what has to be transcoded for
+which client. What is open is only the delivery path taken after that decision has been made.
+
 ## What a broadcast says about itself
 
 Everything below is a field TVHeadend already sends. None of it is fetched from anywhere else, and
@@ -758,4 +820,5 @@ omits it, so that route delivers the buffer file, which ends.
 
 The remaining cost is startup latency rather than quality: the fallback copies both video and
 audio, so what the viewer sees is the broadcast unaltered. Most of that latency has since been
-taken out of the HLS path -- see [How long a viewer waits](#how-long-a-viewer-waits).
+taken out of the HLS path -- see [How long a viewer waits](#how-long-a-viewer-waits), and what is
+left of it is in [What is still slow](#what-is-still-slow).
