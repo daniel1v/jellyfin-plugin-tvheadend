@@ -103,8 +103,8 @@ public class ArtworkTests
     [Fact]
     public void BothAddressesAreOnesTheControllerActuallyServes()
     {
-        // Two routes, one method: a channel wants its logo as a logo, and a recording borrowing
-        // that logo wants it letterboxed into a poster. Both have to be real.
+        // Two routes, one method: a picture served as it stands, and one padded into a square.
+        // Both have to be real.
         var prefix = typeof(TvHeadendImagesController)
             .GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.RouteAttribute), false)
             .Cast<Microsoft.AspNetCore.Mvc.RouteAttribute>()

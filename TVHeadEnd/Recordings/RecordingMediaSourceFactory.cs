@@ -134,21 +134,9 @@ namespace TVHeadEnd.Recordings
         /// It carries no streams, because the listing does not analyse and must not guess.
         /// </para>
         /// <para>
-        /// Its identifier must <b>not</b> be readable as a GUID, and that is not a stylistic
-        /// choice. This is a saved source, and <c>MediaSourceManager.GetStaticMediaSources</c>
-        /// keeps a saved source only when its identifier fails to parse as a GUID, or parses to
-        /// the item's own identifier, or names a library item the user can see. A GUID derived
-        /// from the recording is none of those, so the placeholder is discarded, the item is left
-        /// with no static source at all, and <c>GetPlaybackMediaSources</c> throws on
-        /// <c>mediaSources[0]</c> before any of this plugin is reached. Measured: every
-        /// PlaybackInfo request answered 500 with an ArgumentOutOfRangeException.
-        /// </para>
-        /// <para>
-        /// The described source keeps the GUID, because it is dynamic and that filter never sees
-        /// it, and because two places downstream parse it as a GUID. The two identifiers are
-        /// therefore different by necessity -- see <see cref="RecordingMediaSourceId"/> -- and
-        /// Jellyfin arranges for that to be harmless by dropping every placeholder before playback
-        /// is decided, so what a client is offered to name is always the described source.
+        /// Its identifier is the recording item's own GUID -- the same value the described source
+        /// carries, see <see cref="RecordingMediaSourceId"/>. Sharing it is what ties a listed
+        /// recording to the source playback negotiation answers with.
         /// </para>
         /// </remarks>
         /// <param name="mediaSourceId">The recording item's identifier.</param>

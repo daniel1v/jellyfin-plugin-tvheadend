@@ -176,7 +176,7 @@ public class DvrEntryTests
         // which for a recording cut short is a future that never arrived -- see
         // RecordingRuntimeTests. The entry here announced no file, so nothing has happened yet and
         // the truthful answer is none; the date Jellyfin compares is built separately, in
-        // RecordingsChannel.PublishedDateFor.
+        // RecordingPublicationVersion.PublishedDateFor.
         Assert.Equal(entry.RecordedActivityUtc, recording.DateLastUpdated);
         Assert.NotEqual(entry.StopUtc, recording.DateLastUpdated);
 

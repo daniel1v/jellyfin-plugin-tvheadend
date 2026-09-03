@@ -26,9 +26,10 @@ TVHeadEnd  ──>  TVHeadEnd.Core      what a broadcast, a recording and a tran
 `TVHeadEnd.Core` has no project reference and no runtime package: there is nothing in it to reach
 a Jellyfin type, an HTSP message or an ASP.NET request with, which is what makes "the core does not
 know about the host" a fact rather than an intention. `Tvheadend.Htsp` does not reference the core
-either, so it stays extractable on its own. `TVHeadEnd` is the only project that knows Jellyfin
-exists, and it is where the two halves are joined — the HTSP wire format becomes a core `DvrEntry`
-in `Tvheadend/Mapping`, and a core `DvrEntry` becomes a Jellyfin timer or recording in `LiveTv`.
+either, so it stays extractable on its own. `TVHeadEnd` is the only runtime project that knows
+Jellyfin exists, and it is where the two halves are joined — the HTSP wire format becomes a core
+`DvrEntry` in `Tvheadend/Mapping`, and a core `DvrEntry` becomes a Jellyfin timer or recording in
+`LiveTv`. The test project naturally references Jellyfin too.
 
 Internal namespaces, classes and project directories are still spelled `TVHeadEnd`. That is
 deliberate — the plugin's public identity changed, its source layout did not, and renaming it
@@ -113,7 +114,7 @@ This repository packages and publishes itself, in two phases. Bump the version i
 ```powershell
 & .\tools\release.ps1                 # prepare: build, pack, write manifest.json
 # install dist\tvheadend-ex_<version>.zip on the dev server and check it
-git commit -am "Publish 14.0.0.5" ; git push
+git commit -am "Publish <version>" ; git push
 # wait for CI to go green on that exact commit
 & .\tools\release.ps1 -Publish        # publish what was prepared
 ```

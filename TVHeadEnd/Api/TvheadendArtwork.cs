@@ -12,7 +12,7 @@ namespace TVHeadEnd.Api
     /// <remarks>
     /// <para>
     /// One rule for every kind of artwork this plugin publishes -- a channel logo, an EPG
-    /// programme image, a recording's poster -- because they arrive as the same kind of reference
+    /// programme image, a recording's picture -- because they arrive as the same kind of reference
     /// and fail in the same way. Jellyfin fetches an image URL with an HTTP client of its own,
     /// which knows nothing of TVHeadend, so anything on a TVHeadend that requires authentication
     /// comes back 401 and the item has no picture.
@@ -54,22 +54,25 @@ namespace TVHeadEnd.Api
         /// <param name="endpoint">The TVHeadend endpoint the reference is relative to.</param>
         /// <returns>The address, or <see langword="null"/> when there is no image.</returns>
         public string? AddressFor(string? reference, TvheadendHttpEndpoint endpoint)
-            => AddressFor(reference, endpoint, asPoster: false);
+            => AddressFor(reference, endpoint, padToSquare: false);
 
         /// <summary>
-        /// The address to publish for an item whose picture is drawn as a poster, falling back to
-        /// a second reference where the first names nothing.
+        /// The address to publish for an item whose picture is padded into a square, falling back
+        /// to a second reference where the first names nothing.
         /// </summary>
         /// <remarks>
         /// <para>
-        /// What the fallback is for: an EPG that carries no artwork. Broadcast DVB EIT has no field
-        /// for a picture, so a recording made from it has none either, and a library of blank tiles
-        /// is the result. The channel's own logo is at least true, in that it says which
-        /// broadcaster this came from.
+        /// What the fallback is for: an EPG that carries no artwork of its own. DVB EIT has no
+        /// field for a picture, and where nothing else fills that gap a library of blank tiles is
+        /// the result. The channel's own logo is at least true, in that it says which broadcaster
+        /// this came from.
         /// </para>
         /// <para>
-        /// Published as a poster because that is the shape Jellyfin draws it in. Handing the logo
-        /// over as it stands was tried and looked wrong: 400x240 blown up into a 2:3 frame.
+        /// Padding is square padding -- see <see cref="SquareCanvas"/> -- and it is what a logo
+        /// needs, because Jellyfin draws an item's picture at whatever shape the view wants and a
+        /// 400x240 logo handed over as it stands fills the frame. It reaches only pictures this
+        /// plugin serves: a reference on another host is published untouched, whichever address
+        /// was asked for.
         /// </para>
         /// </remarks>
         /// <param name="reference">The image the item itself names.</param>
@@ -77,10 +80,10 @@ namespace TVHeadEnd.Api
         /// <param name="endpoint">The TVHeadend endpoint the references are relative to.</param>
         /// <returns>The address, or <see langword="null"/> when neither names anything.</returns>
         public string? PaddedAddressFor(string? reference, string? fallback, TvheadendHttpEndpoint endpoint)
-            => AddressFor(reference, endpoint, asPoster: true)
-                ?? AddressFor(fallback, endpoint, asPoster: true);
+            => AddressFor(reference, endpoint, padToSquare: true)
+                ?? AddressFor(fallback, endpoint, padToSquare: true);
 
-        private string? AddressFor(string? reference, TvheadendHttpEndpoint endpoint, bool asPoster)
+        private string? AddressFor(string? reference, TvheadendHttpEndpoint endpoint, bool padToSquare)
         {
             ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -103,7 +106,7 @@ namespace TVHeadEnd.Api
                 var token = TvheadendAccessToken.Create(Encode(path), secret);
 
                 return _applicationHost.GetApiUrlForLocalAccess().TrimEnd('/')
-                    + (asPoster
+                    + (padToSquare
                         ? TvHeadendImagesController.PaddedPathFor(token)
                         : TvHeadendImagesController.ImagePathFor(token));
             }

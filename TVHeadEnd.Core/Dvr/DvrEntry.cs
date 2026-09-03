@@ -244,7 +244,8 @@ public sealed record DvrEntry
     /// to rewrite a stored item. The two pull in opposite directions -- one must be truthful, the
     /// other must only ever rise -- and one value could not be both: an entry whose scheduled start
     /// had not arrived yet, which pre-padding makes an ordinary case, reported a future as though
-    /// it had passed. The marker is built separately, in RecordingsChannel.PublishedDateFor.
+    /// it had passed. The Jellyfin-facing publication version is built separately, outside the
+    /// core.
     /// </para>
     /// </remarks>
     public DateTime? RecordedActivityUtc => PlayableFile is { } file ? file.StopUtc ?? file.StartUtc : null;

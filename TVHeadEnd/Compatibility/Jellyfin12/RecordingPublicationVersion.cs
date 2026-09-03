@@ -147,8 +147,8 @@ namespace TVHeadEnd.Compatibility.Jellyfin12
         /// How far through its life the recording is, as a step the published date can carry.
         /// </summary>
         /// <remarks>
-        /// One second apiece, well inside the minute the schema revision moves in, so the two
-        /// cannot run into one another.
+        /// One second apiece, well inside the day-sized step the schema revision moves in, so the
+        /// two cannot run into one another.
         /// </remarks>
         /// <param name="status">The recording's status.</param>
         /// <returns>The step.</returns>

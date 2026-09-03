@@ -166,7 +166,7 @@ public class RecordingMetadataTests
         // A DVR entry does not say whether its channel carries pictures, so the projection cannot
         // answer it and the value stays at the enum's default -- which is TV. That default is the
         // bug: every radio recording was published as video. What fills it in is
-        // LiveTvService.GetRecordingsAsync, the one place every recording passes and the channel
+        // TvheadendRecordings.GetAllAsync, the one place every recording passes and the channel
         // catalog is in reach.
         var recording = JellyfinDvrMapper.ToRecording(
             DvrEntryMapper.FromMessage(Message(1, state: "completed"))!);

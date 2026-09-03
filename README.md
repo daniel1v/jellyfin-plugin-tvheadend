@@ -7,8 +7,8 @@
 
 TVHeadend EX started life as a fork of the official
 [jellyfin/jellyfin-plugin-tvheadend](https://github.com/jellyfin/jellyfin-plugin-tvheadend) and has
-since gone its own way: its own playback architecture, its own release line, and — as of this
-version — its own plugin GUID, so it installs and updates as a plugin in its own right.
+since gone its own way: its own playback architecture, its own release line, and since 14.0.0.4 its
+own plugin GUID, so it installs and updates as a plugin in its own right.
 
 It is **not** supported by, endorsed by, or affiliated with the Jellyfin project or the TVHeadend
 project. It is not an official successor to the plugin it came from.
@@ -18,8 +18,9 @@ project. It is not an official successor to the plugin it came from.
 Live TV worked, in the sense that it usually started eventually and usually on one of your devices.
 The differences are mostly about the gap between "usually" and "reliably":
 
-- **Faster cold start.** Tuning a channel takes a couple of seconds rather than the best part of
-  ten.
+- **Faster startup where the stream can be delivered directly.** Direct play and remux usually start
+  within a few seconds. A stream Jellyfin has to re-encode can still take noticeably longer,
+  especially on Android.
 - **Direct play or a remux wherever possible.** The plugin describes the stream honestly enough
   that Jellyfin can copy it through instead of re-encoding a broadcast it did not need to touch.
 - **The awkward DVB and Android cases handled on purpose.** Broadcasters that never send the frame
@@ -90,9 +91,10 @@ For the general mechanics, [see the Jellyfin documentation](https://jellyfin.org
 
 ## TVHeadend permissions
 
-An ordinary **streaming** account is enough for live TV. Nothing here touches an administrative API.
+A **streaming** account is enough for live TV. Nothing here touches an administrative API.
 
-Recordings additionally need whatever DVR rights the operations you use require.
+Recording and timer operations additionally require the corresponding TVHeadend **DVR**
+permissions. Administrator rights are not required.
 
 ## Origin and credits
 

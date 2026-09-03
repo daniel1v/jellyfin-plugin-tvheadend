@@ -17,22 +17,21 @@ using HtspException = Tvheadend.Htsp.HtspException;
 namespace TVHeadEnd.Recordings
 {
     /// <summary>
-    /// Establishes what a recording contains, once, for everyone who asks.
+    /// Establishes what a recording contains, with concurrent callers sharing one reading.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Two quite different callers need the same facts about the same recording within
     /// milliseconds of each other: the channel, filling in the media source Jellyfin publishes,
     /// and the playback compatibility filter, deciding whether this client can be left to play it
-    /// directly. Fetching eight megabytes twice and running FFprobe twice for one click would be
-    /// the obvious way to get that wrong, so both callers share whichever reading is already under
-    /// way.
+    /// directly. Fetching the sample twice and running FFprobe twice for one click would be the
+    /// obvious way to get that wrong, so callers arriving while a reading is under way share it.
     /// </para>
     /// <para>
-    /// What is remembered is the analysis and nothing else. A finished recording never changes,
-    /// so its analysis is worth keeping; a recording still being written does not, and its
-    /// analysis is kept only long enough for the burst of requests around a single playback to
-    /// share one reading of it.
+    /// What is remembered is the analysis and nothing else, and for how long depends on the
+    /// recording: a finished one no longer changes, so its analysis may be kept for the life of
+    /// the process, while one still being written is re-analysed after a short retention rather
+    /// than being described by its first minute for ever.
     /// </para>
     /// <para>
     /// Getting the bytes is somebody else's job -- see <see cref="IRecordingSampleSource"/>. What

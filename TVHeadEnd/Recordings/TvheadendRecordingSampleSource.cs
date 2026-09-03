@@ -20,10 +20,14 @@ namespace TVHeadEnd.Recordings
     public sealed class TvheadendRecordingSampleSource : IRecordingSampleSource
     {
         /// <summary>
-        /// How much of a recording is fetched to analyse it. The program tables and a sample of
-        /// every elementary stream sit at the very front; this is generous for that and still a
-        /// tenth of a second over a local network.
+        /// How much of a recording is fetched to analyse it.
         /// </summary>
+        /// <remarks>
+        /// A bounded opening sample normally carries enough to describe the media -- the program
+        /// tables and the first packets of the elementary streams. Absence from the sample is not
+        /// proof of absence from the recording, which is why nothing downstream treats a stream it
+        /// did not see as one that does not exist.
+        /// </remarks>
         public const int SampleLength = 8 * 1024 * 1024;
 
         private readonly ITvheadendHttpEndpointSource _endpoints;

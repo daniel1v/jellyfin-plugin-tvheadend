@@ -90,9 +90,9 @@ public sealed class TvheadendRecordings
             recording.ChannelType = JellyfinChannelMapper.ChannelTypeFor(channel, typeForOther);
 
             // The channel's logo where the recording has no picture of its own, which with a
-            // broadcast EPG is every recording: DVB EIT has no field for one. Published as a
-            // poster, because Jellyfin draws a recording's primary image as one and a 400x240
-            // logo handed over as it stands is a landscape picture blown up into a portrait frame.
+            // broadcast EPG is every recording: DVB EIT has no field for one. Published on the
+            // padded address, because a logo handed over as it stands fills whatever frame
+            // Jellyfin draws it in.
             var logo = borrowLogos ? channel?.Icon : null;
 
             recording.ImageUrl = _artwork.PaddedAddressFor(recording.ImageReference, logo, endpoint);

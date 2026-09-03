@@ -10,7 +10,7 @@
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="text" id="txtUserName" label="Username" />
-                    <div class="fieldDescription">An ordinary TVHeadend streaming account is enough. No administrator rights are needed.</div>
+                    <div class="fieldDescription">A TVHeadend streaming account is enough for live TV. Recording and timer operations additionally need the corresponding DVR permissions. Administrator rights are not required.</div>
                 </div>
                 <div class="inputContainer">
                     <input is="emby-input" type="password" id="txtPassword" label="Password" />
@@ -55,10 +55,11 @@
                         <span>Use the channel logo where there is no artwork</span>
                     </label>
                     <div class="fieldDescription checkboxFieldDescription">
-                        Broadcast listings carry no pictures at all, so without this a recording is a blank
-                        tile and a guide entry has nothing beside it. The channel logo at least says which
-                        broadcaster the programme came from, and it never replaces artwork that does exist.
-                        On a recording it is letterboxed onto a poster rather than stretched.
+                        DVB EIT itself carries no pictures, though TVHeadend may have artwork from another
+                        EPG source. Where a programme or recording has a picture of its own it is used and
+                        this setting changes nothing; only where there is none can the channel logo stand in,
+                        which at least says which broadcaster the programme came from. A logo used this way is
+                        padded into a square rather than stretched to fill the tile.
                     </div>
                 </div>
                 <div class="checkboxContainer">

@@ -20,7 +20,7 @@ namespace TVHeadEnd.Api
     /// own. That client knows nothing of TVHeadend, so a server that requires authentication --
     /// the ordinary case -- answers it with 401 and the item has no picture. There is no way to
     /// hand Jellyfin a header along with the address. It is the same for a channel logo, an EPG
-    /// programme image and a recording's poster, so one route answers all three.
+    /// programme image and a recording's picture, so one route answers all three.
     /// </para>
     /// <para>
     /// Putting the credentials in the URL, which an earlier version did, does not work and never
@@ -80,12 +80,12 @@ namespace TVHeadEnd.Api
         /// <remarks>
         /// <para>
         /// A separate address rather than a flag on the token, so the same picture can be
-        /// published both ways: a broadcaster's own artwork is served as it is, and a logo
-        /// standing in for artwork is padded. The token still names only a path.
+        /// published either way and the caller decides which: a guide programme image is served
+        /// as it is, a channel logo is padded. The token still names only a path.
         /// </para>
         /// <para>
-        /// The path still ends in "poster", from when padding meant a 2:3 frame rather than a
-        /// square. Changing it would change every published address, and a recording keeps the
+        /// "poster" is a historical route name: the transformation it selects today is square
+        /// padding. Changing it would change every published address, and a recording keeps the
         /// first picture it is given -- so the rename would cost everybody a reset to buy a better
         /// word.
         /// </para>
@@ -194,7 +194,7 @@ namespace TVHeadEnd.Api
         }
 
         /// <summary>
-        /// Pads a picture to poster shape, and gives up rather than failing if it cannot.
+        /// Pads a picture into a square, and gives up rather than failing if it cannot.
         /// </summary>
         /// <remarks>
         /// The padding is drawn with the SkiaSharp the server already loads, a dependency this

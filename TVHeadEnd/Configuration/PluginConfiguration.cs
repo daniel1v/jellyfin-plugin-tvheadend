@@ -59,9 +59,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the user name.
     /// </summary>
     /// <remarks>
-    /// An ordinary streaming account is enough. The plugin reads the channel list, the guide and
-    /// the DVR over HTSP and the broadcast over HTTP; nothing in the live path touches an
-    /// administrative API.
+    /// A streaming account is enough for live TV: the plugin reads the channel list and the guide
+    /// over HTSP and the broadcast over HTTP, and nothing in the live path touches an
+    /// administrative API. Recording and timer operations additionally need the corresponding
+    /// TVHeadend DVR permissions. Administrator rights are not required.
     /// </remarks>
     public string Username { get; set; }
 
@@ -147,12 +148,18 @@ public class PluginConfiguration : BasePluginConfiguration
     public int LiveBufferSizeMegabytes { get; set; }
 
     /// <summary>
-    /// Gets or sets the secret the addresses of recordings are derived from.
+    /// Gets or sets the secret the plugin's anonymous proxy addresses are signed with.
     /// </summary>
     /// <remarks>
-    /// The endpoint that serves them has to answer without a session, because FFmpeg fetches from
-    /// it, so what protects a recording is that its address cannot be guessed. Generated once, on
-    /// the server, and never shown.
+    /// <para>
+    /// The name is historical and is kept because it is persisted: today the secret signs the
+    /// addresses of both recordings and TVHeadend-hosted artwork.
+    /// </para>
+    /// <para>
+    /// Those endpoints have to answer without a session, because Jellyfin's own FFmpeg and image
+    /// pipeline fetch from them, so what protects them is that an address cannot be guessed.
+    /// Generated once, on the server, and never shown.
+    /// </para>
     /// </remarks>
     public string RecordingAccessSecret { get; set; }
 

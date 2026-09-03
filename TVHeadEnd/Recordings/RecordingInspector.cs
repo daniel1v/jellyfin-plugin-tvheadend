@@ -15,22 +15,25 @@ using TVHeadEnd.Compatibility.Jellyfin12;
 namespace TVHeadEnd.Recordings
 {
     /// <summary>
-    /// Establishes what a source contains, from a local sample of it.
+    /// Establishes what a recording contains, from a local sample of it.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A live channel and a recording pose the same question and are answered the same way. The
-    /// remote source is never analysed: for a channel the sample is the shared buffer, for a
-    /// recording it is the opening fetched by a range request. Analysing the source itself is
-    /// both slow -- TVHeadend answers range requests but does not advertise Accept-Ranges, so
-    /// FFmpeg reads a recording from end to end -- and, for a channel, a second subscription.
+    /// Recordings only. A live channel is described from its PAT and PMT and is never probed --
+    /// see the architecture notes -- so nothing on the live path reaches this type.
+    /// </para>
+    /// <para>
+    /// The remote recording is not analysed where it lives; the sample is its opening, fetched by
+    /// a range request and written to a local file, and Jellyfin's <c>IMediaEncoder</c> (FFprobe)
+    /// is pointed at that. Analysing the remote stream directly is slow: TVHeadend answers range
+    /// requests but does not advertise Accept-Ranges, so FFmpeg reads a recording end to end.
     /// </para>
     /// <para>
     /// This reports facts and nothing else. It does not pick a default audio track, does not
-    /// decide about deinterlacing and never invents a runtime: the sample is a slice of a
-    /// recording or a ring buffer holding the last few minutes of a channel, and its duration
-    /// says nothing about the source. Every audio and subtitle stream is preserved in the order
-    /// FFprobe reported, because Jellyfin addresses them by position.
+    /// decide about deinterlacing and never derives a runtime: the sample is a slice of the
+    /// opening, and its duration says nothing about the recording. Every audio and subtitle
+    /// stream is preserved in the order FFprobe reported, because Jellyfin addresses them by
+    /// position.
     /// </para>
     /// </remarks>
     public sealed class RecordingInspector
